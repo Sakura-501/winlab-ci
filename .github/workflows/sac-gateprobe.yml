@@ -24,7 +24,7 @@ jobs:
           if (-not $m) { throw "wwlib not found" }
           "wwlib v{0} len={1}" -f $m.VersionInfo.FileVersion, $m.Length | Out-File ver.txt
           Copy-Item $m.FullName sac_wwlib.dll
-      - name: Build trigger doc (TC/SEQ/TOC fields)
+      - name: Build trigger doc (tracked changes + fields + TOC)
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Path C:\t -Force | Out-Null
@@ -32,16 +32,21 @@ jobs:
           $w.Visible = $false
           $w.DisplayAlerts = 0
           $doc = $w.Documents.Add()
+          $doc.TrackRevisions = $true
           $r = $doc.Content
           $r.Text = "Heading`nBody text`n"
-          $long = "A" * 300
           $r2 = $doc.Content
           $r2.Collapse(0)
-          $doc.Fields.Add($r2, -1, ('TC "' + $long + '" \f C'), $false) | Out-Null
+          $doc.Fields.Add($r2, -1, 'TC "Entry text" \f C', $false) | Out-Null
           $r3 = $doc.Content
           $r3.Collapse(0)
           $doc.Fields.Add($r3, -1, 'SEQ seqtest', $false) | Out-Null
           try { $toc = $doc.TablesOfContents.Add($doc.Content, $true, 1, 3) } catch {}
+          # more tracked-change edits to create rev marks
+          $r4 = $doc.Content
+          $r4.InsertAfter("Inserted revision text. ")
+          $r5 = $doc.Content
+          $r5.InsertAfter("Second inserted paragraph. ")
           try { $doc.Fields.Update() } catch {}
           try { $toc.Update() } catch {}
           $doc.SaveAs2("C:\t\f.doc", 0)
@@ -51,7 +56,7 @@ jobs:
           [GC]::Collect(); [GC]::WaitForPendingFinalizers()
           Start-Sleep -Seconds 3
           Get-Item C:\t\f.doc | Select-Object Name,Length | Out-File docinfo.txt
-      - name: Open doc in fresh Word, force TOC/field update, read gate
+      - name: Open doc, accept all revisions (strip rev marks), read gates
         shell: powershell
         run: |
           Add-Type @"
@@ -70,6 +75,7 @@ jobs:
             $doc = $w.Documents.Item(1)
             try { $doc.Fields.Update() } catch { "fields.update err" | Out-File update.log -Append }
             try { $toc = $doc.TablesOfContents.Item(1); $toc.Update() } catch { "toc.update err" | Out-File update.log -Append }
+            try { $doc.AcceptAllRevisions() } catch { "acceptrev err: $($_.Exception.Message)" | Out-File update.log -Append }
             Start-Sleep -Seconds 8
             $doc.Saved = $true
           } catch { "attach err: $($_.Exception.Message)" | Out-File update.log -Append }
@@ -79,17 +85,18 @@ jobs:
           $base = 0
           foreach ($m in $p.Modules) { if ($m.ModuleName -eq "wwlib.dll") { $base = $m.BaseAddress.ToInt64() } }
           "pid={0} base=0x{1:X}" -f $p.Id, $base | Out-File result.txt -Append
-          $gateRva = 0x2CC7110
-          $buf = New-Object byte[] 16
-          $rd = [IntPtr]::Zero
-          $ok = [Mem]::ReadProcessMemory($h, [IntPtr]($base + $gateRva), $buf, [IntPtr]16, [ref]$rd)
-          $q0 = [BitConverter]::ToUInt64($buf,0)
-          $q1 = [BitConverter]::ToUInt64($buf,8)
-          "gate rva=0x{0:X} q0=0x{1:X} q1=0x{2:X} read={3}" -f $gateRva, $q0, $q1, $ok | Out-File result.txt -Append
-          if ($q0 -eq 0x55FF) { "STATUS UNEVAL (0x55FF)" | Out-File result.txt -Append }
-          elseif (($q0 -band 0xFF) -eq 1) { "STATUS EVAL ON" | Out-File result.txt -Append }
-          elseif (($q0 -band 0xFF) -eq 0) { "STATUS EVAL OFF" | Out-File result.txt -Append }
-          else { "STATUS UNKNOWN q0=0x{0:X}" -f $q0 | Out-File result.txt -Append }
+          foreach ($gateRva in @(0x2CC69F8, 0x2CC69E8, 0x2CC7110)) {
+            $buf = New-Object byte[] 16
+            $rd = [IntPtr]::Zero
+            $ok = [Mem]::ReadProcessMemory($h, [IntPtr]($base + $gateRva), $buf, [IntPtr]16, [ref]$rd)
+            $q0 = [BitConverter]::ToUInt64($buf,0)
+            $q1 = [BitConverter]::ToUInt64($buf,8)
+            "gate rva=0x{0:X} q0=0x{1:X} q1=0x{2:X} read={3}" -f $gateRva, $q0, $q1, $ok | Out-File result.txt -Append
+            if ($q0 -eq 0x55FF) { "  STATUS UNEVAL (0x55FF)" | Out-File result.txt -Append }
+            elseif (($q0 -band 0xFF) -eq 1) { "  STATUS EVAL ON" | Out-File result.txt -Append }
+            elseif (($q0 -band 0xFF) -eq 0) { "  STATUS EVAL OFF" | Out-File result.txt -Append }
+            else { "  STATUS UNKNOWN q0=0x{0:X}" -f $q0 | Out-File result.txt -Append }
+          }
           [Mem]::CloseHandle($h) | Out-Null
           Get-Content result.txt
       - uses: actions/upload-artifact@v4
