@@ -1,0 +1,37 @@
+name: mspts70-grab
+on:
+  workflow_dispatch:
+jobs:
+  grab:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    strategy:
+      matrix:
+        channel: [SemiAnnual, Current]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Install Office (${{ matrix.channel }})
+        shell: pwsh
+        run: |
+          $page = (Invoke-WebRequest -Uri "https://www.microsoft.com/en-us/download/details.aspx?id=49117" -UseBasicParsing).Content
+          if ($page -match 'href="(https://download\.microsoft\.com/download/[^"]+officedeploymenttool[^"]*\.exe)"') {
+            Invoke-WebRequest -Uri $Matches[1] -OutFile odt.exe
+          } else { throw "odt link not found" }
+          Start-Process -Wait -FilePath .\odt.exe -ArgumentList "/extract:odtx /quiet"
+          $xml = '<Configuration><Add OfficeClientEdition="64" Channel="${{ matrix.channel }}"><Product ID="O365ProPlusRetail"><Language ID="en-us" /><ExcludeApp ID="Excel" /><ExcludeApp ID="PowerPoint" /><ExcludeApp ID="Outlook" /><ExcludeApp ID="OneDrive" /><ExcludeApp ID="OneNote" /><ExcludeApp ID="Lync" /><ExcludeApp ID="Bing" /></Product></Add><Display Level="None" AcceptEULA="TRUE" /><Updates Enabled="FALSE" /></Configuration>'
+          Set-Content -Path cfg.xml -Value $xml
+          Start-Process -Wait -FilePath .\odtx\setup.exe -ArgumentList "/configure","cfg.xml"
+          $m = Get-ChildItem "C:\Program Files\Microsoft Office\root" -Recurse -Filter mspts70.dll -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $m) { throw "mspts70 not found" }
+          "mspts70 v{0} len={1}" -f $m.VersionInfo.FileVersion, $m.Length | Out-File ver.txt
+          Copy-Item $m.FullName ("mspts70_" + $env:MSYS2_ENV_CONV_EXCL + ".dll")
+          Copy-Item $m.FullName mspts70.dll
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mspts70-${{ matrix.channel }}
+          path: |
+            ver.txt
+            mspts70.dll
+          if-no-files-found: ignore
