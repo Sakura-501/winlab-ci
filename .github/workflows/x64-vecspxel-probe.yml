@@ -1,0 +1,83 @@
+name: x64-vecspxel-probe
+on:
+  workflow_dispatch:
+jobs:
+  probe:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Download ODT
+        shell: pwsh
+        run: |
+          $page = (Invoke-WebRequest -Uri "https://www.microsoft.com/en-us/download/details.aspx?id=49117" -UseBasicParsing).Content
+          if ($page -match 'href="(https://download\.microsoft\.com/download/[^"]+officedeploymenttool[^"]*\.exe)"') {
+            Invoke-WebRequest -Uri $Matches[1] -OutFile odt.exe
+          } else { throw "odt link not found" }
+          Start-Process -Wait -FilePath .\odt.exe -ArgumentList "/extract:odtx /quiet"
+      - name: Install CurrentPreview x64 Word
+        shell: pwsh
+        run: |
+          $xml = '<Configuration><Add OfficeClientEdition="64" Channel="CurrentPreview"><Product ID="O365ProPlusRetail"><Language ID="en-us" /><ExcludeApp ID="Excel" /><ExcludeApp ID="PowerPoint" /><ExcludeApp ID="Outlook" /><ExcludeApp ID="OneDrive" /><ExcludeApp ID="OneNote" /><ExcludeApp ID="Lync" /><ExcludeApp ID="Bing" /></Product></Add><Display Level="None" AcceptEULA="TRUE" /><Updates Enabled="FALSE" /></Configuration>'
+          Set-Content -Path cfg.xml -Value $xml
+          Start-Process -Wait -FilePath .\odtx\setup.exe -ArgumentList "/configure","cfg.xml"
+          $w = Get-Item "C:\Program Files\Microsoft Office\root\Office16\wwlib.dll" -ErrorAction SilentlyContinue
+          if (-not $w) { throw "install failed" }
+          "wwlib v{0} len={1}" -f $w.VersionInfo.FileVersion, $w.Length
+          $w.VersionInfo.FileVersion | Out-File ver.txt
+      - name: Adaptive vecspxel RVA scan + compile minidbg14
+        shell: pwsh
+        run: |
+          # find lea reg,[reg+2A28h] sites in wwlib.dll (vecspxel container access)
+          $b = [IO.File]::ReadAllBytes("C:\Program Files\Microsoft Office\root\Office16\wwlib.dll")
+          $hits = New-Object System.Collections.ArrayList
+          for ($i = 3; $i -lt $b.Length - 7; $i++) {
+            if ($b[$i-3] -eq 0x48 -and $b[$i-2] -eq 0x8D -and ($b[$i-1] -band 0xC7) -eq 0x05) { continue }
+            if ($b[$i] -eq 0x8D -and ($b[$i+1] -band 0xC7) -eq 0x05) {
+              # REX.W lea r64,[rip+disp]
+              $disp = [BitConverter]::ToInt32($b, $i+2)
+              $target = $i + 6 + $disp
+              # target must point to a 2A28/2A30 constant load in .text (approx check via nearby lea)
+              if ($target -gt 0 -and $target -lt $b.Length) { [void]$hits.Add(($i).ToString("X")) }
+            }
+          }
+          "raw lea-rip hits: " + $hits.Count
+          # simpler: scan for 48 8D xx with disp forming 0x2A28/0x2A30 constant add (lea reg,[reg+2A28h])
+          $h2 = New-Object System.Collections.ArrayList
+          for ($i = 0; $i -lt $b.Length - 7; $i++) {
+            if ($b[$i] -eq 0x48 -and $b[$i+1] -eq 0x8D) {
+              $modrm = $b[$i+2]
+              $rm = $modrm -band 7
+              $reg = ($modrm -shr 3) -band 7
+              if ($rm -eq 4) {
+                # SIB follows: 48 8D 04 25 disp32 -> lea rax,[disp32] (absolute)
+                $abs = [BitConverter]::ToUInt32($b, $i+4)
+                if ($abs -eq 0x2A28 -or $abs -eq 0x2A30 -or $abs -eq 0x2A38) { [void]$h2.Add(("0x" + $i.ToString("X") + ":" + $abs.ToString("X"))) }
+              }
+            }
+          }
+          "vecspxel absolute-lea hits: " + $h2.Count
+          $h2 | Select-Object -First 30 | Out-File vecsites.txt
+          Get-Content vecsites.txt
+          # compile minidbg14
+          $csc = 'C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe'
+          & $csc /nologo /out:minidbg14.exe minidbg14.cs
+          if (-not (Test-Path minidbg14.exe)) { throw "csc failed" }
+      - name: Probe e3 with vecspxel breakpoints
+        shell: pwsh
+        run: |
+          $word = "C:\Program Files\Microsoft Office\root\Office16\WINWORD.EXE"
+          $rvas = (Get-Content vecsites.txt | Select-Object -First 3) -join ","
+          "probe rvas: $rvas"
+          & .\minidbg14.exe $word (Resolve-Path "vsx-e3.docx").Path -- 60 0=x $rvas 2>&1 | Out-File probe_e3.txt
+          Get-Content probe_e3.txt | Select-String -Pattern "BP set|HIT|end|primaryHits" | ForEach-Object { $_.Line }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: vecspxel-probe-20430-x64
+          path: |
+            ver.txt
+            vecsites.txt
+            probe_e3.txt
+          if-no-files-found: ignore
