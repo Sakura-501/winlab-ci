@@ -59,10 +59,22 @@ jobs:
         shell: pwsh
         run: |
           $word = "C:\Program Files\Microsoft Office\root\Office16\WINWORD.EXE"
-          $rvas = (Get-Content vecsites.txt | Select-Object -First 3) -join ","
-          "probe rvas: $rvas"
-          & .\minidbg14.exe $word (Resolve-Path "vsx-e3.docx").Path -- 60 0=x $rvas 2>&1 | Out-File probe_e3.txt
-          Get-Content probe_e3.txt | Select-String -Pattern "BP set|HIT|end|primaryHits" | ForEach-Object { $_.Line }
+          # file offset -> RVA: wwlib .text va=0x1000 raw=0x400 => rva = off + 0xC00
+          $bp = @()
+          $i = 0
+          foreach ($line in Get-Content vecsites.txt) {
+            if ($i -ge 4) { break }
+            $parts = $line -split ':'
+            $off = [Convert]::ToUInt64($parts[0], 16)
+            $rva = $off + 0xC00
+            $nm = "vec$i"
+            $bp += ("{0:X}:{1}" -f $rva, $nm)
+            $i++
+          }
+          $bps = $bp -join ","
+          "probe bps: $bps"
+          & .\minidbg14.exe $word (Resolve-Path "vsx-e3.docx").Path -- 90 $bps 2>&1 | Out-File probe_e3.txt
+          Get-Content probe_e3.txt | Select-String -Pattern "BP set|HIT|end|primaryHits|wwlib.dll loaded" | ForEach-Object { $_.Line }
       - uses: actions/upload-artifact@v4
         if: always()
         with:
