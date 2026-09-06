@@ -1,0 +1,70 @@
+name: fixdiff-hunter
+on:
+  workflow_dispatch:
+jobs:
+  diff:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Download ODT
+        shell: pwsh
+        run: |
+          $page = (Invoke-WebRequest -Uri "https://www.microsoft.com/en-us/download/details.aspx?id=49117" -UseBasicParsing).Content
+          if ($page -match 'href="(https://download\.microsoft\.com/download/[^"]+officedeploymenttool[^"]*\.exe)"') {
+            Invoke-WebRequest -Uri $Matches[1] -OutFile odt.exe
+          } else { throw "odt link not found" }
+          Start-Process -Wait -FilePath .\odt.exe -ArgumentList "/extract:odtx /quiet"
+      - name: Install x64 Word
+        shell: pwsh
+        run: |
+          $xml = '<Configuration><Add OfficeClientEdition="64" Channel="Current"><Product ID="O365ProPlusRetail"><Language ID="en-us" /><ExcludeApp ID="Excel" /><ExcludeApp ID="PowerPoint" /><ExcludeApp ID="Outlook" /><ExcludeApp ID="OneDrive" /><ExcludeApp ID="OneNote" /><ExcludeApp ID="Lync" /><ExcludeApp ID="Bing" /></Product></Add><Display Level="None" AcceptEULA="TRUE" /><Updates Enabled="FALSE" /></Configuration>'
+          Set-Content -Path cfg.xml -Value $xml
+          Start-Process -Wait -FilePath .\odtx\setup.exe -ArgumentList "/configure","cfg.xml"
+          $w = Get-Item "C:\Program Files\Microsoft Office\root\Office16\wwlib.dll" -ErrorAction SilentlyContinue
+          if (-not $w) { throw "install failed" }
+          "wwlib v{0} len={1}" -f $w.VersionInfo.FileVersion, $w.Length | Out-File ver.txt
+          $cfg = Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Office\ClickToRun\Configuration" -ErrorAction SilentlyContinue
+          if ($cfg) { "channel=" + $cfg.UpdateChannel + " ver=" + $cfg.VersionToReport | Out-File ver.txt -Append }
+          Copy-Item $w.FullName new_wwlib.dll
+      - name: Fix* string diff vs baseline
+        shell: pwsh
+        run: |
+          $b = [IO.File]::ReadAllBytes("new_wwlib.dll")
+          $txt = [Text.Encoding]::ASCII.GetString($b)
+          $rx = [regex]'Fix[A-Za-z0-9_]{6,}'
+          $new = ($rx.Matches($txt) | ForEach-Object { $_.Value } | Sort-Object -Unique)
+          $baseline = @(Get-Content baseline_wwlib20326_fixes.txt | ForEach-Object { $_.Trim() })
+          $added = @($new | Where-Object { $baseline -notcontains $_ })
+          $removed = @($baseline | Where-Object { $new -notcontains $_ })
+          "baseline=$($baseline.Count) new=$($new.Count) added=$($added.Count) removed=$($removed.Count)" | Out-File diff.txt
+          "--- ADDED ---" | Out-File diff.txt -Append
+          $added | Out-File diff.txt -Append
+          "--- REMOVED ---" | Out-File diff.txt -Append
+          $removed | Out-File diff.txt -Append
+          Get-Content diff.txt
+      - name: Pack new wwlib (chunked)
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path chunks | Out-Null
+          $bytes = [IO.File]::ReadAllBytes("new_wwlib.dll")
+          $chunk = 8MB
+          $n = [math]::Ceiling($bytes.Length / $chunk)
+          for ($i = 0; $i -lt $n; $i++) {
+            $len = [math]::Min($chunk, $bytes.Length - $i * $chunk)
+            $part = New-Object byte[] $len
+            [Array]::Copy($bytes, $i * $chunk, $part, 0, $len)
+            [IO.File]::WriteAllBytes(("chunks\wwlib.{0:D3}" -f $i), $part)
+          }
+          "wwlib chunks: $n" | Out-File split.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: fixdiff-result
+          path: |
+            ver.txt
+            diff.txt
+            split.txt
+            chunks
+          if-no-files-found: ignore
