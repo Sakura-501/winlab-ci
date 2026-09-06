@@ -1,0 +1,86 @@
+name: chart-render-probe
+on:
+  workflow_dispatch:
+jobs:
+  probe:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Download ODT
+        shell: pwsh
+        run: |
+          $page = (Invoke-WebRequest -Uri "https://www.microsoft.com/en-us/download/details.aspx?id=49117" -UseBasicParsing).Content
+          if ($page -match 'href="(https://download\.microsoft\.com/download/[^"]+officedeploymenttool[^"]*\.exe)"') {
+            Invoke-WebRequest -Uri $Matches[1] -OutFile odt.exe
+          } else { throw "odt link not found" }
+          Start-Process -Wait -FilePath .\odt.exe -ArgumentList "/extract:odtx /quiet"
+      - name: Install CurrentPreview x64 Excel
+        shell: pwsh
+        run: |
+          $xml = '<Configuration><Add OfficeClientEdition="64" Channel="Current"><Product ID="O365ProPlusRetail"><Language ID="en-us" /><ExcludeApp ID="Word" /><ExcludeApp ID="PowerPoint" /><ExcludeApp ID="Outlook" /><ExcludeApp ID="OneDrive" /><ExcludeApp ID="OneNote" /><ExcludeApp ID="Lync" /><ExcludeApp ID="Bing" /></Product></Add><Display Level="None" AcceptEULA="TRUE" /><Updates Enabled="FALSE" /></Configuration>'
+          Set-Content -Path cfg.xml -Value $xml
+          Start-Process -Wait -FilePath .\odtx\setup.exe -ArgumentList "/configure","cfg.xml"
+          $e = Get-Item "C:\Program Files\Microsoft Office\root\Office16\EXCEL.EXE" -ErrorAction SilentlyContinue
+          if (-not $e) { throw "install failed" }
+          "excel: " + $e.VersionInfo.FileVersion | Out-File ver.txt
+          $c = Get-Item "C:\Program Files\Microsoft Office\root\Office16\CHART.DLL"
+          "chart: " + $c.VersionInfo.FileVersion | Out-File ver.txt -Append
+      - name: Build minidbg13chart
+        shell: pwsh
+        run: |
+          $csc = 'C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe'
+          & $csc /nologo /out:minidbg13chart.exe minidbg13chart.cs
+          if (-not (Test-Path .\minidbg13chart.exe)) { throw "compile failed" }
+          "minidbg built" | Out-File build.txt
+      - name: Render-trigger probe (c02 order=255)
+        shell: pwsh
+        run: |
+          $excel = "C:\Program Files\Microsoft Office\root\Office16\EXCEL.EXE"
+          $bp = "chart:497770=cps_entry,chart:49786A=oob_read_24idx,chart:49AE40=set_trend_order"
+          # run minidbg in background (it launches Excel with the file and watches 90s)
+          $p = Start-Process -FilePath .\minidbg13chart.exe -ArgumentList @($excel, (Resolve-Path .\c02.xlsx).Path, "--", "90", $bp) -RedirectStandardOutput probe_c02.txt -PassThru -WindowStyle Hidden
+          Start-Sleep 15
+          # COM render trigger on the SAME instance
+          $comOut = @()
+          try {
+            $xl = [Runtime.InteropServices.Marshal]::GetActiveObject('Excel.Application')
+            $comOut += "COM_ATTACHED visible=" + $xl.Visible
+            $xl.Visible = $true
+            $wb = $xl.Workbooks(1)
+            $comOut += "workbooks=" + $xl.Workbooks.Count + " sheets=" + $wb.Sheets.Count
+            try {
+              $ws = $wb.Sheets.Item(1)
+              $chartObj = $ws.ChartObjects(1)
+              $chartObj.Activate()
+              $comOut += "chart_activated"
+              $chartObj.Chart.Export("$PWD\chart_render.png")
+              $comOut += "chart_exported"
+              $xl.ActiveWorkbook.ExportAsFixedFormat(0, "$PWD\chart_render.pdf")
+              $comOut += "pdf_exported"
+            } catch { $comOut += "chart_step_err " + $_.Exception.Message }
+          } catch { $comOut += "com_err " + $_.Exception.Message }
+          $comOut | Out-File com_trigger.txt
+          Get-Content com_trigger.txt
+          Start-Sleep 25
+          # second render pass after visible
+          try {
+            $xl = [Runtime.InteropServices.Marshal]::GetActiveObject('Excel.Application')
+            $xl.ActiveWorkbook.ExportAsFixedFormat(0, "$PWD\chart_render2.pdf")
+            "second_export_ok" | Out-File com_trigger2.txt
+          } catch { "second_export_err " + $_.Exception.Message | Out-File com_trigger2.txt }
+          Wait-Process -Id $p.Id -Timeout 90 -ErrorAction SilentlyContinue
+          Get-Process EXCEL -ErrorAction SilentlyContinue | Stop-Process -Force
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: chart-render-probe
+          path: |
+            ver.txt
+            probe_c02.txt
+            com_trigger.txt
+            com_trigger2.txt
+            chart_render.png
+            chart_render.pdf
+          if-no-files-found: ignore
