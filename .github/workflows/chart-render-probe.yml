@@ -35,24 +35,26 @@ jobs:
           if (-not (Test-Path .\minidbg13chart.exe)) { throw "compile failed" }
           "minidbg built" | Out-File build.txt
       - name: Render-trigger probe (c02 order=255)
-        shell: pwsh
+        shell: powershell
         run: |
           $excel = "C:\Program Files\Microsoft Office\root\Office16\EXCEL.EXE"
           $bp = "chart:497770=cps_entry,chart:49786A=oob_read_24idx,chart:49AE40=set_trend_order"
-          # run minidbg in background (it launches Excel with the file and watches 90s)
-          $p = Start-Process -FilePath .\minidbg13chart.exe -ArgumentList @($excel, (Resolve-Path .\c02.xlsx).Path, "--", "90", $bp) -RedirectStandardOutput probe_c02.txt -PassThru -WindowStyle Hidden
+          $doc = (Resolve-Path .\c02.xlsx).Path
+          # run minidbg in background (launches Excel with the file, watches 90s)
+          $cmd = '& "{0}" "{1}" -- 90 "{2}"' -f (Join-Path $PWD 'minidbg13chart.exe'), $doc, $bp
+          $p = Start-Process -FilePath "powershell" -ArgumentList ('-NoProfile -Command "' + $cmd + '"') -RedirectStandardOutput probe_c02.txt -PassThru -WindowStyle Hidden
           Start-Sleep 15
-          # COM render trigger on the SAME instance
+          # COM render trigger on the SAME instance (Windows PowerShell 5.1 for GetActiveObject)
           $comOut = @()
           try {
             $xl = [Runtime.InteropServices.Marshal]::GetActiveObject('Excel.Application')
             $comOut += "COM_ATTACHED visible=" + $xl.Visible
             $xl.Visible = $true
-            $wb = $xl.Workbooks(1)
+            $wb = $xl.Workbooks.Item(1)
             $comOut += "workbooks=" + $xl.Workbooks.Count + " sheets=" + $wb.Sheets.Count
             try {
               $ws = $wb.Sheets.Item(1)
-              $chartObj = $ws.ChartObjects(1)
+              $chartObj = $ws.ChartObjects().Item(1)
               $chartObj.Activate()
               $comOut += "chart_activated"
               $chartObj.Chart.Export("$PWD\chart_render.png")
@@ -64,7 +66,6 @@ jobs:
           $comOut | Out-File com_trigger.txt
           Get-Content com_trigger.txt
           Start-Sleep 25
-          # second render pass after visible
           try {
             $xl = [Runtime.InteropServices.Marshal]::GetActiveObject('Excel.Application')
             $xl.ActiveWorkbook.ExportAsFixedFormat(0, "$PWD\chart_render2.pdf")
