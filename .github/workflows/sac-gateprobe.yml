@@ -24,7 +24,7 @@ jobs:
           if (-not $m) { throw "wwlib not found" }
           "wwlib v{0} len={1}" -f $m.VersionInfo.FileVersion, $m.Length | Out-File ver.txt
           Copy-Item $m.FullName sac_wwlib.dll
-      - name: Build trigger doc (TC/TOC fields)
+      - name: Build trigger doc (TC/SEQ/TOC fields)
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Path C:\t -Force | Out-Null
@@ -38,7 +38,12 @@ jobs:
           $r2 = $doc.Content
           $r2.Collapse(0)
           $doc.Fields.Add($r2, -1, ('TC "' + $long + '" \f C'), $false) | Out-Null
-          try { $toc = $doc.TablesOfContents.Add($doc.Content, $true, 1, 3) ; $toc.Update() } catch {}
+          $r3 = $doc.Content
+          $r3.Collapse(0)
+          $doc.Fields.Add($r3, -1, 'SEQ seqtest', $false) | Out-Null
+          try { $toc = $doc.TablesOfContents.Add($doc.Content, $true, 1, 3) } catch {}
+          try { $doc.Fields.Update() } catch {}
+          try { $toc.Update() } catch {}
           $doc.SaveAs2("C:\t\f.doc", 0)
           $doc.Saved = $true
           $doc.Close(0)
@@ -46,7 +51,7 @@ jobs:
           [GC]::Collect(); [GC]::WaitForPendingFinalizers()
           Start-Sleep -Seconds 3
           Get-Item C:\t\f.doc | Select-Object Name,Length | Out-File docinfo.txt
-      - name: Open doc in fresh Word and read gate
+      - name: Open doc in fresh Word, force TOC/field update, read gate
         shell: powershell
         run: |
           Add-Type @"
@@ -60,6 +65,14 @@ jobs:
           "@
           Start-Process "C:\Program Files\Microsoft Office\root\Office16\WINWORD.EXE" -ArgumentList "/q","/n","C:\t\f.doc"
           Start-Sleep -Seconds 20
+          try {
+            $w = [System.Runtime.InteropServices.Marshal]::GetActiveObject("Word.Application")
+            $doc = $w.Documents.Item(1)
+            try { $doc.Fields.Update() } catch { "fields.update err" | Out-File update.log -Append }
+            try { $toc = $doc.TablesOfContents.Item(1); $toc.Update() } catch { "toc.update err" | Out-File update.log -Append }
+            Start-Sleep -Seconds 8
+            $doc.Saved = $true
+          } catch { "attach err: $($_.Exception.Message)" | Out-File update.log -Append }
           $p = Get-Process WINWORD | Select-Object -First 1
           if (-not $p) { "NO WINWORD" | Out-File result.txt; exit 1 }
           $h = [Mem]::OpenProcess(0x0010, $false, [uint32]$p.Id)
@@ -87,5 +100,6 @@ jobs:
             ver.txt
             docinfo.txt
             result.txt
+            update.log
             sac_wwlib.dll
           if-no-files-found: ignore
