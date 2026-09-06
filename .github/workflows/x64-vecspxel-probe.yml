@@ -68,7 +68,7 @@ jobs:
             $off = [Convert]::ToUInt64($parts[0], 16)
             $rva = $off + 0xC00
             $nm = "vec$i"
-            $bp += ("{0:X}:{1}" -f $rva, $nm)
+            $bp += ("{0:X}={1}" -f $rva, $nm)
             $i++
           }
           $bps = $bp -join ","
