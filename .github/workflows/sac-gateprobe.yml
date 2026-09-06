@@ -1,0 +1,91 @@
+name: sac-gateprobe
+on:
+  workflow_dispatch:
+jobs:
+  probe:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Install latest SAC x64 Word
+        shell: pwsh
+        run: |
+          $page = (Invoke-WebRequest -Uri "https://www.microsoft.com/en-us/download/details.aspx?id=49117" -UseBasicParsing).Content
+          if ($page -match 'href="(https://download\.microsoft\.com/download/[^"]+officedeploymenttool[^"]*\.exe)"') {
+            Invoke-WebRequest -Uri $Matches[1] -OutFile odt.exe
+          } else { throw "odt link not found" }
+          Start-Process -Wait -FilePath .\odt.exe -ArgumentList "/extract:odtx /quiet"
+          $xml = '<Configuration><Add OfficeClientEdition="64" Channel="SemiAnnual"><Product ID="O365ProPlusRetail"><Language ID="en-us" /><ExcludeApp ID="Excel" /><ExcludeApp ID="PowerPoint" /><ExcludeApp ID="Outlook" /><ExcludeApp ID="OneDrive" /><ExcludeApp ID="OneNote" /><ExcludeApp ID="Lync" /><ExcludeApp ID="Bing" /></Product></Add><Display Level="None" AcceptEULA="TRUE" /><Updates Enabled="FALSE" /></Configuration>'
+          Set-Content -Path cfg.xml -Value $xml
+          Start-Process -Wait -FilePath .\odtx\setup.exe -ArgumentList "/configure","cfg.xml"
+          $m = Get-ChildItem "C:\Program Files\Microsoft Office\root\vfs\ProgramFilesCommonX64" -Recurse -Filter wwlib.dll -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $m) { $m = Get-Item "C:\Program Files\Microsoft Office\root\Office16\wwlib.dll" -ErrorAction SilentlyContinue }
+          if (-not $m) { throw "wwlib not found" }
+          "wwlib v{0} len={1}" -f $m.VersionInfo.FileVersion, $m.Length | Out-File ver.txt
+          Copy-Item $m.FullName sac_wwlib.dll
+      - name: Build trigger doc (TC/TOC fields)
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path C:\t -Force | Out-Null
+          $w = New-Object -ComObject Word.Application
+          $w.Visible = $false
+          $w.DisplayAlerts = 0
+          $doc = $w.Documents.Add()
+          $r = $doc.Content
+          $r.Text = "Heading`nBody text`n"
+          $long = "A" * 300
+          $r2 = $doc.Content
+          $r2.Collapse(0)
+          $doc.Fields.Add($r2, -1, ('TC "' + $long + '" \f C'), $false) | Out-Null
+          try { $toc = $doc.TablesOfContents.Add($doc.Content, $true, 1, 3) ; $toc.Update() } catch {}
+          $doc.SaveAs2("C:\t\f.doc", 0)
+          $doc.Saved = $true
+          $doc.Close(0)
+          $w.Quit()
+          [GC]::Collect(); [GC]::WaitForPendingFinalizers()
+          Start-Sleep -Seconds 3
+          Get-Item C:\t\f.doc | Select-Object Name,Length | Out-File docinfo.txt
+      - name: Open doc in fresh Word and read gate
+        shell: powershell
+        run: |
+          Add-Type @"
+          using System;
+          using System.Runtime.InteropServices;
+          public class Mem {
+            [DllImport("kernel32.dll", SetLastError=true)] public static extern IntPtr OpenProcess(uint a, bool b, uint pid);
+            [DllImport("kernel32.dll", SetLastError=true)] public static extern bool ReadProcessMemory(IntPtr h, IntPtr a, byte[] b, IntPtr s, out IntPtr r);
+            [DllImport("kernel32.dll")] public static extern bool CloseHandle(IntPtr h);
+          }
+          "@
+          Start-Process "C:\Program Files\Microsoft Office\root\Office16\WINWORD.EXE" -ArgumentList "/q","/n","C:\t\f.doc"
+          Start-Sleep -Seconds 20
+          $p = Get-Process WINWORD | Select-Object -First 1
+          if (-not $p) { "NO WINWORD" | Out-File result.txt; exit 1 }
+          $h = [Mem]::OpenProcess(0x0010, $false, [uint32]$p.Id)
+          $base = 0
+          foreach ($m in $p.Modules) { if ($m.ModuleName -eq "wwlib.dll") { $base = $m.BaseAddress.ToInt64() } }
+          "pid={0} base=0x{1:X}" -f $p.Id, $base | Out-File result.txt -Append
+          $gateRva = 0x2CC7110
+          $buf = New-Object byte[] 16
+          $rd = [IntPtr]::Zero
+          $ok = [Mem]::ReadProcessMemory($h, [IntPtr]($base + $gateRva), $buf, [IntPtr]16, [ref]$rd)
+          $q0 = [BitConverter]::ToUInt64($buf,0)
+          $q1 = [BitConverter]::ToUInt64($buf,8)
+          "gate rva=0x{0:X} q0=0x{1:X} q1=0x{2:X} read={3}" -f $gateRva, $q0, $q1, $ok | Out-File result.txt -Append
+          if ($q0 -eq 0x55FF) { "STATUS UNEVAL (0x55FF)" | Out-File result.txt -Append }
+          elseif (($q0 -band 0xFF) -eq 1) { "STATUS EVAL ON" | Out-File result.txt -Append }
+          elseif (($q0 -band 0xFF) -eq 0) { "STATUS EVAL OFF" | Out-File result.txt -Append }
+          else { "STATUS UNKNOWN q0=0x{0:X}" -f $q0 | Out-File result.txt -Append }
+          [Mem]::CloseHandle($h) | Out-Null
+          Get-Content result.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sac-gateprobe-result
+          path: |
+            ver.txt
+            docinfo.txt
+            result.txt
+            sac_wwlib.dll
+          if-no-files-found: ignore
