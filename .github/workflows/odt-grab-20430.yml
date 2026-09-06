@@ -24,7 +24,7 @@ jobs:
           if (-not $w) { throw "install failed" }
           "wwlib: {0} v{1}" -f $w.Length, $w.VersionInfo.FileVersion
           $w.VersionInfo.FileVersion | Out-File ver.txt
-      - name: Pack core modules
+      - name: Pack core modules (chunked 8MB)
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path pack | Out-Null
@@ -33,12 +33,25 @@ jobs:
             if (-not (Test-Path $src)) { $src = Get-ChildItem "C:\Program Files\Microsoft Office\root\vfs\ProgramFilesCommonX64" -Recurse -Filter $m -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName }
             if ($src -and (Test-Path $src)) { Copy-Item $src "pack\$m" -Force }
           }
-          Compress-Archive -Path pack\* -DestinationPath modules.zip
+          # split each module into <=8MB chunks: <name>.<nn>
+          New-Item -ItemType Directory -Force -Path chunks | Out-Null
+          foreach ($f in Get-ChildItem pack) {
+            $bytes = [IO.File]::ReadAllBytes($f.FullName)
+            $chunk = 8MB
+            $n = [math]::Ceiling($bytes.Length / $chunk)
+            for ($i = 0; $i -lt $n; $i++) {
+              $len = [math]::Min($chunk, $bytes.Length - $i * $chunk)
+              $part = New-Object byte[] $len
+              [Array]::Copy($bytes, $i * $chunk, $part, 0, $len)
+              [IO.File]::WriteAllBytes(("chunks\{0}.{1:D3}" -f $f.Name, $i), $part)
+            }
+            ("{0} -> {1} chunks" -f $f.Name, $n) | Out-File split.txt -Append
+          }
+          Get-ChildItem chunks | Measure-Object -Property Length -Sum | ForEach-Object { ("total chunks: " + (Get-ChildItem chunks).Count + " bytes: " + $_.Sum) | Out-File split.txt -Append }
+          Get-Content split.txt
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: modules-20430-x64
-          path: |
-            ver.txt
-            modules.zip
+          name: chunks-20430-x64
+          path: chunks
           if-no-files-found: ignore
