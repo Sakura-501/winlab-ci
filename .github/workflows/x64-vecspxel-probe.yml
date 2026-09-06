@@ -29,38 +29,29 @@ jobs:
       - name: Adaptive vecspxel RVA scan + compile minidbg14
         shell: pwsh
         run: |
-          # find lea reg,[reg+2A28h] sites in wwlib.dll (vecspxel container access)
+          # find 48 8D (REX.W lea) with mod=10 (disp32) whose disp == 0x2A28/0x2A30/0x2A38 (vecspxel offsets)
           $b = [IO.File]::ReadAllBytes("C:\Program Files\Microsoft Office\root\Office16\wwlib.dll")
-          $hits = New-Object System.Collections.ArrayList
-          for ($i = 3; $i -lt $b.Length - 7; $i++) {
-            if ($b[$i-3] -eq 0x48 -and $b[$i-2] -eq 0x8D -and ($b[$i-1] -band 0xC7) -eq 0x05) { continue }
-            if ($b[$i] -eq 0x8D -and ($b[$i+1] -band 0xC7) -eq 0x05) {
-              # REX.W lea r64,[rip+disp]
-              $disp = [BitConverter]::ToInt32($b, $i+2)
-              $target = $i + 6 + $disp
-              # target must point to a 2A28/2A30 constant load in .text (approx check via nearby lea)
-              if ($target -gt 0 -and $target -lt $b.Length) { [void]$hits.Add(($i).ToString("X")) }
-            }
-          }
-          "raw lea-rip hits: " + $hits.Count
-          # simpler: scan for 48 8D xx with disp forming 0x2A28/0x2A30 constant add (lea reg,[reg+2A28h])
           $h2 = New-Object System.Collections.ArrayList
           for ($i = 0; $i -lt $b.Length - 7; $i++) {
             if ($b[$i] -eq 0x48 -and $b[$i+1] -eq 0x8D) {
               $modrm = $b[$i+2]
+              $mod = ($modrm -shr 6) -band 3
               $rm = $modrm -band 7
-              $reg = ($modrm -shr 3) -band 7
-              if ($rm -eq 4) {
-                # SIB follows: 48 8D 04 25 disp32 -> lea rax,[disp32] (absolute)
-                $abs = [BitConverter]::ToUInt32($b, $i+4)
-                if ($abs -eq 0x2A28 -or $abs -eq 0x2A30 -or $abs -eq 0x2A38) { [void]$h2.Add(("0x" + $i.ToString("X") + ":" + $abs.ToString("X"))) }
+              $off = $i + 3
+              if ($mod -eq 2) {
+                if ($rm -eq 4) { $off += 1 }  # SIB byte
+                if ($off + 4 -le $b.Length) {
+                  $disp = [BitConverter]::ToUInt32($b, $off)
+                  if ($disp -eq 0x2A28 -or $disp -eq 0x2A30 -or $disp -eq 0x2A38) {
+                    [void]$h2.Add(("0x" + $i.ToString("X") + ":" + $disp.ToString("X")))
+                  }
+                }
               }
             }
           }
-          "vecspxel absolute-lea hits: " + $h2.Count
+          "vecspxel lea hits: " + $h2.Count
           $h2 | Select-Object -First 30 | Out-File vecsites.txt
           Get-Content vecsites.txt
-          # compile minidbg14
           $csc = 'C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe'
           & $csc /nologo /out:minidbg14.exe minidbg14.cs
           if (-not (Test-Path minidbg14.exe)) { throw "csc failed" }
