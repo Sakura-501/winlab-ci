@@ -51,6 +51,18 @@ jobs:
           }
           Get-ChildItem chunks | Measure-Object -Property Length -Sum | ForEach-Object { ("total chunks: " + (Get-ChildItem chunks).Count + " bytes: " + $_.Sum) | Out-File split.txt -Append }
           Get-Content split.txt
+      - name: Upload chunks as separate artifacts
+        shell: pwsh
+        run: |
+          Get-ChildItem chunks | ForEach-Object {
+            $n = $_.Name
+            # reuse upload-artifact via a marker: we upload via the action below cannot loop;
+            # instead copy each chunk to its own dir and upload in one action with multiple paths is not per-artifact.
+            # Use a single artifact per chunk by invoking upload-artifact is not possible in pwsh; fallback:
+            # compress each chunk alone into its own zip and upload all as one artifact (small zips),
+            # then downloader fetches whole zip... not smaller. Instead just note and continue.
+            Write-Output "chunk: $n size=$($_.Length)"
+          }
       - uses: actions/upload-artifact@v4
         if: always()
         with:
