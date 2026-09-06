@@ -24,31 +24,35 @@ jobs:
           if (-not $m) { throw "wwlib not found" }
           "wwlib v{0} len={1}" -f $m.VersionInfo.FileVersion, $m.Length | Out-File ver.txt
           Copy-Item $m.FullName sac_wwlib.dll
-      - name: Build trigger docs (field/move rev marks)
+      - name: Build trigger docs (field/move rev marks) with revision logging
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Path C:\t -Force | Out-Null
-          function New-RevDoc($path) {
+          function New-RevDoc($path, $tag) {
             $w = New-Object -ComObject Word.Application
             $w.Visible = $false
             $w.DisplayAlerts = 0
             $doc = $w.Documents.Add()
+            $doc.Content.Text = "Alpha beta gamma delta. "
             $doc.TrackRevisions = $true
-            try { $w.TrackMoves = $true } catch {}
-            $r = $doc.Content
-            $r.Text = "Alpha beta gamma delta. "
-            $r2 = $doc.Content
-            $r2.Collapse(0)
-            $doc.Fields.Add($r2, -1, 'TC "EntryText" \f C', $false) | Out-Null
+            try { $w.Options.TrackMoves = $true } catch { "opt.trackmoves err" | Out-File C:\t\gen.log -Append }
+            try { $w.TrackMoves = $true } catch { "w.trackmoves err" | Out-File C:\t\gen.log -Append }
+            $w.Selection.EndKey(6) | Out-Null
+            $w.Selection.TypeText("Tracked inserted text. ")
+            try { $w.Selection.Fields.Add($w.Selection.Range, -1, 'TC "EntryText" \f C', $false) | Out-Null } catch { "fields.add err: $($_.Exception.Message)" | Out-File C:\t\gen.log -Append }
+            $w.Selection.TypeText(" after field. ")
             try {
               $rng = $doc.Content
               $rng.Start = 0; $rng.End = 5
               $rng.Cut()
-              $r3 = $doc.Content
-              $r3.InsertAfter("tail. ")
-              $r3.Collapse(0)
-              $doc.Content.Paste()
-            } catch { "move err" | Out-File C:\t\gen.log -Append }
+              $w.Selection.EndKey(6) | Out-Null
+              $w.Selection.Paste()
+            } catch { "move err: $($_.Exception.Message)" | Out-File C:\t\gen.log -Append }
+            $revCount = $doc.Revisions.Count
+            "revcount[$tag]=$revCount" | Out-File C:\t\gen.log -Append
+            for ($i=1; $i -le $revCount -and $i -le 8; $i++) {
+              try { "  rev[$i] type=$($doc.Revisions.Item($i).Type)" | Out-File C:\t\gen.log -Append } catch {}
+            }
             try { $doc.Fields.Update() } catch {}
             $doc.SaveAs2($path, 0)
             $doc.Saved = $true
@@ -57,8 +61,8 @@ jobs:
             [GC]::Collect(); [GC]::WaitForPendingFinalizers()
             Start-Sleep -Seconds 3
           }
-          New-RevDoc "C:\t\f_accept.doc"
-          New-RevDoc "C:\t\f_reject.doc"
+          New-RevDoc "C:\t\f_accept.doc" "accept"
+          New-RevDoc "C:\t\f_reject.doc" "reject"
           Get-Item C:\t\f_*.doc | Select-Object Name,Length | Out-File docinfo.txt
       - name: Open docs, accept/reject revisions, read gates
         shell: powershell
@@ -97,6 +101,7 @@ jobs:
           try {
             $w = [System.Runtime.InteropServices.Marshal]::GetActiveObject("Word.Application")
             $doc = $w.Documents.Item(1)
+            "open_revcount=$($doc.Revisions.Count)" | Out-File result.txt -Append
             try { $doc.Fields.Update() } catch {}
             try { $doc.AcceptAllRevisions() } catch { "accept err: $($_.Exception.Message)" | Out-File update.log -Append }
             Start-Sleep -Seconds 8
@@ -110,6 +115,7 @@ jobs:
           try {
             $w = [System.Runtime.InteropServices.Marshal]::GetActiveObject("Word.Application")
             $doc = $w.Documents.Item(1)
+            "open_revcount=$($doc.Revisions.Count)" | Out-File result.txt -Append
             try { $doc.Fields.Update() } catch {}
             try { $doc.RejectAllRevisions() } catch { "reject err: $($_.Exception.Message)" | Out-File update.log -Append }
             Start-Sleep -Seconds 8
