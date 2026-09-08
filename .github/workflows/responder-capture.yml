@@ -9,9 +9,15 @@ jobs:
       - name: setup responder
         run: |
           sudo apt-get update -qq
-          sudo python3 -m pip install -q netifaces aioquic 2>/dev/null || true
+          sudo python3 -m pip install --break-system-packages -q netifaces aioquic 2>&1 | tail -2 || true
           git clone --depth 1 https://github.com/lgandx/Responder.git /tmp/Responder
-          python3 -c "import aioquic; print('aioquic ok')"
+          if ! python3 -c "import aioquic" 2>/dev/null; then
+            sed -i 's/^QUIC.*/QUIC = Off/' /tmp/Responder/Responder.conf
+            echo "aioquic missing, QUIC disabled"
+          else
+            echo "aioquic ok"
+          fi
+          python3 -c "import netifaces; print('netifaces ok')"
           ls -la /tmp/Responder/Responder.py
       - name: report public ip
         run: |
@@ -22,8 +28,11 @@ jobs:
         run: |
           cd /tmp/Responder
           (sudo python3 Responder.py -I eth0 -v -wF --lm --disable-ess > /tmp/responder.log 2>&1 &)
-          sleep 5
-          sudo ss -lntp | grep 445 || true
+          sleep 8
+          echo "--- ss 445 ---"
+          sudo ss -lntp | grep 445 || echo "445 NOT LISTENING"
+          echo "--- responder.log head ---"
+          head -20 /tmp/responder.log || true
           echo "responder started; window=900s"
           sleep 900
           echo "window closed"
