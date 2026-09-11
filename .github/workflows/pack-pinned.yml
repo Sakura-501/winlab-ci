@@ -1,0 +1,64 @@
+name: pack-pinned
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Office build to pin (e.g. 16.0.20326.20132)'
+        required: true
+      channel:
+        description: 'channel guid or name'
+        required: false
+        default: '492350f6-3a01-4f97-b9c0-c7c6ddf67d60'
+jobs:
+  pack:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - name: Download ODT
+        shell: pwsh
+        run: |
+          $page = (Invoke-WebRequest -Uri "https://www.microsoft.com/en-us/download/details.aspx?id=49117" -UseBasicParsing).Content
+          if ($page -match 'href="(https://download\.microsoft\.com/download/[^"]+officedeploymenttool[^"]*\.exe)"') {
+            Invoke-WebRequest -Uri $Matches[1] -OutFile odt.exe
+          } else { throw "odt link not found" }
+          Start-Process -Wait -FilePath .\odt.exe -ArgumentList "/extract:odtx /quiet"
+      - name: Install pinned build
+        shell: pwsh
+        run: |
+          $ver = "${{ github.event.inputs.version }}"
+          $ch  = "${{ github.event.inputs.channel }}"
+          $xml = '<Configuration><Add OfficeClientEdition="64" Channel="http://officecdn.microsoft.com/pr/' + $ch + '" Version="' + $ver + '"><Product ID="O365ProPlusRetail"><Language ID="en-us" /><ExcludeApp ID="OneDrive" /><ExcludeApp ID="Lync" /><ExcludeApp ID="Bing" /><ExcludeApp ID="Groove" /></Product></Add><Display Level="None" AcceptEULA="TRUE" /><Updates Enabled="FALSE" /></Configuration>'
+          Set-Content -Path cfg.xml -Value $xml
+          Start-Process -Wait -FilePath .\odtx\setup.exe -ArgumentList "/configure","cfg.xml"
+          $w = Get-Item "C:\Program Files\Microsoft Office\root\Office16\wwlib.dll" -ErrorAction SilentlyContinue
+          if (-not $w) { throw "install failed" }
+          "wwlib {0} v{1}" -f $w.Length, $w.VersionInfo.FileVersion | Out-File ver.txt
+          "requested=$ver" | Out-File ver.txt -Append
+          (Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Office\ClickToRun\Configuration").VersionToReport | Out-File ver.txt -Append
+          Get-Content ver.txt
+      - name: Pack modules (chunked)
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path pack | Out-Null
+          $root = "C:\Program Files\Microsoft Office\root"
+          foreach ($m in @('wwlib.dll','Wordcnv.dll','excel.exe','oart.dll','CHART.DLL','mso.dll','ppcore.dll','MSOSPECTRE.DLL','OLMAPI32.DLL','onmain.DLL','VVIEWER.DLL','OUTLOOK.EXE','WINWORD.EXE','GRAPH.DLL','MSACCESS.EXE')) {
+            $src = Join-Path $root "Office16\$m"
+            if (-not (Test-Path $src)) { $src = Get-ChildItem "$root\vfs\ProgramFilesCommonX64" -Recurse -Filter $m -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName }
+            if ($src -and (Test-Path $src)) { Copy-Item $src "pack\$m" -Force }
+          }
+          New-Item -ItemType Directory -Force -Path chunks | Out-Null
+          foreach ($f in Get-ChildItem pack) {
+            $bytes=[IO.File]::ReadAllBytes($f.FullName); $chunk=8MB; $n=[math]::Ceiling($bytes.Length/$chunk)
+            for ($i=0;$i -lt $n;$i++){ $len=[math]::Min($chunk,$bytes.Length-$i*$chunk); $part=New-Object byte[] $len; [Array]::Copy($bytes,$i*$chunk,$part,0,$len); [IO.File]::WriteAllBytes(("chunks\{0}.{1:D3}" -f $f.Name,$i),$part) }
+            ("{0} -> {1} chunks" -f $f.Name,$n) | Out-File split.txt -Append
+          }
+          Get-Content split.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pinned-pack
+          path: |
+            ver.txt
+            split.txt
+            chunks
+          if-no-files-found: ignore
