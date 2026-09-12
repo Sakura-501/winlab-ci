@@ -1,0 +1,59 @@
+name: onenote-grab
+# Minimal packer: installs a pinned Office build and uploads ONLY onmain.dll (+ version info).
+# Used to diff the OneNote engine across adjacent builds (CVE fix-surface analysis).
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Office build to pin (e.g. 16.0.20131.20126)'
+        required: true
+      channel:
+        description: 'channel guid'
+        required: false
+        default: '492350f6-3a01-4f97-b9c0-c7c6ddf67d60'
+jobs:
+  grab:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - name: Download ODT
+        shell: pwsh
+        run: |
+          $page = (Invoke-WebRequest -Uri "https://www.microsoft.com/en-us/download/details.aspx?id=49117" -UseBasicParsing).Content
+          if ($page -match 'href="(https://download\.microsoft\.com/download/[^"]+officedeploymenttool[^"]*\.exe)"') {
+            Invoke-WebRequest -Uri $Matches[1] -OutFile odt.exe
+          } else { throw "odt link not found" }
+          Start-Process -Wait -FilePath .\odt.exe -ArgumentList "/extract:odtx /quiet"
+      - name: Install pinned build
+        shell: pwsh
+        run: |
+          $ver = "${{ github.event.inputs.version }}"
+          $ch  = "${{ github.event.inputs.channel }}"
+          $xml = '<Configuration><Add OfficeClientEdition="64" Channel="http://officecdn.microsoft.com/pr/' + $ch + '" Version="' + $ver + '"><Product ID="O365ProPlusRetail"><Language ID="en-us" /><ExcludeApp ID="OneDrive" /><ExcludeApp ID="Lync" /><ExcludeApp ID="Bing" /><ExcludeApp ID="Groove" /></Product></Add><Display Level="None" AcceptEULA="TRUE" /><Updates Enabled="FALSE" /></Configuration>'
+          Set-Content -Path cfg.xml -Value $xml
+          Start-Process -Wait -FilePath .\odtx\setup.exe -ArgumentList "/configure","cfg.xml"
+          $base = "C:\Program Files\Microsoft Office\root\Office16"
+          $info = @()
+          foreach ($n in @("ONENOTE.EXE","onmain.DLL","onmain.dll")) {
+            $p = Join-Path $base $n
+            if (Test-Path $p) {
+              $i = Get-Item $p
+              $info += ("{0} size={1} ver={2}" -f $n, $i.Length, $i.VersionInfo.FileVersion)
+              Copy-Item $p ("onmain_" + $n)
+            }
+          }
+          $info += ("requested=" + $ver)
+          $info += ("reported=" + (Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Office\ClickToRun\Configuration").VersionToReport)
+          $info -join "`n" | Out-File ver.txt -Encoding ascii
+          Get-Content ver.txt
+          if (-not (Test-Path "onmain_onmain.DLL")) { throw "onmain not found" }
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: onmain-only
+          path: |
+            onmain_onmain.DLL
+            onmain_onmain.dll
+            ver.txt
+          if-no-files-found: warn
+          compression-level: 0
