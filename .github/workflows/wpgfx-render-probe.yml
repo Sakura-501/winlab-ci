@@ -21,11 +21,17 @@ jobs:
       - uses: actions/checkout@v4
       - name: pin runtime ${{ github.event.inputs.runtime }}
         run: |
-          Invoke-WebRequest -Uri "https://dot.net/v1/dotnet-install.ps1" -OutFile di.ps1
           $v = "${{ github.event.inputs.runtime }}"
-          .\di.ps1 -Channel $v -Runtime dotnet -InstallDir "C:\Program Files\dotnet"
-          .\di.ps1 -Channel $v -Runtime windowsdesktop -InstallDir "C:\Program Files\dotnet"
-          dotnet --list-runtimes | Select-String "WindowsDesktop|$v"
+          if ($v -ne "default") {
+            $dn = "C:\Program Files\dotnet"
+            Invoke-WebRequest "https://builds.dotnet.microsoft.com/dotnet/Runtime/$v/dotnet-runtime-$v-win-x64.zip" -OutFile rt.zip
+            Invoke-WebRequest "https://builds.dotnet.microsoft.com/dotnet/WindowsDesktop/$v/windowsdesktop-runtime-$v-win-x64.zip" -OutFile wd.zip
+            Expand-Archive rt.zip -DestinationPath rt -Force
+            Expand-Archive wd.zip -DestinationPath wd -Force
+            Copy-Item -Recurse -Force rt\shared\* "$dn\shared\"
+            Copy-Item -Recurse -Force wd\shared\* "$dn\shared\"
+          }
+          dotnet --list-runtimes | Select-String WindowsDesktop
       - name: build probe
         run: dotnet build tools/wpgfx-render-probe/shaderprobe.csproj -c Release -v q
       - name: pageheap config
