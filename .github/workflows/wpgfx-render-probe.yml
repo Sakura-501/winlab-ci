@@ -56,6 +56,20 @@ jobs:
           $env:GROUPS="${{ github.event.inputs.groups }}"
           & tools/wpgfx-render-probe/bin/Release/net10.0-windows/shaderprobe.exe *>&1 | Tee-Object attack.txt
           "ATTACK_EXIT=0x{0:X8}" -f $LASTEXITCODE | Tee-Object -Append attack.txt
+      - name: dcl benign control
+        continue-on-error: true
+        env: { MODE: dclbenign, DOTNET_ROLL_FORWARD: LatestPatch }
+        run: |
+          $env:GROUPS="${{ github.event.inputs.groups }}"
+          & tools/wpgfx-render-probe/bin/Release/net10.0-windows/shaderprobe.exe *>&1 | Tee-Object dclbenign.txt
+          "DCL_BENIGN_EXIT=0x{0:X8}" -f $LASTEXITCODE | Tee-Object -Append dclbenign.txt
+      - name: dcl attack run
+        continue-on-error: true
+        env: { MODE: dclattack, DOTNET_ROLL_FORWARD: LatestPatch }
+        run: |
+          $env:GROUPS="${{ github.event.inputs.groups }}"
+          & tools/wpgfx-render-probe/bin/Release/net10.0-windows/shaderprobe.exe *>&1 | Tee-Object dclattack.txt
+          "DCL_ATTACK_EXIT=0x{0:X8}" -f $LASTEXITCODE | Tee-Object -Append dclattack.txt
       - name: roll pageheap
         if: always()
         run: Remove-Item -Recurse -Force "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\shaderprobe.exe" -EA SilentlyContinue
@@ -66,3 +80,5 @@ jobs:
           path: |
             benign.txt
             attack.txt
+            dclbenign.txt
+            dclattack.txt
