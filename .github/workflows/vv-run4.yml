@@ -68,6 +68,9 @@ jobs:
             'Sub Window_OnLoad'
             '  On Error Resume Next'
             ('  vv.Src = "' + $vsdx + '"')
+            '  window.setTimeout "KeepAlive", 30000'
+            'End Sub'
+            'Sub KeepAlive'
             'End Sub'
             '</script></body></html>'
           ) -join [Environment]::NewLine
@@ -88,6 +91,8 @@ jobs:
           'sxe ld:VVIEWER.DLL',
           'g',
           $bp,
+          'bl',
+          '.printf "BPSL\n"',
           'g'
         )
         $cmds | Set-Content bp_cmds.txt -Encoding ASCII
@@ -111,9 +116,23 @@ jobs:
           Start-Sleep 1
           if (Test-Path $rlog) {
             $raw = Get-Content $rlog
-            "[$v] lines=$($raw.Count) F4=$($raw | Where-Object { $_ -match 'F4HIT' }).Count SEG=$($raw | Where-Object { $_ -match 'SEGHIT' }).Count"
-            $raw | Where-Object { $_ -match 'F4HIT|SEGHIT|VVIEWER|access violation|ExceptionInventory|breakpoint' } | Select-Object -First 15 | ForEach-Object { "  $_" }
+            $f4h = @($raw | Where-Object { $_ -match 'F4HIT rcx=[0-9a-f]' }).Count
+            $sgh = @($raw | Where-Object { $_ -match 'SEGHIT rbx=[0-9a-f]' }).Count
+            "[$v] lines=$($raw.Count) F4HITS=$f4h SEGHITS=$sgh"
+            $raw | Where-Object { $_ -match 'F4HIT rcx=|SEGHIT rbx=|access violation|Breakpoint 0|Breakpoint 1|could not|Unable' } | Select-Object -First 15 | ForEach-Object { "  $_" }
           } else { "[$v] NO LOG" }
         }
         "WER events:"
         Get-WinEvent -FilterHashtable @{LogName='Application'; Id=1000,1001} -MaxEvents 5 -ErrorAction SilentlyContinue | ForEach-Object { "  $($_.TimeCreated.ToString('HH:mm:ss')) $($_.Message.Substring(0,[Math]::Min(200,$_.Message.Length)))" }
+
+    - name: dump logs
+      if: always()
+      shell: pwsh
+      run: |
+        New-Item -ItemType Directory -Force -Path outart | Out-Null
+        Copy-Item cdb_norm.log, cdb_evil.log, bp_cmds.txt, craft.py, probe_norm.hta, probe_evil.hta, min_test.vsdx, min_evil.vsdx -Destination outart -ErrorAction SilentlyContinue
+    - uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: vvbp-logs
+        path: outart
