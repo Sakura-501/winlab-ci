@@ -55,17 +55,17 @@ jobs:
         }
         $zip.Dispose()
         "vsdx built: $((Get-Item min_test.vsdx).Length) bytes"
-        $hta = @'
-<html><head><HTA:APPLICATION ID="vvh"/></head><body>
-<object id="vv" classid="clsid:F8CF7A98-2C45-4c8d-9151-2D716989DDAB" width="90%" height="90%"></object>
-<script language="VBScript">
-Sub Window_OnLoad
-  On Error Resume Next
-  vv.Src = "REPLACEME"
-End Sub
-</script></body></html>
-'@
-        ($hta -replace 'REPLACEME', "$PWD\min_test.vsdx") | Set-Content -Path probe.hta -Encoding ASCII
+        $hta = @(
+          '<html><head><HTA:APPLICATION ID="vvh"/></head><body>'
+          '<object id="vv" classid="clsid:F8CF7A98-2C45-4c8d-9151-2D716989DDAB" width="90%" height="90%"></object>'
+          '<script language="VBScript">'
+          'Sub Window_OnLoad'
+          '  On Error Resume Next'
+          ('  vv.Src = "' + "$PWD\min_test.vsdx" + '"')
+          'End Sub'
+          '</script></body></html>'
+        ) -join [Environment]::NewLine
+        $hta | Set-Content -Path probe.hta -Encoding ASCII
         "hta built"
         Start-Process mshta.exe -ArgumentList "`"$PWD\probe.hta`""
         Start-Sleep 18
