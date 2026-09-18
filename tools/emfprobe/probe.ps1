@@ -41,7 +41,7 @@ $scan = python "$env:EMFTOOLS\scan_targets.py" mso "$msoDll" 2>&1
 $scan += python "$env:EMFTOOLS\scan_targets.py" ppcore "$root\ppcore.dll" 2>&1
 $scan | ForEach-Object { Log "  scan: $_" }
 $scan | Out-File scan_raw.txt -Encoding ascii
-python "$env:EMFTOOLS\mkbp.py" bps.txt < scan_raw.txt
+Get-Content scan_raw.txt | python "$env:EMFTOOLS\mkbp.py" bps.txt
 if(-not (Test-Path bps.txt)){ throw 'mkbp failed' }
 Get-Content bps.txt | ForEach-Object { Log "  bp: $_" }
 (Get-Content "$env:EMFTOOLS\dbgtemplate.txt") -replace '__BPSFILE__','C:\emfwork\bps.txt' | Set-Content dbgcfg.txt
