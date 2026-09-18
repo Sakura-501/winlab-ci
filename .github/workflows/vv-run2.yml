@@ -1,0 +1,77 @@
+name: vviewer-fmt4-run
+on:
+  push:
+    paths:
+      - '.github/workflows/vv-run2.yml'
+  workflow_dispatch:
+jobs:
+  t:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+    - name: Download ODT
+      shell: pwsh
+      run: |
+        $page = (Invoke-WebRequest -Uri "https://www.microsoft.com/en-us/download/details.aspx?id=49117" -UseBasicParsing).Content
+        if ($page -match 'href="(https://download\.microsoft\.com/download/[^"]+officedeploymenttool[^"]*\.exe)"') {
+          Invoke-WebRequest -Uri $Matches[1] -OutFile odt.exe
+        } else { throw "odt link not found" }
+        Start-Process -Wait -FilePath .\odt.exe -ArgumentList "/extract:odtx /quiet"
+    - name: Install CurrentPreview x64 Office
+      shell: pwsh
+      run: |
+        $xml = '<Configuration><Add OfficeClientEdition="64" Channel="CurrentPreview"><Product ID="O365ProPlusRetail"><Language ID="en-us" /><ExcludeApp ID="Excel" /><ExcludeApp ID="PowerPoint" /><ExcludeApp ID="Outlook" /><ExcludeApp ID="OneDrive" /><ExcludeApp ID="OneNote" /><ExcludeApp ID="Lync" /><ExcludeApp ID="Bing" /></Product></Add><Display Level="None" AcceptEULA="TRUE" /><Updates Enabled="FALSE" /></Configuration>'
+        Set-Content -Path cfg.xml -Value $xml
+        $p = Start-Process -FilePath .\odtx\setup.exe -ArgumentList "/configure","cfg.xml" -PassThru -Wait
+        Write-Host ("setup exit: " + $p.ExitCode)
+        $vv = Get-Item "C:\Program Files\Microsoft Office\root\Office16\VVIEWER.DLL" -ErrorAction SilentlyContinue
+        if ($vv) { "VVIEWER: {0} bytes v{1}" -f $vv.Length, $vv.VersionInfo.FileVersion } else { Write-Host "VVIEWER: NOT PRESENT" }
+    - name: Registration probe
+      shell: pwsh
+      run: |
+        cmd /c 'reg query "HKLM\SOFTWARE\Classes\.vsdx" /ve 2>&1'
+        cmd /c 'reg query "HKLM\SOFTWARE\Classes\.vsdx" /ve'
+        cmd /c 'reg query "HKLM\SOFTWARE\Classes\VisioViewer.Viewer\shell\open\command" /ve'
+        cmd /c 'reg query "HKLM\SOFTWARE\Classes\CLSID\{F8CF7A98-2C45-4c8d-9151-2D716989DDAB}\InprocServer32" /ve'
+        exit 0
+    - name: Build vsdx + hta and probe mshta load
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = 'Continue'
+        $files = @{
+          '[Content_Types].xml' = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/visio/document.xml" ContentType="application/vnd.ms-visio.drawing.main+xml"/><Override PartName="/visio/pages/pages.xml" ContentType="application/vnd.ms-visio.pages+xml"/><Override PartName="/visio/pages/page1.xml" ContentType="application/vnd.ms-visio.page+xml"/></Types>'
+          '_rels/.rels' = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.microsoft.com/visio/2010/relationships/document" Target="visio/document.xml"/></Relationships>'
+          'visio/document.xml' = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Document xmlns="http://schemas.microsoft.com/office/visio/2012/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xml:space="preserve"><DocumentSettings TopPage="0"/><Pages><Page ID="0" NameU="Page-1" Name="Page-1" ViewScale="1" ViewCenterX="4.25" ViewCenterY="5.5"><PageSheet LineStyle="0" FillStyle="0" TextStyle="0"><Cell N="PageWidth" V="8.5"/><Cell N="PageHeight" V="11"/></PageSheet><Rel r:id="rId1"/></Page></Pages></Document>'
+          'visio/_rels/document.xml.rels' = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.microsoft.com/visio/2010/relationships/pages" Target="pages/pages.xml"/></Relationships>'
+          'visio/pages/pages.xml' = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Pages xmlns="http://schemas.microsoft.com/office/visio/2012/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xml:space="preserve"><Page ID="0" NameR="Page-1" ViewScale="1" ViewCenterX="4.25" ViewCenterY="5.5"><PageSheet LineStyle="0" FillStyle="0" TextStyle="0"/><Rel r:id="rId1"/></Page></Pages>'
+          'visio/pages/_rels/pages.xml.rels' = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.microsoft.com/visio/2010/relationships/page" Target="page1.xml"/></Relationships>'
+          'visio/pages/page1.xml' = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><PageContents xmlns="http://schemas.microsoft.com/office/visio/2012/main" xml:space="preserve"><Shapes><Shape ID="1" Type="Shape" LineStyle="3" FillStyle="3" TextStyle="3"><Cell N="PinX" V="4.25"/><Cell N="PinY" V="5.5"/><Cell N="Width" V="4"/><Cell N="Height" V="1"/><Section N="Character"><Row IX="0"><Cell N="Font" V="Arial"/><Cell N="Size" V="0.375"/></Row></Section><Text>TEST CMAP FONT RENDER</Text></Shape></Shapes></PageContents>'
+        }
+        Add-Type -AssemblyName System.IO.Compression, System.IO.Compression.FileSystem
+        $zip = [System.IO.Compression.ZipFile]::Open("$PWD\min_test.vsdx", 'Create')
+        foreach ($k in $files.Keys) {
+          $e = $zip.CreateEntry($k)
+          $s = $e.Open(); $b = [Text.Encoding]::UTF8.GetBytes($files[$k]); $s.Write($b, 0, $b.Length); $s.Close()
+        }
+        $zip.Dispose()
+        "vsdx built: $((Get-Item min_test.vsdx).Length) bytes"
+        $hta = @'
+<html><head><HTA:APPLICATION ID="vvh"/></head><body>
+<object id="vv" classid="clsid:F8CF7A98-2C45-4c8d-9151-2D716989DDAB" width="90%" height="90%"></object>
+<script language="VBScript">
+Sub Window_OnLoad
+  On Error Resume Next
+  vv.Src = "REPLACEME"
+End Sub
+</script></body></html>
+'@
+        ($hta -replace 'REPLACEME', "$PWD\min_test.vsdx") | Set-Content -Path probe.hta -Encoding ASCII
+        "hta built"
+        Start-Process mshta.exe -ArgumentList "`"$PWD\probe.hta`""
+        Start-Sleep 18
+        Write-Host "=== processes with VVIEWER loaded ==="
+        cmd /c 'tasklist /m VVIEWER.DLL 2>&1'
+        Write-Host "=== mshta procs ==="
+        cmd /c 'tasklist | findstr /i mshta 2>&1'
+        Stop-Process -Name mshta -Force -ErrorAction SilentlyContinue
+        exit 0
