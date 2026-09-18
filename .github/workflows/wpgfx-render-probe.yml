@@ -6,40 +6,60 @@ on:
         description: 'DEF instruction groups'
         required: false
         default: '6000'
+      pageheap:
+        description: 'enable full page heap (on/off)'
+        required: false
+        default: 'on'
+      runtime:
+        description: '.NET runtime version'
+        required: false
+        default: '10.0.12'
 jobs:
   probe:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-      - name: runtimes
-        run: dotnet --list-runtimes | Select-String "WindowsDesktop"
+      - name: install runtime ${{ github.event.inputs.runtime }}
+        run: |
+          Invoke-WebRequest -Uri "https://dot.net/v1/dotnet-install.ps1" -OutFile dotnet-install.ps1
+          .\dotnet-install.ps1 -Runtime windowsdesktop -Version ${{ github.event.inputs.runtime }} -InstallDir "C:\Program Files\dotnet"
+          dotnet --list-runtimes | Select-String WindowsDesktop
       - name: build probe
         run: dotnet build tools/wpgfx-render-probe/shaderprobe.csproj -c Release -v q
-      - name: pageheap on
+      - name: pageheap config
         run: |
           $k="HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\shaderprobe.exe"
-          New-Item -Path $k -Force | Out-Null
-          New-ItemProperty -Path $k -Name PageHeapFlags -Value 2 -PropertyType DWord -Force | Out-Null
-          New-ItemProperty -Path $k -Name ExecuteOptions -Value 0x400 -PropertyType DWord -Force | Out-Null
+          if ("${{ github.event.inputs.pageheap }}" -eq "on") {
+            New-Item -Path $k -Force | Out-Null
+            New-ItemProperty -Path $k -Name PageHeapFlags -Value 2 -PropertyType DWord -Force | Out-Null
+            New-ItemProperty -Path $k -Name ExecuteOptions -Value 0x400 -PropertyType DWord -Force | Out-Null
+            "pageheap=FULL"
+          } else { "pageheap=default" }
       - name: benign control
+        continue-on-error: true
         run: |
           $env:MODE="benign"; $env:GROUPS="${{ github.event.inputs.groups }}"
-          & tools/wpgfx-render-probe/bin/Release/net10.0-windows/shaderprobe.exe | Tee-Object benign.txt
+          & tools/wpgfx-render-probe/bin/Release/net10.0-windows/shaderprobe.exe *>&1 | Tee-Object benign.txt
           "BENIGN_EXIT=0x{0:X8}" -f $LASTEXITCODE | Tee-Object -Append benign.txt
       - name: attack run
+        continue-on-error: true
         run: |
           $env:MODE="attack"; $env:GROUPS="${{ github.event.inputs.groups }}"
-          & tools/wpgfx-render-probe/bin/Release/net10.0-windows/shaderprobe.exe | Tee-Object attack.txt
+          & tools/wpgfx-render-probe/bin/Release/net10.0-windows/shaderprobe.exe *>&1 | Tee-Object attack.txt
           "ATTACK_EXIT=0x{0:X8}" -f $LASTEXITCODE | Tee-Object -Append attack.txt
-      - name: wer entries
-        run: Get-WinEvent -FilterHashtable @{LogName='Application';ProviderName='Windows Error Reporting'} -MaxEvents 6 -ErrorAction SilentlyContinue | ForEach-Object { $_.Message.Substring(0,[Math]::Min(500,$_.Message.Length)) } | Tee-Object wer.txt
-      - name: pageheap off (rollback)
+      - name: wer + system logs
+        continue-on-error: true
+        run: |
+          Get-WinEvent -FilterHashtable @{LogName='Application'} -MaxEvents 60 -ErrorAction SilentlyContinue |
+            Where-Object { $_.Message -match 'shaderprobe' } |
+            ForEach-Object { "[$($_.TimeCreated)] " + $_.Message.Substring(0,[Math]::Min(600,$_.Message.Length)) } | Tee-Object wer.txt
+      - name: pageheap rollback
         if: always()
         run: Remove-Item -Recurse -Force "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\shaderprobe.exe" -ErrorAction SilentlyContinue
       - name: upload
         uses: actions/upload-artifact@v4
         with:
-          name: probe-logs
+          name: probe-logs-${{ github.event.inputs.groups }}-${{ github.event.inputs.pageheap }}
           path: |
             benign.txt
             attack.txt
