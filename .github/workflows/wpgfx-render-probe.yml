@@ -23,8 +23,8 @@ jobs:
         run: |
           Invoke-WebRequest -Uri "https://dot.net/v1/dotnet-install.ps1" -OutFile di.ps1
           $v = "${{ github.event.inputs.runtime }}"
-          .\di.ps1 -Channel $v -Runtime NetCore.App -InstallDir "C:\Program Files\dotnet"
-          .\di.ps1 -Channel $v -Runtime WindowsDesktop.App -InstallDir "C:\Program Files\dotnet"
+          .\di.ps1 -Channel $v -Runtime dotnet -InstallDir "C:\Program Files\dotnet"
+          .\di.ps1 -Channel $v -Runtime windowsdesktop -InstallDir "C:\Program Files\dotnet"
           dotnet --list-runtimes | Select-String "WindowsDesktop|$v"
       - name: build probe
         run: dotnet build tools/wpgfx-render-probe/shaderprobe.csproj -c Release -v q
