@@ -1,0 +1,20 @@
+name: vviewer-fmt4-min
+on:
+  push:
+    paths:
+      - '.github/workflows/vv-min.yml'
+jobs:
+  t:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+    - name: probe
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = 'Continue'
+        "=== VVIEWER presence (pre-install) ==="
+        Get-Item "C:\Program Files\Microsoft Office\root\Office16\VVIEWER.DLL" -ErrorAction SilentlyContinue | ForEach-Object { "VVIEWER {0} v{1}" -f $_.Length, $_.VersionInfo.FileVersion }
+        "=== registration ==="
+        reg query "HKLM\SOFTWARE\Classes\.vsdx" /ve
+        reg query "HKLM\SOFTWARE\Classes\VisioViewer.Viewer\shell\open\command" /ve
+        reg query "HKLM\SOFTWARE\Classes\CLSID\{F8CF7A98-2C45-4c8d-9151-2D716989DDAB}\InprocServer32" /ve
