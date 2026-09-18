@@ -32,16 +32,18 @@ jobs:
         run: |
           $env:Path = "C:\Program Files\Microsoft Office\root\Office16;$env:Path"
           & "$env:EMFTOOLS\probe.ps1"
-      - name: Summary
+      - name: Collect
+        if: always()
         shell: pwsh
-        run: Get-Content C:\emfwork\out\summary.txt -ErrorAction SilentlyContinue
+        run: |
+          Copy-Item C:\emfwork\out -Destination ${{ github.workspace }}\emfout -Recurse -ErrorAction SilentlyContinue
+          Copy-Item C:\emfwork\*.tsv -Destination ${{ github.workspace }}\emfout -ErrorAction SilentlyContinue
+          Copy-Item ver.txt -Destination ${{ github.workspace }}\emfout -ErrorAction SilentlyContinue
+          Get-Content C:\emfwork\out\summary.txt -ErrorAction SilentlyContinue
       - name: Upload logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: emfprobe-logs
-          path: |
-            C:\emfwork\out/**
-            C:\emfwork/*.tsv
-            ver.txt
+          path: emfout/**
           if-no-files-found: warn

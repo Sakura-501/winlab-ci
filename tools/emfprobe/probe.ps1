@@ -20,15 +20,25 @@ function GetRsds($path){
     }
   }
 }
+$cands=@("$root\mso.dll",'C:\Program Files\Common Files\Microsoft Shared\OFFICE16\mso.dll','C:\Program Files\Microsoft Office\root\vfs\ProgramFilesCommonX64\Microsoft Shared\Office16\mso.dll')
+$msoDll = $cands | Where-Object { Test-Path $_ } | Select-Object -First 1
+Log ("mso.dll at: $msoDll")
 foreach($m in @('mso','ppcore')){
-  $dll = if($m -eq 'mso'){'C:\Program Files\Common Files\Microsoft Shared\Office16\mso.dll'}else{"$root\ppcore.dll"}
+  $dll = if($m -eq 'mso'){$msoDll}else{"$root\ppcore.dll"}
   $rs=GetRsds $dll
   Log ("$m rsds: $($rs.name) $($rs.guid) $($rs.age) file=" + (Split-Path $dll -Leaf))
-  & curl.exe -sL -o "C:\sym\$($rs.name)" "https://msdl.microsoft.com/download/symbols/$($rs.name)/$($rs.guid)$($rs.age)/$($rs.name)"
-  Log ("$m pdb bytes: " + (Get-Item "C:\sym\$($rs.name)" -ErrorAction SilentlyContinue).Length)
+  $dst="C:\sym\$($rs.name)"
+  foreach($try in 1..3){
+    $code=& curl.exe -sL -w '%{http_code}' -o "$dst.tmp" "https://msdl.microsoft.com/download/symbols/$($rs.name)/$($rs.guid)$($rs.age)/$($rs.name)"
+    $sz=(Get-Item "$dst.tmp" -ErrorAction SilentlyContinue).Length
+    Log ("  dl try$try http=$code size=$sz")
+    if($code -eq '200' -and $sz -gt 1000000){ Move-Item "$dst.tmp" $dst -Force; break }
+    Start-Sleep -Seconds 4
+  }
+  Log ("$m pdb bytes: " + (Get-Item $dst -ErrorAction SilentlyContinue).Length)
 }
-python "$env:EMFTOOLS\msfpdb.py" C:\sym\MSO.pdb "C:\Program Files\Common Files\Microsoft Shared\Office16\mso.dll" mso.tsv | Out-Null
-python "$env:EMFTOOLS\msfpdb.py" C:\sym\ppcore.pdb "$root\ppcore.dll" ppcore.tsv | Out-Null
+python "$env:EMFTOOLS\msfpdb.py" C:\sym\MSO.pdb "$msoDll" mso.tsv 2>&1 | ForEach-Object { Log "  msfpdb mso: $_" }
+python "$env:EMFTOOLS\msfpdb.py" C:\sym\ppcore.pdb "$root\ppcore.dll" ppcore.tsv 2>&1 | ForEach-Object { Log "  msfpdb ppc: $_" }
 python "$env:EMFTOOLS\mkbp.py" mso.tsv ppcore.tsv bps.txt
 if(-not (Test-Path bps.txt)){ throw 'mkbp failed' }
 (Get-Content "$env:EMFTOOLS\dbgtemplate.txt") -replace '__BPSFILE__','C:\emfwork\bps.txt' | Set-Content dbgcfg.txt
