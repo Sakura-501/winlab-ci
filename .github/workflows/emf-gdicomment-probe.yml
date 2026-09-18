@@ -1,0 +1,47 @@
+name: emf-gdicomment-probe
+on:
+  workflow_dispatch:
+jobs:
+  probe:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download ODT
+        shell: pwsh
+        run: |
+          $page = (Invoke-WebRequest -Uri "https://www.microsoft.com/en-us/download/details.aspx?id=49117" -UseBasicParsing).Content
+          if ($page -match 'href="(https://download\.microsoft\.com/download/[^"]+officedeploymenttool[^"]*\.exe)"') {
+            Invoke-WebRequest -Uri $Matches[1] -OutFile odt.exe
+          } else { throw "odt link not found" }
+          Start-Process -Wait -FilePath .\odt.exe -ArgumentList "/extract:odtx /quiet"
+      - name: Install CurrentPreview x64 Office (Word+Excel+PowerPoint)
+        shell: pwsh
+        run: |
+          $xml = '<Configuration><Add OfficeClientEdition="64" Channel="http://officecdn.microsoft.com/pr/5440fd1f-7ecb-4221-8110-145efaa6372f"><Product ID="O365ProPlusRetail"><Language ID="en-us" /><ExcludeApp ID="Outlook" /><ExcludeApp ID="OneDrive" /><ExcludeApp ID="OneNote" /><ExcludeApp ID="Lync" /><ExcludeApp ID="Bing" /></Product></Add><Display Level="None" AcceptEULA="TRUE" /><Updates Enabled="FALSE" /></Configuration>'
+          Set-Content -Path cfg.xml -Value $xml
+          Start-Process -Wait -FilePath .\odtx\setup.exe -ArgumentList "/configure","cfg.xml"
+          $w = Get-Item "C:\Program Files\Microsoft Office\root\Office16\WINWORD.EXE" -ErrorAction SilentlyContinue
+          if (-not $w) { throw "install failed" }
+          "word: {0} v{1}" -f $w.Length, $w.VersionInfo.FileVersion
+          $w.VersionInfo.FileVersion | Out-File ver.txt
+      - name: Run EMF probe matrix
+        shell: powershell
+        env:
+          EMFTOOLS: ${{ github.workspace }}\tools\emfprobe
+        run: |
+          $env:Path = "C:\Program Files\Microsoft Office\root\Office16;$env:Path"
+          & "$env:EMFTOOLS\probe.ps1"
+      - name: Summary
+        shell: pwsh
+        run: Get-Content C:\emfwork\out\summary.txt -ErrorAction SilentlyContinue
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: emfprobe-logs
+          path: |
+            C:\emfwork\out/**
+            C:\emfwork/*.tsv
+            ver.txt
+          if-no-files-found: warn

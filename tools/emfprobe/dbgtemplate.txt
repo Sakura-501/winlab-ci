@@ -1,0 +1,3 @@
+.sympath C:\sym
+.reload
+$$<__BPSFILE__
