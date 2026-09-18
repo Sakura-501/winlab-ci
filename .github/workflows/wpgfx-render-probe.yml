@@ -1,0 +1,46 @@
+name: wpgfx-render-probe
+on:
+  workflow_dispatch:
+    inputs:
+      groups:
+        description: 'DEF instruction groups'
+        required: false
+        default: '6000'
+jobs:
+  probe:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: runtimes
+        run: dotnet --list-runtimes | Select-String "WindowsDesktop"
+      - name: build probe
+        run: dotnet build tools/wpgfx-render-probe/shaderprobe.csproj -c Release -v q
+      - name: pageheap on
+        run: |
+          $k="HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\shaderprobe.exe"
+          New-Item -Path $k -Force | Out-Null
+          New-ItemProperty -Path $k -Name PageHeapFlags -Value 2 -PropertyType DWord -Force | Out-Null
+          New-ItemProperty -Path $k -Name ExecuteOptions -Value 0x400 -PropertyType DWord -Force | Out-Null
+      - name: benign control
+        run: |
+          $env:MODE="benign"; $env:GROUPS="${{ github.event.inputs.groups }}"
+          & tools/wpgfx-render-probe/bin/Release/net10.0-windows/shaderprobe.exe | Tee-Object benign.txt
+          "BENIGN_EXIT=0x{0:X8}" -f $LASTEXITCODE | Tee-Object -Append benign.txt
+      - name: attack run
+        run: |
+          $env:MODE="attack"; $env:GROUPS="${{ github.event.inputs.groups }}"
+          & tools/wpgfx-render-probe/bin/Release/net10.0-windows/shaderprobe.exe | Tee-Object attack.txt
+          "ATTACK_EXIT=0x{0:X8}" -f $LASTEXITCODE | Tee-Object -Append attack.txt
+      - name: wer entries
+        run: Get-WinEvent -FilterHashtable @{LogName='Application';ProviderName='Windows Error Reporting'} -MaxEvents 6 -ErrorAction SilentlyContinue | ForEach-Object { $_.Message.Substring(0,[Math]::Min(500,$_.Message.Length)) } | Tee-Object wer.txt
+      - name: pageheap off (rollback)
+        if: always()
+        run: Remove-Item -Recurse -Force "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\shaderprobe.exe" -ErrorAction SilentlyContinue
+      - name: upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: probe-logs
+          path: |
+            benign.txt
+            attack.txt
+            wer.txt
