@@ -19,11 +19,8 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-      - name: install runtime ${{ github.event.inputs.runtime }}
-        run: |
-          Invoke-WebRequest -Uri "https://dot.net/v1/dotnet-install.ps1" -OutFile dotnet-install.ps1
-          .\dotnet-install.ps1 -Runtime windowsdesktop -Version ${{ github.event.inputs.runtime }} -InstallDir "C:\Program Files\dotnet"
-          dotnet --list-runtimes | Select-String WindowsDesktop
+      - name: runtime info
+        run: dotnet --list-runtimes | Select-String WindowsDesktop
       - name: build probe
         run: dotnet build tools/wpgfx-render-probe/shaderprobe.csproj -c Release -v q
       - name: pageheap config
