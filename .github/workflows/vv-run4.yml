@@ -68,7 +68,7 @@ jobs:
             'Sub Window_OnLoad'
             '  On Error Resume Next'
             ('  vv.Src = "' + $vsdx + '"')
-            '  window.setTimeout "KeepAlive", 30000'
+            '  window.setTimeout "KeepAlive", 120000'
             'End Sub'
             'Sub KeepAlive'
             'End Sub'
@@ -86,7 +86,7 @@ jobs:
         $cdb = Get-Content cdbpath.txt
         # embedded-font payload: insert a TTF-derived part into min_evil.vsdx, generated at runtime
         # cmap surgery parameters (kept opaque per repo-visibility policy)
-        $bp = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('YnAgdnZpZXdlci5kbGwrMHg3MDZkMjAgIi5wcmludGYgXCJGNEhJVCByY3g9JXBcXG5cIiwgQHJjeDsgZyIKYnAgdnZpZXdlci5kbGwrMHg3MDZkZGQgIi5wcmludGYgXCJTRUdISVQgcmJ4PSVwIHY9JXhcXG5cIiwgQHJieCwgcG9pKEByYngrNikmMHhmZmZmOyBnIg=='))
+        $bp = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('YnAgdnZpZXdlci5kbGwrMHg3MDYxMDkgIi5wcmludGYgXCJHRkRISVQgcmN4PSVwXG5cIiwgQHJjeDsgZyIKYnAgdnZpZXdlci5kbGwrMHg3MDZkMjAgIi5wcmludGYgXCJGNEhJVCByY3g9JXBcXG5cIiwgQHJjeDsgZyIKYnAgdnZpZXdlci5kbGwrMHg3MDZkZGQgIi5wcmludGYgXCJTRUdISVQgcmJ4PSVwIHY9JXhcXG5cIiwgQHJieCwgcG9pKEByYngrNikmMHhmZmZmOyBnIg=='))
         $cmds = @(
           'sxe ld:VVIEWER.DLL',
           'g',
@@ -109,17 +109,18 @@ jobs:
           }
           $p = Start-Process -FilePath $cdb -ArgumentList '-cf',"$PWD\bp_cmds.txt",'-logo',$rlog,'-o','C:\Windows\System32\mshta.exe',$hta -PassThru -WindowStyle Hidden
           $sw = [Diagnostics.Stopwatch]::StartNew()
-          while (-not $p.HasExited -and $sw.Elapsed.TotalSeconds -lt 55) { Start-Sleep 5 }
+          while (-not $p.HasExited -and $sw.Elapsed.TotalSeconds -lt 150) { Start-Sleep 5 }
           if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue }
           Start-Sleep 2
           Stop-Process -Name mshta,cdb -Force -ErrorAction SilentlyContinue
           Start-Sleep 1
           if (Test-Path $rlog) {
             $raw = Get-Content $rlog
+            $gfh = @($raw | Where-Object { $_ -match 'GFDHIT rcx=[0-9a-f]' }).Count
             $f4h = @($raw | Where-Object { $_ -match 'F4HIT rcx=[0-9a-f]' }).Count
             $sgh = @($raw | Where-Object { $_ -match 'SEGHIT rbx=[0-9a-f]' }).Count
-            "[$v] lines=$($raw.Count) F4HITS=$f4h SEGHITS=$sgh"
-            $raw | Where-Object { $_ -match 'F4HIT rcx=|SEGHIT rbx=|access violation|Breakpoint 0|Breakpoint 1|could not|Unable' } | Select-Object -First 15 | ForEach-Object { "  $_" }
+            "[$v] lines=$($raw.Count) GFD=$gfh F4=$f4h SEG=$sgh"
+            $raw | Where-Object { $_ -match 'GFDHIT rcx=|F4HIT rcx=|SEGHIT rbx=|access violation|Breakpoint 0|Breakpoint 1|Breakpoint 2|could not|Unable' } | Select-Object -First 15 | ForEach-Object { "  $_" }
           } else { "[$v] NO LOG" }
         }
         "WER events:"
