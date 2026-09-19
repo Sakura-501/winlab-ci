@@ -88,7 +88,7 @@ jobs:
         $cdb = Get-Content cdbpath.txt
         # embedded-font payload: insert a TTF-derived part into min_evil.vsdx, generated at runtime
         # cmap surgery parameters (kept opaque per repo-visibility policy)
-        $bp = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('YnAgdnZpZXdlci5kbGwrMHg3MDYxMDkgIi5wcmludGYgXCJHRkRISVQgcmN4PSVwXG5cIiwgQHJjeDsgZyIKYnAgdnZpZXdlci5kbGwrMHg3MDZkMjAgIi5wcmludGYgXCJGNEhJVCByY3g9JXBcXG5cIiwgQHJjeDsgZyIKYnAgdnZpZXdlci5kbGwrMHg3MDZkZGQgIi5wcmludGYgXCJTRUdISVQgcmJ4PSVwIHY9JXhcXG5cIiwgQHJieCwgcG9pKEByYngrNikmMHhmZmZmOyBnIg=='))
+        $bp = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('YnAgdnZpZXdlci5kbGwhRGxsR2V0Q2xhc3NPYmplY3QgIi5wcmludGYgXCJER0MgcmR4PSVwXG5cIiwgQHJkeDsgZyIKYnAgdnZpZXdlci5kbGwrMHg3MDYxMDkgIi5wcmludGYgXCJHRkRISVQgcmN4PSVwXG5cIiwgQHJjeDsgZyIKYnAgdnZpZXdlci5kbGwrMHg3MDZkMjAgIi5wcmludGYgXCJGNEhJVCByY3g9JXBcXG5cIiwgQHJjeDsgZyIKYnAgdnZpZXdlci5kbGwrMHg3MDZkZGQgIi5wcmludGYgXCJTRUdISVQgcmJ4PSVwIHY9JXhcXG5cIiwgQHJieCwgcG9pKEByYngrNikmMHhmZmZmOyBnIg=='))
         $cmds = @(
           'sxe ld:VVIEWER.DLL',
           'g',
@@ -113,7 +113,16 @@ jobs:
             '<script language="VBScript">'
             'Sub Window_OnLoad'
             '  On Error Resume Next'
-            ('  vv.Src = "' + $docp + '"')
+            '  vv.Src = "' + $docp + '"'
+            '  Dim fso, f'
+            '  Set fso = CreateObject("Scripting.FileSystemObject")'
+            '  Set f = fso.CreateTextFile("' + "$PWD\\r_" + '" + $v + ".txt", True)' 
+            '  f.WriteLine "srcerr=" & Err.Number'
+            '  Err.Clear'
+            '  f.WriteLine "pages=" & vv.Pages.Count'
+            '  f.WriteLine "idx=" & vv.CurrentPageIndex'
+            '  f.WriteLine "err2=" & Err.Number'
+            '  f.Close'
             '  window.setTimeout "KeepAlive", 120000'
             'End Sub'
             'Sub KeepAlive'
@@ -130,11 +139,14 @@ jobs:
           Start-Sleep 1
           if (Test-Path $rlog) {
             $raw = Get-Content $rlog
+            $dgch = @($raw | Where-Object { $_ -match 'DGC rdx=' }).Count
             $gfh = @($raw | Where-Object { $_ -match 'GFDHIT rcx=[0-9a-f]' }).Count
             $f4h = @($raw | Where-Object { $_ -match 'F4HIT rcx=[0-9a-f]' }).Count
             $sgh = @($raw | Where-Object { $_ -match 'SEGHIT rbx=[0-9a-f]' }).Count
-            "[$v doc=$docp] lines=$($raw.Count) GFD=$gfh F4=$f4h SEG=$sgh"
-            $raw | Where-Object { $_ -match 'GFDHIT rcx=|F4HIT rcx=|SEGHIT rbx=|access violation' } | Select-Object -First 8 | ForEach-Object { "  $_" }
+            $rf = "$PWD\\r_$v.txt"
+            $rline = if (Test-Path $rf) { (Get-Content $rf) -join ";" } else { "NO_RESULT_FILE" }
+            "[$v doc=$docp] lines=$($raw.Count) DGC=$dgch GFD=$gfh F4=$f4h SEG=$sgh RESULT=$rline"
+            $raw | Where-Object { $_ -match 'DGC rdx=|GFDHIT rcx=|F4HIT rcx=|SEGHIT rbx=|access violation' } | Select-Object -First 8 | ForEach-Object { "  $_" }
           } else { "[$v] NO LOG" }
         }
         "WER events:"
@@ -145,7 +157,7 @@ jobs:
       shell: pwsh
       run: |
         New-Item -ItemType Directory -Force -Path outart | Out-Null
-        Copy-Item cdb_*.log, bp_cmds.txt, craft.py, probe_*.hta, min_test.vsdx, embed_*.vsdx -Destination outart -ErrorAction SilentlyContinue
+        Copy-Item cdb_*.log, r_*.txt, bp_cmds.txt, craft.py, probe_*.hta, min_test.vsdx, embed_*.vsdx -Destination outart -ErrorAction SilentlyContinue
     - uses: actions/upload-artifact@v4
       if: always()
       with:
