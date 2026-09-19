@@ -1,0 +1,50 @@
+name: vviewer-fmt4-runx15
+on:
+  push:
+    paths:
+      - '.github/workflows/vv-runx15.yml'
+  workflow_dispatch:
+jobs:
+  t:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+    - name: Download ODT
+      shell: pwsh
+      run: |
+        $page = (Invoke-WebRequest -Uri "https://www.microsoft.com/en-us/download/details.aspx?id=49117" -UseBasicParsing).Content
+        if ($page -match 'href="(https://download\.microsoft\.com/download/[^"]+officedeploymenttool[^"]*\.exe)"') { Invoke-WebRequest -Uri $Matches[1] -OutFile odt.exe } else { throw "odt" }
+        Start-Process -Wait -FilePath .\odt.exe -ArgumentList "/extract:odtx /quiet"
+    - name: Install Office
+      shell: pwsh
+      run: |
+        $xml = '<Configuration><Add OfficeClientEdition="64" Channel="CurrentPreview"><Product ID="O365ProPlusRetail"><Language ID="en-us" /><ExcludeApp ID="Excel" /><ExcludeApp ID="PowerPoint" /><ExcludeApp ID="Outlook" /><ExcludeApp ID="OneDrive" /><ExcludeApp ID="OneNote" /><ExcludeApp ID="Lync" /><ExcludeApp ID="Bing" /></Product></Add><Display Level="None" AcceptEULA="TRUE" /><Updates Enabled="FALSE" /></Configuration>'
+        Set-Content -Path cfg.xml -Value $xml
+        $p = Start-Process -FilePath .\odtx\setup.exe -ArgumentList "/configure","cfg.xml" -PassThru -Wait
+        "exit=$($p.ExitCode)"
+        $vv = Get-Item "C:\Program Files\Microsoft Office\root\Office16\VVIEWER.DLL" -ErrorAction SilentlyContinue
+        if (-not $vv) { throw "no VVIEWER" }
+        "VVIEWER v$($vv.VersionInfo.FileVersion)"
+    - name: Install debugger
+      shell: pwsh
+      run: |
+        winget install Microsoft.WinDbg --accept-source-agreements --accept-package-agreements --silent --disable-interactivity
+        Get-ChildItem "C:\Program Files\WindowsApps\Microsoft.WinDbg*" -Directory | Select-Object -First 3 | ForEach-Object { $_.FullName }
+    - uses: actions/checkout@v4
+    - name: Run experiment
+      shell: pwsh
+      run: |
+        $py = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('JEVycm9yQWN0aW9uUHJlZmVyZW5jZSA9ICdDb250aW51ZScKJFAgPSAkUFdELlBhdGgKJExPRyA9ICIkUFxsb2cudHh0IgpmdW5jdGlvbiBMKCRtKSB7ICRtIHwgT3V0LUZpbGUgJExPRyAtQXBwZW5kIC1FbmNvZGluZyBVVEY4OyBXcml0ZS1Ib3N0ICRtIH0KTCAiPT09IFZWIFJVTjE1ICgyIHZhcmlhbnRzLCBsb25nIHdpbmRvdykgJChHZXQtRGF0ZSAtRm9ybWF0IG8pID09PSIKW1RleHQuRW5jb2RpbmddOjpVVEY4LkdldFN0cmluZyhbQ29udmVydF06OkZyb21CYXNlNjRTdHJpbmcoJ2NHRnlZVzBvVzNOMGNtbHVaMTBrU0hSdGJDd2dXM04wY21sdVoxMGtWR0ZuSUQwZ0luTXhNeUlwQ2lSbUlEMGdJaVJRVjBSY2NsOGtWR0ZuTG5SNGRDSUtablZ1WTNScGIyNGdWeWdrYlNrZ2V5QjBjbmtnZXlBa2JTQjhJRTkxZEMxR2FXeGxJQ1JtSUMxQmNIQmxibVFnTFVWdVkyOWthVzVuSUZWVVJqZ2dmU0JqWVhSamFDQjdmU0I5Q2xjZ0ltaHZjM1F4TXlCemRHRnlkQ0FrS0VkbGRDMUVZWFJsSUMxR2IzSnRZWFFnU0VnNmJXMDZjM01wSWdwMGNua2dleUJCWkdRdFZIbHdaU0F0UVhOelpXMWliSGxPWVcxbElGTjVjM1JsYlM1WGFXNWtiM2R6TGtadmNtMXpPeUJCWkdRdFZIbHdaU0F0UVhOelpXMWliSGxPWVcxbElGTjVjM1JsYlM1RWNtRjNhVzVuT3lCWElDSmhjMjA5VDBzaUlIMGdZMkYwWTJnZ2V5QlhJQ2dpWVhOdFBVVlNVam9pSUNzZ0pGOHVSWGhqWlhCMGFXOXVMazFsYzNOaFoyVXBJSDBLZEhKNUlIc0tJQ0FrWm05eWJTQTlJRTVsZHkxUFltcGxZM1FnVTNsemRHVnRMbGRwYm1SdmQzTXVSbTl5YlhNdVJtOXliUW9nSUNSbWIzSnRMbGRwWkhSb0lEMGdNVEV3TURzZ0pHWnZjbTB1U0dWcFoyaDBJRDBnT0RBd0NpQWdKSGRpSUQwZ1RtVjNMVTlpYW1WamRDQlRlWE4wWlcwdVYybHVaRzkzY3k1R2IzSnRjeTVYWldKQ2NtOTNjMlZ5Q2lBZ0pIZGlMa1J2WTJzZ1BTQmJVM2x6ZEdWdExsZHBibVJ2ZDNNdVJtOXliWE11Ukc5amExTjBlV3hsWFRvNlJtbHNiQW9nSUNSM1lpNVRZM0pwY0hSRmNuSnZjbk5UZFhCd2NtVnpjMlZrSUQwZ0pIUnlkV1VLSUNBa1ptOXliUzVEYjI1MGNtOXNjeTVCWkdRb0pIZGlLUW9nSUZjZ0luZGlQVTlMSWdvZ0lDUm1iM0p0TGxOb2IzY29LUW9nSUZjZ0luTm9iM2R1SWdvZ0lDUjNZaTVPWVhacFoyRjBaU2drU0hSdGJDa0tJQ0JYSUNKdVlYWnBaMkYwWldRaUNuMGdZMkYwWTJnZ2V5QlhJQ2dpYzJWMGRYQTlSVkpTT2lJZ0t5QWtYeTVGZUdObGNIUnBiMjR1VFdWemMyRm5aU2s3SUdWNGFYUWdNQ0I5Q21admNpQW9KR2tnUFNBd095QWthU0F0YkhRZ01USTdJQ1JwS3lzcElIc0tJQ0FrYzNjZ1BTQmJSR2xoWjI1dmMzUnBZM011VTNSdmNIZGhkR05vWFRvNlUzUmhjblJPWlhjb0tRb2dJSGRvYVd4bElDZ2tjM2N1Uld4aGNITmxaQzVVYjNSaGJGTmxZMjl1WkhNZ0xXeDBJRGdwSUhzZ1cxTjVjM1JsYlM1WGFXNWtiM2R6TGtadmNtMXpMa0Z3Y0d4cFkyRjBhVzl1WFRvNlJHOUZkbVZ1ZEhNb0tUc2dVM1JoY25RdFUyeGxaWEFnTFUxcGJHeHBjMlZqYjI1a2N5QXlOVEFnZlFvZ0lIUnllU0I3SUZjZ0tDSjBKR2tnZEdsMGJHVTlJaUFySUNSM1lpNUViMk4xYldWdWRDNVVhWFJzWlNrZ2ZTQmpZWFJqYUNCN0lGY2dJblFrYVNCMGFYUnNaVDFGVWxJaUlIMEtJQ0IwY25rZ2V3b2dJQ0FnSkdJZ1BTQk9aWGN0VDJKcVpXTjBJRk41YzNSbGJTNUVjbUYzYVc1bkxrSnBkRzFoY0Nna1ptOXliUzVYYVdSMGFDd2dKR1p2Y20wdVNHVnBaMmgwS1FvZ0lDQWdKR2NnUFNCYlUzbHpkR1Z0TGtSeVlYZHBibWN1UjNKaGNHaHBZM05kT2pwR2NtOXRTVzFoWjJVb0pHSXBDaUFnSUNBa1p5NURiM0I1Um5KdmJWTmpjbVZsYmlna1ptOXliUzVNYjJOaGRHbHZiaXdnVzFONWMzUmxiUzVFY21GM2FXNW5MbEJ2YVc1MFhUbzZSVzF3ZEhrc0lDUm1iM0p0TGxOcGVtVXBDaUFnSUNBa1p5NUVhWE53YjNObEtDazdJQ1JpTGxOaGRtVW9JaVJRVjBSY2RqRXpYeVI3VkdGbmZWOGthUzV3Ym1jaUxDQmJVM2x6ZEdWdExrUnlZWGRwYm1jdVNXMWhaMmx1Wnk1SmJXRm5aVVp2Y20xaGRGMDZPbEJ1WnlrN0lDUmlMa1JwYzNCdmMyVW9LUW9nSUgwZ1kyRjBZMmdnZTMwS2ZRcFhJQ0prYjI1bElDUW9SMlYwTFVSaGRHVWdMVVp2Y20xaGRDQklTRHB0YlRwemN5a2lDZz09JykpIHwgU2V0LUNvbnRlbnQgIiRQXHZ2aG9zdDEzLnBzMSIgLUVuY29kaW5nIFVURjgKJGNkYiA9IChHZXQtQ2hpbGRJdGVtICJDOlxQcm9ncmFtIEZpbGVzXFdpbmRvd3NBcHBzXE1pY3Jvc29mdC5XaW5EYmcqXGFtZDY0XGNkYi5leGUiIC1FcnJvckFjdGlvbiBTaWxlbnRseUNvbnRpbnVlIHwgU2VsZWN0LU9iamVjdCAtRmlyc3QgMSkuRnVsbE5hbWUKJGNtZHMgPSBAKCcuY2hpbGRkYmcgMScsJ3N4ZSBsZDpWVklFV0VSLkRMTCcsJ2cnLCcucHJpbnRmICJWVk1PRExPQURcbiInLCdicCB2dmlld2VyLmRsbCsweDcwNjEwOSAiLnByaW50ZiBcIkdGREhJVCByY3g9JXBcblwiLCBAcmN4OyBnIicsJ2JwIHZ2aWV3ZXIuZGxsKzB4NzA2ZDIwICIucHJpbnRmIFwiRjRISVQgcmN4PSVwXG5cIiwgQHJjeDsgZyInLCdicCB2dmlld2VyLmRsbCsweDcwNmRkZCAiLnByaW50ZiBcIlNFR0hJVCByYng9JXAgdj0leFxuXCIsIEByYngsIHBvaShAcmJ4KzYpJjB4ZmZmZjsgZyInLCdicCB2dmlld2VyLmRsbCsweDVmZWUzNSAiLnByaW50ZiBcIlJERUhJVCByY3g9JXBcblwiLCBAcmN4OyBnIicsJy5wcmludGYgIkJQU0xcbiInLCdnJykKJGNtZHMgfCBTZXQtQ29udGVudCAiJFBcYnBfY21kcy50eHQiIC1FbmNvZGluZyBBU0NJSQpmb3JlYWNoICgkdiBpbiBAKCdmMV9wbGFpbicsJ2Y0X2V2aWwnKSkgewogICRkb2NVcmwgPSAiZmlsZTovLy8iICsgKCRQIC1yZXBsYWNlICdcXCcsJy8nKSArICIvJHYudnNkeCIKICAkaHRtbCA9ICI8aHRtbD48aGVhZD48dGl0bGU+SU5JVDwvdGl0bGU+PC9oZWFkPjxib2R5IHN0eWxlPSdtYXJnaW46MCc+PG9iamVjdCBpZD0ndnYnIGNsYXNzaWQ9J2Nsc2lkOkY4Q0Y3QTk4LTJDNDUtNGM4ZC05MTUxLTJENzE2OTg5RERBQicgd2lkdGg9JzEwMCUnIGhlaWdodD0nMTAwJSc+PC9vYmplY3Q+PHNjcmlwdD52YXIgdT0nJGRvY1VybCc7ZnVuY3Rpb24gZ28oKXt0cnl7dmFyIG89ZG9jdW1lbnQuZ2V0RWxlbWVudEJ5SWQoJ3Z2Jyk7by5TcmM9dTtzZXRUaW1lb3V0KGZ1bmN0aW9uKCl7dmFyIHBjPSc/Jzt0cnl7cGM9by5QYWdlQ291bnQ7fWNhdGNoKGUpe3BjPSdQRSc7fWRvY3VtZW50LnRpdGxlPSdSIHBjPScrcGM7fSw4MDAwKTt9Y2F0Y2goZSl7ZG9jdW1lbnQudGl0bGU9J0U6JytlLm1lc3NhZ2U7fX1zZXRUaW1lb3V0KGdvLDI1MDApOzwvc2NyaXB0PjwvYm9keT48L2h0bWw+IgogICRodG1sIHwgU2V0LUNvbnRlbnQgIiRQXHBhZ2VfJHYuaHRtbCIgLUVuY29kaW5nIEFTQ0lJCiAgJHJsb2cgPSAiJFBcY2RiXyR2LmxvZyIKICBSZW1vdmUtSXRlbSAkcmxvZywgIiRQXHJfJHYudHh0IiAtRm9yY2UgLUVycm9yQWN0aW9uIFNpbGVudGx5Q29udGludWUKICAkcCA9IFN0YXJ0LVByb2Nlc3MgLUZpbGVQYXRoICRjZGIgLUFyZ3VtZW50TGlzdCAnLWNmJywiJFBcYnBfY21kcy50eHQiLCctbG9nbycsJHJsb2csJy1vJywnQzpcV2luZG93c1xTeXN0ZW0zMlxXaW5kb3dzUG93ZXJTaGVsbFx2MS4wXHBvd2Vyc2hlbGwuZXhlJywnLU5vUHJvZmlsZScsJy1FeGVjdXRpb25Qb2xpY3knLCdCeXBhc3MnLCctU1RBJywnLUZpbGUnLCIkUFx2dmhvc3QxMy5wczEiLCctSHRtbCcsKCJmaWxlOi8vLyIgKyAoJFAgLXJlcGxhY2UgJ1xcJywnLycpICsgIi9wYWdlXyR2Lmh0bWwiKSwnLVRhZycsJHYgLVBhc3NUaHJ1IC1XaW5kb3dTdHlsZSBIaWRkZW4KICBMICJbJHZdIGhvc3QgcGlkPSQoJHAuSWQpICQoR2V0LURhdGUgLUZvcm1hdCBISDptbTpzcykiCiAgU3RhcnQtU2xlZXAgMTM1CiAgaWYgKC1ub3QgJHAuSGFzRXhpdGVkKSB7IFN0b3AtUHJvY2VzcyAtSWQgJHAuSWQgLUZvcmNlIC1FcnJvckFjdGlvbiBTaWxlbnRseUNvbnRpbnVlIH0KICBTdGFydC1TbGVlcCAyCiAgU3RvcC1Qcm9jZXNzIC1OYW1lIGNkYiAtRm9yY2UgLUVycm9yQWN0aW9uIFNpbGVudGx5Q29udGludWUKICBTdGFydC1TbGVlcCAxCiAgaWYgKFRlc3QtUGF0aCAiJFBccl8kdi50eHQiKSB7IEdldC1Db250ZW50ICIkUFxyXyR2LnR4dCIgfCBGb3JFYWNoLU9iamVjdCB7IEwgKCIgIFskdl0gIiArICRfKSB9IH0gZWxzZSB7IEwgIlskdl0gTk8gUiBGSUxFIiB9CiAgaWYgKFRlc3QtUGF0aCAkcmxvZykgewogICAgJHJhdyA9IEdldC1Db250ZW50ICRybG9nCiAgICBMICgiWyR2XSBjZGI6IG1vZGxvYWQ9JChAKCRyYXcgfCBXaGVyZS1PYmplY3QgeyAkXyAtbWF0Y2ggJ01vZExvYWQuKlZWSUVXRVInIH0pLkNvdW50KSBHRkQ9JChAKCRyYXcgfCBXaGVyZS1PYmplY3QgeyAkXyAtbWF0Y2ggJ0dGREhJVCByY3g9WzAtOWEtZl0nIH0pLkNvdW50KSBGND0kKEAoJHJhdyB8IFdoZXJlLU9iamVjdCB7ICRfIC1tYXRjaCAnRjRISVQgcmN4PVswLTlhLWZdJyB9KS5Db3VudCkgU0VHPSQoQCgkcmF3IHwgV2hlcmUtT2JqZWN0IHsgJF8gLW1hdGNoICdTRUdISVQgcmJ4PVswLTlhLWZdJyB9KS5Db3VudCkgUkRFPSQoQCgkcmF3IHwgV2hlcmUtT2JqZWN0IHsgJF8gLW1hdGNoICdSREVISVQgcmN4PVswLTlhLWZdJyB9KS5Db3VudCkgQVY9JChAKCRyYXcgfCBXaGVyZS1PYmplY3QgeyAkXyAtbWF0Y2ggJ2FjY2VzcyB2aW9sYXRpb24nIH0pLkNvdW50KSIpCiAgICAkcmF3IHwgV2hlcmUtT2JqZWN0IHsgJF8gLW1hdGNoICdHRkRISVQgcmN4PVswLTlhLWZdfEY0SElUIHJjeD1bMC05YS1mXXxTRUdISVQgcmJ4PVswLTlhLWZdfFJERUhJVCByY3g9WzAtOWEtZl18YWNjZXNzIHZpb2xhdGlvbicgfSB8IFNlbGVjdC1PYmplY3QgLUZpcnN0IDggfCBGb3JFYWNoLU9iamVjdCB7IEwgKCIgIFskdl0gIiArICRfKSB9CiAgfQp9CkwgIj09PSBET05FICQoR2V0LURhdGUgLUZvcm1hdCBvKSA9PT0iCg=='))
+        $py | Set-Content vvrun.ps1 -Encoding UTF8
+        powershell -NoProfile -ExecutionPolicy Bypass -File .\vvrun.ps1
+    - name: Dump
+      if: always()
+      shell: pwsh
+      run: |
+        New-Item -ItemType Directory -Force -Path outart | Out-Null
+        Copy-Item log.txt, cdb_*.log, v13_*.png, r_*.txt, bp_cmds.txt, page_*.html -Destination outart -ErrorAction SilentlyContinue
+    - uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: vvx-logs
+        path: outart
