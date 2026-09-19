@@ -98,45 +98,24 @@ jobs:
           'g'
         )
         $cmds | Set-Content bp_cmds.txt -Encoding ASCII
+        $hostPs1 = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('cGFyYW0oW3N0cmluZ10kVnNkeCwgW2ludF0kU2VjcyA9IDcwLCBbc3RyaW5nXSRUYWcgPSAidCIpCiRsb2cgPSAiJFBXRFxyXyRUYWcudHh0IgpmdW5jdGlvbiBXKCRtKSB7ICRtIHwgT3V0LUZpbGUgJGxvZyAtQXBwZW5kIC1FbmNvZGluZyBVVEY4IH0KdHJ5IHsKICBBZGQtVHlwZSAtQXNzZW1ibHlOYW1lIFN5c3RlbS5XaW5kb3dzLkZvcm1zCiAgVyAiYXNzZW1ibGllcz1PSyIKICAkc3JjID0gQCcKdXNpbmcgU3lzdGVtOwp1c2luZyBTeXN0ZW0uV2luZG93cy5Gb3JtczsKcHVibGljIGNsYXNzIFZ2V2YgOiBBeEhvc3QgewogIHB1YmxpYyBWdldmKCkgOiBiYXNlKCJ7RjhDRjdBOTgtMkM0NS00YzhkLTkxNTEtMkQ3MTY5ODlEREFCfSIpIHt9CiAgcHVibGljIHN0cmluZyBEb1NyYyhzdHJpbmcgcCkgewogICAgdHJ5IHsKICAgICAgb2JqZWN0IG8gPSB0aGlzLkdldE9jeCgpOwogICAgICBvLkdldFR5cGUoKS5JbnZva2VNZW1iZXIoIlNyYyIsIFN5c3RlbS5SZWZsZWN0aW9uLkJpbmRpbmdGbGFncy5TZXRQcm9wZXJ0eSwgbnVsbCwgbywgbmV3IG9iamVjdFtde3B9KTsKICAgICAgcmV0dXJuICJTUkNfT0siOwogICAgfSBjYXRjaCAoRXhjZXB0aW9uIGV4KSB7IHJldHVybiAiU1JDX0VSUjoiICsgZXguSW5uZXJFeGNlcHRpb24uTWVzc2FnZSArICIgLyAiICsgZXguTWVzc2FnZTsgfQogIH0KICBwdWJsaWMgc3RyaW5nIEdldFAoc3RyaW5nIG5hbWUpIHsKICAgIHRyeSB7CiAgICAgIG9iamVjdCBvID0gdGhpcy5HZXRPY3goKTsKICAgICAgcmV0dXJuICIiICsgby5HZXRUeXBlKCkuSW52b2tlTWVtYmVyKG5hbWUsIFN5c3RlbS5SZWZsZWN0aW9uLkJpbmRpbmdGbGFncy5HZXRQcm9wZXJ0eSwgbnVsbCwgbywgbnVsbCk7CiAgICB9IGNhdGNoIChFeGNlcHRpb24gZXgpIHsgcmV0dXJuICJQX0VSUjoiICsgZXguTWVzc2FnZTsgfQogIH0KfQonQAogIEFkZC1UeXBlIC1UeXBlRGVmaW5pdGlvbiAkc3JjIC1SZWZlcmVuY2VkQXNzZW1ibGllcyBTeXN0ZW0uV2luZG93cy5Gb3JtcyxTeXN0ZW0KICBXICJhZGR0eXBlPU9LIgogICRjID0gTmV3LU9iamVjdCBWdldmCiAgVyAiY29udHJvbD1jcmVhdGVkIgogICRmb3JtID0gTmV3LU9iamVjdCBTeXN0ZW0uV2luZG93cy5Gb3Jtcy5Gb3JtCiAgJGZvcm0uV2lkdGggPSA5MDA7ICRmb3JtLkhlaWdodCA9IDcwMAogICRmb3JtLkNvbnRyb2xzLkFkZCgkYyk7ICRjLkRvY2sgPSBbU3lzdGVtLldpbmRvd3MuRm9ybXMuRG9ja1N0eWxlXTo6RmlsbAogICRzY3JpcHQ6ciA9ICJOT1RfU0hPV04iCiAgJGZvcm0uQWRkX1Nob3duKHsgdHJ5IHsgJHNjcmlwdDpyID0gJGMuRG9TcmMoJFZzZHgpIH0gY2F0Y2ggeyAkc2NyaXB0OnIgPSAiU0hPV05fRVJSOiIgKyAkXy5FeGNlcHRpb24uTWVzc2FnZSB9IH0pCiAgJGZvcm0uU2hvdygpCiAgVyAic2hvd249JHNjcmlwdDpyIgogICRzdyA9IFtEaWFnbm9zdGljcy5TdG9wd2F0Y2hdOjpTdGFydE5ldygpCiAgJG4gPSAwCiAgd2hpbGUgKCRzdy5FbGFwc2VkLlRvdGFsU2Vjb25kcyAtbHQgJFNlY3MpIHsKICAgIFtTeXN0ZW0uV2luZG93cy5Gb3Jtcy5BcHBsaWNhdGlvbl06OkRvRXZlbnRzKCkKICAgIFN0YXJ0LVNsZWVwIC1NaWxsaXNlY29uZHMgMjAwCiAgICBpZiAoJHN3LkVsYXBzZWQuVG90YWxTZWNvbmRzIC1ndCAyMCAqICgkbiArIDEpKSB7ICRuKys7ICRzY3JpcHQ6cjIgPSAkYy5Eb1NyYygkVnNkeCk7IFcgInJlYXBwbHkkbj0kc2NyaXB0OnIyIiB9CiAgfQogIFcgInBhZ2VzPSQoJGMuR2V0UCgnUGFnZXMnKSkgaWR4PSQoJGMuR2V0UCgnQ3VycmVudFBhZ2VJbmRleCcpKSIKfSBjYXRjaCB7CiAgVyAoIkZBVEFMOiIgKyAkXy5FeGNlcHRpb24uVG9TdHJpbmcoKSkKfQo='))
+        $hostPs1 | Set-Content vvhost_wf.ps1 -Encoding UTF8
         $docs = @(
           @{n='min'; p="$PWD\\min_test.vsdx"}
           @{n='real'; p="$PWD\\repo\\assets\\vsdx\\base_real1.vsdx"}
         )
         foreach ($d in $docs) {
           $v = $d.n; $docp = $d.p
-          $hta = "$PWD\\probe_$v.hta"
           $rlog = "$PWD\\cdb_$v.log"
           Remove-Item $rlog -Force -ErrorAction SilentlyContinue
-          $l = @(
-            '<html><head><HTA:APPLICATION ID="vvh"/></head><body>'
-            '<object id="vv" classid="clsid:F8CF7A98-2C45-4c8d-9151-2D716989DDAB" width="90%" height="90%"></object>'
-            '<script language="VBScript">'
-            'Sub StartLoad'
-            '  On Error Resume Next'
-            '  vv.Src = "' + $docp + '"'
-            '  Dim rv, fso, f, p'
-            '  rv = "srcerr=" & Err.Number'
-            '  Err.Clear'
-            '  p = vv.Pages.Count'
-            '  rv = rv & " pages=" & p & " err2=" & Err.Number'
-            '  Set fso = CreateObject("Scripting.FileSystemObject")'
-            '  Set f = fso.CreateTextFile("' + "$PWD\\r_" + '" + $v + ".txt", True)'
-            '  f.WriteLine rv'
-            '  f.Close'
-            'End Sub'
-            'Sub KeepAlive'
-            'End Sub'
-            'window.setTimeout "StartLoad", 3000'
-            'window.setTimeout "KeepAlive", 120000'
-            '</script></body></html>'
-          ) -join [Environment]::NewLine
-          $l | Set-Content -Path $hta -Encoding ASCII
-          $p = Start-Process -FilePath $cdb -ArgumentList '-cf',"$PWD\\bp_cmds.txt",'-logo',$rlog,'-o','C:\\Windows\\System32\\mshta.exe',$hta -PassThru -WindowStyle Hidden
+          Remove-Item "$PWD\\r_$v.txt" -Force -ErrorAction SilentlyContinue
+          $p = Start-Process -FilePath $cdb -ArgumentList '-cf',"$PWD\\bp_cmds.txt",'-logo',$rlog,'-o','C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe','-NoProfile','-ExecutionPolicy','Bypass','-STA','-File',"$PWD\\vvhost_wf.ps1",'-Vsdx',$docp,'-Secs','70','-Tag',$v -PassThru -WindowStyle Hidden -RedirectStandardError "$PWD\\err_$v.txt"
           $sw = [Diagnostics.Stopwatch]::StartNew()
           while (-not $p.HasExited -and $sw.Elapsed.TotalSeconds -lt 120) { Start-Sleep 5 }
           if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue }
           Start-Sleep 2
-          Stop-Process -Name mshta,cdb -Force -ErrorAction SilentlyContinue
+          Get-Process powershell -ErrorAction SilentlyContinue | Where-Object { $_.Id -ne $PID } | Stop-Process -Force -ErrorAction SilentlyContinue
+          Stop-Process -Name cdb -Force -ErrorAction SilentlyContinue
           Start-Sleep 1
           if (Test-Path $rlog) {
             $raw = Get-Content $rlog
@@ -158,7 +137,7 @@ jobs:
       shell: pwsh
       run: |
         New-Item -ItemType Directory -Force -Path outart | Out-Null
-        Copy-Item cdb_*.log, r_*.txt, bp_cmds.txt, craft.py, probe_*.hta, min_test.vsdx, embed_*.vsdx -Destination outart -ErrorAction SilentlyContinue
+        Copy-Item cdb_*.log, r_*.txt, err_*.txt, bp_cmds.txt, craft.py, probe_*.hta, min_test.vsdx, embed_*.vsdx -Destination outart -ErrorAction SilentlyContinue
     - uses: actions/upload-artifact@v4
       if: always()
       with:
