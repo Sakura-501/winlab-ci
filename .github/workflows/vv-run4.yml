@@ -98,44 +98,24 @@ jobs:
           'g'
         )
         $cmds | Set-Content bp_cmds.txt -Encoding ASCII
+        $hostPs1 = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('cGFyYW0oW3N0cmluZ10kVnNkeCwgW2ludF0kU2VjcyA9IDYwLCBbc3RyaW5nXSRUYWcgPSAidCIpCkFkZC1UeXBlIC1Bc3NlbWJseU5hbWUgU3lzdGVtLldpbmRvd3MuRm9ybXMKJHNyYyA9IEAnCnVzaW5nIFN5c3RlbTsKdXNpbmcgU3lzdGVtLldpbmRvd3MuRm9ybXM7CnB1YmxpYyBjbGFzcyBWdlJ1biA6IEF4SG9zdCB7CiAgcHVibGljIFZ2UnVuKCkgOiBiYXNlKCJ7RjhDRjdBOTgtMkM0NS00YzhkLTkxNTEtMkQ3MTY5ODlEREFCfSIpIHt9CiAgcHVibGljIHN0cmluZyBEb1NyYyhzdHJpbmcgcCkgewogICAgdHJ5IHsKICAgICAgb2JqZWN0IG8gPSB0aGlzLkdldE9jeCgpOwogICAgICBvLkdldFR5cGUoKS5JbnZva2VNZW1iZXIoIlNyYyIsIFN5c3RlbS5SZWZsZWN0aW9uLkJpbmRpbmdGbGFncy5TZXRQcm9wZXJ0eSwgbnVsbCwgbywgbmV3IG9iamVjdFtde3B9KTsKICAgICAgcmV0dXJuICJTUkNfT0siOwogICAgfSBjYXRjaCAoRXhjZXB0aW9uIGV4KSB7IHJldHVybiAiU1JDX0VSUjoiICsgZXguTWVzc2FnZTsgfQogIH0KICBwdWJsaWMgb2JqZWN0IEdldFAoc3RyaW5nIG5hbWUpIHsKICAgIHRyeSB7CiAgICAgIG9iamVjdCBvID0gdGhpcy5HZXRPY3goKTsKICAgICAgcmV0dXJuIG8uR2V0VHlwZSgpLkludm9rZU1lbWJlcihuYW1lLCBTeXN0ZW0uUmVmbGVjdGlvbi5CaW5kaW5nRmxhZ3MuR2V0UHJvcGVydHksIG51bGwsIG8sIG51bGwpOwogICAgfSBjYXRjaCAoRXhjZXB0aW9uIGV4KSB7IHJldHVybiAiUF9FUlI6IiArIGV4Lk1lc3NhZ2U7IH0KICB9Cn0KJ0AKQWRkLVR5cGUgLVR5cGVEZWZpbml0aW9uICRzcmMgLVJlZmVyZW5jZWRBc3NlbWJsaWVzIFN5c3RlbS5XaW5kb3dzLkZvcm1zLFN5c3RlbQokYyA9IE5ldy1PYmplY3QgVnZSdW4KJGZvcm0gPSBOZXctT2JqZWN0IFN5c3RlbS5XaW5kb3dzLkZvcm1zLkZvcm0KJGZvcm0uV2lkdGggPSA5MDA7ICRmb3JtLkhlaWdodCA9IDcwMAokZm9ybS5Db250cm9scy5BZGQoJGMpOyAkYy5Eb2NrID0gW1N5c3RlbS5XaW5kb3dzLkZvcm1zLkRvY2tTdHlsZV06OkZpbGwKJHIgPSAiTk9UX1NIT1dOIgokZm9ybS5BZGRfU2hvd24oeyAkc2NyaXB0OnIgPSAkYy5Eb1NyYygkVnNkeCkgfSkKJGZvcm0uU2hvdygpCiRzdyA9IFtEaWFnbm9zdGljcy5TdG9wd2F0Y2hdOjpTdGFydE5ldygpCiRuID0gMAp3aGlsZSAoJHN3LkVsYXBzZWQuVG90YWxTZWNvbmRzIC1sdCAkU2VjcykgewogIFtTeXN0ZW0uV2luZG93cy5Gb3Jtcy5BcHBsaWNhdGlvbl06OkRvRXZlbnRzKCkKICBTdGFydC1TbGVlcCAtTWlsbGlzZWNvbmRzIDIwMAogIGlmICgkc3cuRWxhcHNlZC5Ub3RhbFNlY29uZHMgLWd0IDIwICogKCRuICsgMSkpIHsKICAgICRuKysKICAgICRzY3JpcHQ6cjIgPSAkYy5Eb1NyYygkVnNkeCkKICB9Cn0KJHBhZ2VzID0gJGMuR2V0UCgiUGFnZXMiKQokaWR4ID0gJGMuR2V0UCgiQ3VycmVudFBhZ2VJbmRleCIpCiJzaG93bj0kciByZWFwcGx5PSQoJHNjcmlwdDpyMikgcGFnZXM9JHBhZ2VzIGlkeD0kaWR4IG49JG4iIHwgT3V0LUZpbGUgIiRQV0Rccl8kVGFnLnR4dCIgLUVuY29kaW5nIFVURjgKJGZvcm0uQ2xvc2UoKQo='))
+        $hostPs1 | Set-Content vvhost_run.ps1 -Encoding UTF8
         $docs = @(
           @{n='min'; p="$PWD\\min_test.vsdx"}
           @{n='real'; p="$PWD\\repo\\assets\\vsdx\\base_real1.vsdx"}
         )
         foreach ($d in $docs) {
           $v = $d.n; $docp = $d.p
-          $hta = "$PWD\\probe_$v.hta"
           $rlog = "$PWD\\cdb_$v.log"
           Remove-Item $rlog -Force -ErrorAction SilentlyContinue
-          $l = @(
-            '<html><head><HTA:APPLICATION ID="vvh"/></head><body>'
-            '<object id="vv" classid="clsid:F8CF7A98-2C45-4c8d-9151-2D716989DDAB" width="90%" height="90%"></object>'
-            '<script language="VBScript">'
-            'Sub Window_OnLoad'
-            '  On Error Resume Next'
-            '  vv.Src = "' + $docp + '"'
-            '  Dim fso, f'
-            '  Set fso = CreateObject("Scripting.FileSystemObject")'
-            '  Set f = fso.CreateTextFile("' + "$PWD\\r_" + '" + $v + ".txt", True)' 
-            '  f.WriteLine "srcerr=" & Err.Number'
-            '  Err.Clear'
-            '  f.WriteLine "pages=" & vv.Pages.Count'
-            '  f.WriteLine "idx=" & vv.CurrentPageIndex'
-            '  f.WriteLine "err2=" & Err.Number'
-            '  f.Close'
-            '  window.setTimeout "KeepAlive", 120000'
-            'End Sub'
-            'Sub KeepAlive'
-            'End Sub'
-            '</script></body></html>'
-          ) -join [Environment]::NewLine
-          $l | Set-Content -Path $hta -Encoding ASCII
-          $p = Start-Process -FilePath $cdb -ArgumentList '-cf',"$PWD\\bp_cmds.txt",'-logo',$rlog,'-o','C:\\Windows\\System32\\mshta.exe',$hta -PassThru -WindowStyle Hidden
+          Remove-Item "$PWD\\r_$v.txt" -Force -ErrorAction SilentlyContinue
+          $p = Start-Process -FilePath $cdb -ArgumentList '-cf',"$PWD\\bp_cmds.txt",'-logo',$rlog,'-o','C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe','-NoProfile','-ExecutionPolicy','Bypass','-STA','-File',"$PWD\\vvhost_run.ps1",'-Vsdx',$docp,'-Secs','70','-Tag',$v -PassThru -WindowStyle Hidden
           $sw = [Diagnostics.Stopwatch]::StartNew()
           while (-not $p.HasExited -and $sw.Elapsed.TotalSeconds -lt 120) { Start-Sleep 5 }
           if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue }
           Start-Sleep 2
-          Stop-Process -Name mshta,cdb -Force -ErrorAction SilentlyContinue
+          Get-Process powershell -ErrorAction SilentlyContinue | Where-Object { $_.Id -ne $PID } | Stop-Process -Force -ErrorAction SilentlyContinue
+          Stop-Process -Name cdb -Force -ErrorAction SilentlyContinue
           Start-Sleep 1
           if (Test-Path $rlog) {
             $raw = Get-Content $rlog
