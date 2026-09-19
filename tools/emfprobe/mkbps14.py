@@ -11,26 +11,41 @@ WW = r'C:\Program Files\Microsoft Office\root\Office16\wwlib.dll'
 PPC = r'C:\Program Files\Microsoft Office\root\Office16\ppcore.dll'
 
 lines = ['.sympath C:\\sym', '.reload']
+mso_bps = []
+ww_bps = []
+ppc_bps = []
 try:
     m = st.analyze_mso(MSO)
     if m.get('mso_cboa_reg'):
-        lines.append(f"bp mso+{hex(m['mso_cboa_reg'])} \".echo ===HIT_mso_cboa_reg===; g\"")
+        mso_bps.append(f"bp mso+{hex(m['mso_cboa_reg'])} \".echo ===HIT_mso_cboa_reg===; g\"")
     if m.get('mso_fread'):
-        lines.append(f"bp mso+{hex(m['mso_fread'])} \".echo ===HIT_mso_fread===; r rcx; r rdx; r r8; r r9; g\"")
+        mso_bps.append(f"bp mso+{hex(m['mso_fread'])} \".echo ===HIT_mso_fread===; r rcx; r rdx; r r8; r r9; g\"")
 except Exception as e:
     print('mso scan fail', e)
 try:
     w = st.analyze_wwlib(WW)
     if w.get('wwlib_icon_cb'):
-        lines.append(f"bp wwlib+{hex(w['wwlib_icon_cb'])} \".echo ===HIT_wwlib_icon_cb===; r r8; dd r8 L8; g\"")
+        ww_bps.append(f"bp wwlib+{hex(w['wwlib_icon_cb'])} \".echo ===HIT_wwlib_icon_cb===; r r8; dd r8 L8; g\"")
 except Exception as e:
     print('wwlib scan fail', e)
 try:
     pp = st.analyze_ppcore(PPC)
     if pp.get('ppc_icononly'):
-        lines.append(f"bp ppcore+{hex(pp['ppc_icononly'])} \".echo ===HIT_ppc_icononly===; g\"")
+        ppc_bps.append(f"bp ppcore+{hex(pp['ppc_icononly'])} \".echo ===HIT_ppc_icononly===; g\"")
 except Exception as e:
     print('ppcore scan fail', e)
+# module-load hooks: bps land when each module actually loads
+import os as _os
+if mso_bps:
+    _os.makedirs(r'C:\emfwork', exist_ok=True)
+    open(r'C:\emfwork\bps_mso14.txt','w').write('\n'.join(mso_bps)+'\n.echo ===MSO_BPS_SET===\ng\n')
+    lines.append('sxe -c "$$<C:\\emfwork\\bps_mso14.txt" ld:mso.dll')
+if ww_bps:
+    open(r'C:\emfwork\bps_ww14.txt','w').write('\n'.join(ww_bps)+'\n.echo ===WW_BPS_SET===\ng\n')
+    lines.append('sxe -c "$$<C:\\emfwork\\bps_ww14.txt" ld:wwlib.dll')
+if ppc_bps:
+    open(r'C:\emfwork\bps_ppc14.txt','w').write('\n'.join(ppc_bps)+'\n.echo ===PPC_BPS_SET===\ng\n')
+    lines.append('sxe -c "$$<C:\\emfwork\\bps_ppc14.txt" ld:ppcore.dll')
 lines.append('sxe -c ".echo ===AV===; r; kvn 12; qd" av')
 lines.append('bl')
 lines.append('g')

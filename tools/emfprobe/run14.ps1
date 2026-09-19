@@ -79,7 +79,7 @@ function ProbeWithCdb($exe,$args_,$tag,$actionBody,$waitOpen=60){
   }
   $c=Get-Content $log -ErrorAction SilentlyContinue
   $hits=@{}
-  foreach($ln in $c){ if($ln -match '^===HIT_|^===AV==='){ $hits[$ln]=1+$hits[$ln] } }
+  foreach($ln in $c){ if($ln -match '^===HIT_|^===AV===|^===.*_BPS_SET==='){ $hits[$ln]=1+$hits[$ln] } }
   $unres=($c | Select-String -SimpleMatch 'Unable to resolve').Count
   $alive=(Get-Process WINWORD,POWERPNT -ErrorAction SilentlyContinue).Count
   Log "[$tag] unres=$unres alive=$alive hits=$(($hits.GetEnumerator()|ForEach-Object{"$($_.Key)=$($_.Value)"}) -join ', ')"
