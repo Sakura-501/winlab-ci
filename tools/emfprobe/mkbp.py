@@ -11,7 +11,8 @@ for line in sys.stdin:
     mod = mods.get(tag.split('_')[0])
     if mod is None:
         continue
-    lines.append(f'bp {mod}+{rva} ".echo ===HIT_{tag}===; g"')
+    extra = '; r rdx' if tag == 'ppc_icononly' else ''
+    lines.append(f'bp {mod}+{rva} ".echo ===HIT_{tag}===; r{extra}; g"')
 lines.append('sxe -c ".echo ===AV===; r; kvn 12; qd" av')
 lines.append('sxe -c "$$<C:\\emfwork\\bps_mod.txt" ld:mso.dll')
 lines.append('sxe -c "$$<C:\\emfwork\\bps_mod.txt" ld:ppcore.dll')
