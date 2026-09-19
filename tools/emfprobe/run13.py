@@ -77,7 +77,7 @@ Start-Sleep -Seconds 5
 $w=[Runtime.InteropServices.Marshal]::GetActiveObject('Word.Application')
 $w.DisplayAlerts=0
 $d=$w.Documents.Add()
-$ole=$d.OLEObjects.Add($false,'C:\\emfwork\\seed.txt','Word.Document.12','C:\\Windows\\System32\\shell32.dll',1,$true,'Seed Icon')
+$ole=$d.OLEObjects.Add($true,$false,[Type]::Missing,'C:\\emfwork\\seed.txt',$true,'C:\\Windows\\System32\\shell32.dll',0,'Seed Icon')
 "ole added type=$($ole.Type)"
 $d.SaveAs2('C:\\emfwork\\oleicon_src.docx',16)
 $d.Close(0)
