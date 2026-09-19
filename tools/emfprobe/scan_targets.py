@@ -237,6 +237,15 @@ def analyze_wwlib(path):
                         res['wwlib_icon_drv'] = fo[0]
         if res:
             break
+    if 'wwlib_icon_cb' in res:
+        # find the ff15 call within cb whose preceding bytes contain '41 ff c0' (inc r8d)
+        cb = res['wwlib_icon_cb']
+        co = r2o(secs, cb)
+        cbody = d[co:co + 0x120]
+        for j in range(len(cbody) - 10):
+            if cbody[j:j+3] == b'\x41\xff\xc0' and cbody[j+4:j+6] == b'\xff\x15':
+                res['wwlib_icon_copy'] = cb + j + 4  # the ff15 call site
+                break
     return res
 
 def enumemf_registrar(d, secs, fs, text, icononly=None):

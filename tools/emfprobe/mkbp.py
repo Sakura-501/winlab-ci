@@ -17,6 +17,8 @@ for line in sys.stdin:
         cmd = f'bp {mod}+{rva} ".echo ===HIT_{tag}===; r rcx; r rdx; r r8; g"'
     elif tag == 'mso_fread':
         cmd = f'bp {mod}+{rva} ".echo ===HIT_{tag}===; r rcx; r rdx; r r8; r r9; g"'
+    elif tag == 'wwlib_icon_copy':
+        cmd = f'bp {mod}+{rva} ".echo ===HIT_{tag}===; r rdx; r r8; du rdx L40; g"'
     else:
         cmd = f'bp {mod}+{rva} ".echo ===HIT_{tag}===; g"'
     lines.append(cmd)
