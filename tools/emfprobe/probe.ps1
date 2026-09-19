@@ -232,7 +232,7 @@ try{
   $w.Quit()
   Log ('oleicon.doc ' + (Get-Item 'C:\emfwork\oleicon.doc' -ErrorAction SilentlyContinue).Length)
 }catch{ Log ("oleicon build fail: " + $_.Exception.Message) }
-$openOleIcon={ param($p) try{ $w=[Runtime.InteropServices.Marshal]::GetActiveObject('Word.Application'); $d=$w.Documents.Open('C:\emfwork\oleicon.doc'); Start-Sleep 6; try{ $d.OLEObjects.Item(1).Copy()|Out-Null; 'icon copied'; Start-Sleep 3; $r=$d.Range(); $r.Collapse(1); $r.PasteSpecial(,1); 'pasted'; Start-Sleep 6 }catch{ 'oleicon flow: ' + $_.Exception.Message }; $d.Close(0); $w.Quit() }catch{ 'com: ' + $_.Exception.Message } }
+$openOleIcon={ param($p) try{ $w=[Runtime.InteropServices.Marshal]::GetActiveObject('Word.Application'); $d=$w.Documents.Open('C:\emfwork\oleicon.doc'); Start-Sleep 6; try{ $d.OLEObjects.Item(1).Copy()|Out-Null; 'icon copied'; Start-Sleep 3; $r=$d.Range(); $r.Collapse(1); $r.PasteSpecial([Type]::Missing,1); 'pasted'; Start-Sleep 6 }catch{ 'oleicon flow: ' + $_.Exception.Message }; $d.Close(0); $w.Quit() }catch{ 'com: ' + $_.Exception.Message } }
 $openOleIcon = [scriptblock]::Create($openOleIcon.ToString() + '#GUARD')
 Probe "$root\WINWORD.EXE" @('/n','/q') $openOleIcon 'word_oleicon'
 Log '=== done ==='
