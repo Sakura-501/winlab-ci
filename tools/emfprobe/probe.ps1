@@ -43,6 +43,7 @@ $scan | ForEach-Object { Log "  scan: $_" }
 $scan | Out-File scan_raw.txt -Encoding ascii
 Get-Content scan_raw.txt | python "$env:EMFTOOLS\mkbp.py" bps.txt
 if(-not (Test-Path bps.txt)){ throw 'mkbp failed' }
+Copy-Item bps.txt.mod bps_mod.txt -Force
 Get-Content bps.txt | ForEach-Object { Log "  bp: $_" }
 (Get-Content "$env:EMFTOOLS\dbgtemplate.txt") -replace '__BPSFILE__','C:\emfwork\bps.txt' | Set-Content dbgcfg.txt
 

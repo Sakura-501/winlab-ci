@@ -13,7 +13,18 @@ for line in sys.stdin:
         continue
     lines.append(f'bp {mod}+{rva} ".echo ===HIT_{tag}===; g"')
 lines.append('sxe -c ".echo ===AV===; r; kvn 12; qd" av')
+lines.append('sxe -c "$$<C:\\emfwork\\bps_mod.txt" ld:mso.dll')
+lines.append('sxe -c "$$<C:\\emfwork\\bps_mod.txt" ld:ppcore.dll')
 lines.append('bl')
 lines.append('g')
 open(sys.argv[1], 'w', newline='\n').write('\n'.join(lines) + '\n')
+# module-armed file: same bps minus the ld hooks (used inside ld handler)
+mod = ['.echo ===MOD_BPS===']
+for line in sys.stdin if False else []:
+    pass
+modlines = [l for l in lines if l.startswith('bp ') or l.startswith('sxe -c ".echo ===AV===')]
+modlines.append('bl')
+modlines.append('g')
+import os
+open(sys.argv[1] + '.mod', 'w', newline='\n').write('\n'.join(modlines) + '\n')
 print(f'bps file written: {len(lines)} lines')
