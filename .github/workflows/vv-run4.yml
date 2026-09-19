@@ -93,7 +93,7 @@ jobs:
       run: |
         New-Item -ItemType Directory -Force -Path "$PWD\srv" | Out-Null
         Copy-Item "$PWD\min_test.vsdx" "$PWD\srv\min_test.vsdx" -Force
-        Copy-Item "$PWD\repo\assets\vsdx\base_real1.vsdx" "$PWD\srv\base_real1.vsdx" -Force
+        Copy-Item "$PWD\assets\vsdx\base_real1.vsdx" "$PWD\srv\base_real1.vsdx" -Force
         "staged"
     - name: Run variant under debugger
       shell: pwsh
