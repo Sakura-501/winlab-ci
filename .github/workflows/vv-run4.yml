@@ -81,13 +81,6 @@ jobs:
         MkHta "$PWD\probe_norm.hta" "$PWD\min_test.vsdx"
         MkHta "$PWD\probe_evil.hta" "$PWD\min_evil.vsdx"
         "hta built"
-    - name: Precompile host assembly
-      shell: powershell
-      run: |
-        $cs = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('dXNpbmcgU3lzdGVtOwp1c2luZyBTeXN0ZW0uV2luZG93cy5Gb3JtczsKcHVibGljIGNsYXNzIFZ2V2YyIDogQXhIb3N0IHsKICBwdWJsaWMgVnZXZjIoKSA6IGJhc2UoIntGOENGN0E5OC0yQzQ1LTRjOGQtOTE1MS0yRDcxNjk4OUREQUJ9Iikge30KICBwdWJsaWMgc3RyaW5nIERvU3JjKHN0cmluZyBwKSB7CiAgICB0cnkgewogICAgICBvYmplY3QgbyA9IHRoaXMuR2V0T2N4KCk7CiAgICAgIG8uR2V0VHlwZSgpLkludm9rZU1lbWJlcigiU3JjIiwgU3lzdGVtLlJlZmxlY3Rpb24uQmluZGluZ0ZsYWdzLlNldFByb3BlcnR5LCBudWxsLCBvLCBuZXcgb2JqZWN0W117cH0pOwogICAgICByZXR1cm4gIlNSQ19PSyI7CiAgICB9IGNhdGNoIChFeGNlcHRpb24gZXgpIHsgcmV0dXJuICJTUkNfRVJSOiIgKyBleC5NZXNzYWdlOyB9CiAgfQogIHB1YmxpYyBzdHJpbmcgR2V0UChzdHJpbmcgbmFtZSkgewogICAgdHJ5IHsKICAgICAgb2JqZWN0IG8gPSB0aGlzLkdldE9jeCgpOwogICAgICByZXR1cm4gIiIgKyBvLkdldFR5cGUoKS5JbnZva2VNZW1iZXIobmFtZSwgU3lzdGVtLlJlZmxlY3Rpb24uQmluZGluZ0ZsYWdzLkdldFByb3BlcnR5LCBudWxsLCBvLCBudWxsKTsKICAgIH0gY2F0Y2ggKEV4Y2VwdGlvbiBleCkgeyByZXR1cm4gIlBfRVJSOiIgKyBleC5NZXNzYWdlOyB9CiAgfQp9Cg=='))
-        Add-Type -TypeDefinition $cs -ReferencedAssemblies System.Windows.Forms,System -OutputAssembly "$PWD\VvWf.dll" -OutputType Library
-        "compiled: $((Get-Item VvWf.dll).Length) bytes"
-
     - name: Run variant under debugger
       shell: pwsh
       run: |
@@ -105,24 +98,51 @@ jobs:
           'g'
         )
         $cmds | Set-Content bp_cmds.txt -Encoding ASCII
-        $hostPs1 = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('cGFyYW0oW3N0cmluZ10kVnNkeCwgW3N0cmluZ10kVGFnID0gInQiKQokbG9nID0gIiRQV0Rccl8kVGFnLnR4dCIKJG91dCA9IEAoKQp0cnkgewogICR2ID0gTmV3LU9iamVjdCAtQ29tT2JqZWN0IFZpc2lvVmlld2VyLlZpZXdlcgogICRvdXQgKz0gImNvY3JlYXRlPU9LIgogICMgZHVtcCB0eXBlaW5mbyB2aWEgSURpc3BhdGNoIEdldElEcyBvZiBjb21tb24gbmFtZXMKICAkdCA9ICR2LkdldFR5cGUoKQogICRvdXQgKz0gInR5cGU9JCgkdC5GdWxsTmFtZSkiCiAgZm9yZWFjaCAoJG5hbWUgaW4gQCgnU3JjJywnU291cmNlVVJMJywnRG9jdW1lbnQnLCdQYWdlcycsJ1BhZ2VDb3VudCcsJ0N1cnJlbnRQYWdlSW5kZXgnLCdPcGVuJywnTG9hZERvY3VtZW50JywnWm9vbScsJ0FwcGxpY2F0aW9uJywnVmlzaWJsZScpKSB7CiAgICB0cnkgewogICAgICAkbWkgPSAkdC5HZXRNZW1iZXIoJG5hbWUpCiAgICAgICRvdXQgKz0gIiRuYW1lID0+ICQoJG1pLkxlbmd0aCkgbWVtYmVycyIKICAgIH0gY2F0Y2ggeyAkb3V0ICs9ICIkbmFtZSA9PiBOT05FIiB9CiAgfQp9IGNhdGNoIHsgJG91dCArPSAiY29jcmVhdGU9RVJSOiAkKCRfLkV4Y2VwdGlvbi5NZXNzYWdlKSIgfQokb3V0IC1qb2luICJgbiIgfCBPdXQtRmlsZSAkbG9nIC1FbmNvZGluZyBVVEY4Cg=='))
-        $hostPs1 | Set-Content vvhost_disp.ps1 -Encoding UTF8
+        New-Item -Path "HKLM:\SOFTWARE\Microsoft\Internet Explorer\Main\FeatureControl\FEATURE_LOCALMACHINE_LOCKDOWN" -Force | Out-Null
+        Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Internet Explorer\Main\FeatureControl\FEATURE_LOCALMACHINE_LOCKDOWN" -Name "mshta.exe" -Type DWord -Value 0
+        Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Internet Explorer\Main\FeatureControl\FEATURE_LOCALMACHINE_LOCKDOWN" -Name "iexplore.exe" -Type DWord -Value 0
+        New-Item -Path "HKCU:\SOFTWARE\Microsoft\Internet Explorer\Main\FeatureControl\FEATURE_LOCALMACHINE_LOCKDOWN" -Force | Out-Null
+        Set-ItemProperty -Path "HKCU:\SOFTWARE\Microsoft\Internet Explorer\Main\FeatureControl\FEATURE_LOCALMACHINE_LOCKDOWN" -Name "mshta.exe" -Type DWord -Value 0
+        "lmk unlocked"
         $docs = @(
           @{n='min'; p="$PWD\\min_test.vsdx"}
           @{n='real'; p="$PWD\\repo\\assets\\vsdx\\base_real1.vsdx"}
         )
         foreach ($d in $docs) {
           $v = $d.n; $docp = $d.p
+          $hta = "$PWD\\probe_$v.hta"
           $rlog = "$PWD\\cdb_$v.log"
           Remove-Item $rlog -Force -ErrorAction SilentlyContinue
-          Remove-Item "$PWD\\r_$v.txt" -Force -ErrorAction SilentlyContinue
-          $p = Start-Process -FilePath $cdb -ArgumentList '-cf',"$PWD\\bp_cmds.txt",'-logo',$rlog,'-o','C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe','-NoProfile','-ExecutionPolicy','Bypass','-STA','-File',"$PWD\\vvhost_disp.ps1",'-Vsdx',$docp,'-Secs','70','-Tag',$v -PassThru -WindowStyle Hidden -RedirectStandardError "$PWD\\err_$v.txt"
+          $l = @(
+            '<html><head><HTA:APPLICATION ID="vvh"/></head><body>'
+            '<object id="vv" classid="clsid:F8CF7A98-2C45-4c8d-9151-2D716989DDAB" width="90%" height="90%"></object>'
+            '<script language="VBScript">'
+            'Sub StartLoad'
+            '  On Error Resume Next'
+            '  vv.Src = "' + $docp + '"'
+            '  Dim rv, fso, f, p'
+            '  rv = "srcerr=" & Err.Number'
+            '  Err.Clear'
+            '  p = vv.Pages.Count'
+            '  rv = rv & " pages=" & p & " err2=" & Err.Number'
+            '  Set fso = CreateObject("Scripting.FileSystemObject")'
+            '  Set f = fso.CreateTextFile("' + "$PWD\\r_" + '" + $v + ".txt", True)'
+            '  f.WriteLine rv'
+            '  f.Close'
+            'End Sub'
+            'Sub KeepAlive'
+            'End Sub'
+            'window.setTimeout "StartLoad", 3000'
+            'window.setTimeout "KeepAlive", 120000'
+            '</script></body></html>'
+          ) -join [Environment]::NewLine
+          $l | Set-Content -Path $hta -Encoding ASCII
+          $p = Start-Process -FilePath $cdb -ArgumentList '-cf',"$PWD\\bp_cmds.txt",'-logo',$rlog,'-o','C:\\Windows\\System32\\mshta.exe',$hta -PassThru -WindowStyle Hidden
           $sw = [Diagnostics.Stopwatch]::StartNew()
           while (-not $p.HasExited -and $sw.Elapsed.TotalSeconds -lt 120) { Start-Sleep 5 }
           if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue }
           Start-Sleep 2
-          Get-Process powershell -ErrorAction SilentlyContinue | Where-Object { $_.Id -ne $PID } | Stop-Process -Force -ErrorAction SilentlyContinue
-          Stop-Process -Name cdb -Force -ErrorAction SilentlyContinue
+          Stop-Process -Name mshta,cdb -Force -ErrorAction SilentlyContinue
           Start-Sleep 1
           if (Test-Path $rlog) {
             $raw = Get-Content $rlog
@@ -144,7 +164,7 @@ jobs:
       shell: pwsh
       run: |
         New-Item -ItemType Directory -Force -Path outart | Out-Null
-        Copy-Item cdb_*.log, r_*.txt, err_*.txt, shot_*.png, bp_cmds.txt, craft.py, probe_*.hta, min_test.vsdx, embed_*.vsdx -Destination outart -ErrorAction SilentlyContinue
+        Copy-Item cdb_*.log, r_*.txt, bp_cmds.txt, craft.py, probe_*.hta, min_test.vsdx, embed_*.vsdx -Destination outart -ErrorAction SilentlyContinue
     - uses: actions/upload-artifact@v4
       if: always()
       with:
