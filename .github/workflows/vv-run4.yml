@@ -119,18 +119,38 @@ jobs:
           @{n='min'; p="http://127.0.0.1:8000/min_test.vsdx"}
           @{n='real'; p="http://127.0.0.1:8000/base_real1.vsdx"}
         )
+        # enable ActiveX for Intranet/Local zones (runner-local only)
+        foreach ($z in @('CurrentUser\Internet','CurrentUser\Intranet','CurrentUser\TrustedSites','LMachine\Internet','LMachine\Intranet','LMachine\TrustedSites')) {
+          $k = "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Internet Settings\ZoneMap\$z"
+          New-Item -Path $k -Force | Out-Null
+          Set-ItemProperty -Path $k -Name "127.0.0.1" -Type DWord -Value 1
+        }
+        $k2 = "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Internet Settings\Zones\1"
+        New-Item -Path $k2 -Force | Out-Null
+        Set-ItemProperty -Path $k2 -Name "1C000000" -Type DWord -Value 0
+        Set-ItemProperty -Path $k2 -Name "1200" -Type DWord -Value 0
+        $k3 = "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Internet Settings\Zones\2"
+        New-Item -Path $k3 -Force | Out-Null
+        Set-ItemProperty -Path $k3 -Name "1C000000" -Type DWord -Value 0
+        Set-ItemProperty -Path $k3 -Name "1200" -Type DWord -Value 0
+        # html wrapper pages embedding the viewer object
         foreach ($d in $docs) {
-          $v = $d.n; $docp = $d.p
-          $rlog = "$PWD\\cdb_$v.log"
+          $v = $d.n
+          $html = "<html><body style='margin:0'><object id='vv' classid='clsid:F8CF7A98-2C45-4c8d-9151-2D716989DDAB' width='100%' height='100%'></object><script>document.getElementById('vv').Src='$($d.p)';</script></body></html>"
+          $html | Set-Content "$PWD\srv\page_$v.html" -Encoding ASCII
+        }
+        foreach ($d in $docs) {
+          $v = $d.n
+          $url = "http://127.0.0.1:8000/page_$v.html"
+          $rlog = "$PWD\cdb_$v.log"
           Remove-Item $rlog -Force -ErrorAction SilentlyContinue
-          Remove-Item "$PWD\\r_$v.txt" -Force -ErrorAction SilentlyContinue
-          $p = Start-Process -FilePath $cdb -ArgumentList '-cf',"$PWD\\bp_cmds.txt",'-logo',$rlog,'-o','C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe','-NoProfile','-ExecutionPolicy','Bypass','-STA','-File',"$PWD\\vvhost_wf.ps1",'-Vsdx',$docp,'-Secs','70','-Tag',$v -PassThru -RedirectStandardError "$PWD\\err_$v.txt"
+          Remove-Item "$PWD\r_$v.txt" -Force -ErrorAction SilentlyContinue
+          $p = Start-Process -FilePath $cdb -ArgumentList '-cf',"$PWD\bp_cmds.txt",'-logo',$rlog,'-o','C:\Program Files\Internet Explorer\iexplore.exe','-nohome',$url -PassThru -WindowStyle Hidden
           $sw = [Diagnostics.Stopwatch]::StartNew()
-          while (-not $p.HasExited -and $sw.Elapsed.TotalSeconds -lt 120) { Start-Sleep 5 }
+          while (-not $p.HasExited -and $sw.Elapsed.TotalSeconds -lt 100) { Start-Sleep 5 }
           if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue }
           Start-Sleep 2
-          Get-Process powershell -ErrorAction SilentlyContinue | Where-Object { $_.Id -ne $PID } | Stop-Process -Force -ErrorAction SilentlyContinue
-          Stop-Process -Name cdb -Force -ErrorAction SilentlyContinue
+          Stop-Process -Name iexplore,cdb -Force -ErrorAction SilentlyContinue
           Start-Sleep 1
           if (Test-Path $rlog) {
             $raw = Get-Content $rlog
@@ -138,9 +158,7 @@ jobs:
             $gfh = @($raw | Where-Object { $_ -match 'GFDHIT rcx=[0-9a-f]' }).Count
             $f4h = @($raw | Where-Object { $_ -match 'F4HIT rcx=[0-9a-f]' }).Count
             $sgh = @($raw | Where-Object { $_ -match 'SEGHIT rbx=[0-9a-f]' }).Count
-            $rf = "$PWD\\r_$v.txt"
-            $rline = if (Test-Path $rf) { (Get-Content $rf) -join ";" } else { "NO_RESULT_FILE" }
-            "[$v doc=$docp] lines=$($raw.Count) DGC=$dgch GFD=$gfh F4=$f4h SEG=$sgh RESULT=$rline"
+            "[$v url=$url] lines=$($raw.Count) DGC=$dgch GFD=$gfh F4=$f4h SEG=$sgh"
             $raw | Where-Object { $_ -match 'DGC rdx=|GFDHIT rcx=|F4HIT rcx=|SEGHIT rbx=|access violation' } | Select-Object -First 8 | ForEach-Object { "  $_" }
           } else { "[$v] NO LOG" }
         }
