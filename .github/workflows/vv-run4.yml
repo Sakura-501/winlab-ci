@@ -88,13 +88,6 @@ jobs:
         Add-Type -TypeDefinition $cs -ReferencedAssemblies System.Windows.Forms,System -OutputAssembly "$PWD\VvWf.dll" -OutputType Library
         "compiled: $((Get-Item VvWf.dll).Length) bytes"
 
-    - name: Stage server dir
-      shell: pwsh
-      run: |
-        New-Item -ItemType Directory -Force -Path "$PWD\srv" | Out-Null
-        Copy-Item "$PWD\min_test.vsdx" "$PWD\srv\min_test.vsdx" -Force
-        Copy-Item "$PWD\assets\vsdx\base_real1.vsdx" "$PWD\srv\base_real1.vsdx" -Force
-        "staged"
     - name: Run variant under debugger
       shell: pwsh
       run: |
@@ -114,43 +107,23 @@ jobs:
         $cmds | Set-Content bp_cmds.txt -Encoding ASCII
         $hostPs1 = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('cGFyYW0oW3N0cmluZ10kVnNkeCwgW2ludF0kU2VjcyA9IDcwLCBbc3RyaW5nXSRUYWcgPSAidCIpCiRsb2cgPSAiJFBXRFxyXyRUYWcudHh0IgpmdW5jdGlvbiBXKCRtKSB7ICRtIHwgT3V0LUZpbGUgJGxvZyAtQXBwZW5kIC1FbmNvZGluZyBVVEY4IH0KdHJ5IHsKICBBZGQtVHlwZSAtQXNzZW1ibHlOYW1lIFN5c3RlbS5XaW5kb3dzLkZvcm1zCiAgVyAiYXNzZW1ibGllcz1PSyIKICAkc3JjID0gQCcKdXNpbmcgU3lzdGVtOwp1c2luZyBTeXN0ZW0uV2luZG93cy5Gb3JtczsKcHVibGljIGNsYXNzIFZ2V2YgOiBBeEhvc3QgewogIHB1YmxpYyBWdldmKCkgOiBiYXNlKCJ7RjhDRjdBOTgtMkM0NS00YzhkLTkxNTEtMkQ3MTY5ODlEREFCfSIpIHt9CiAgcHVibGljIHN0cmluZyBEb1NyYyhzdHJpbmcgcCkgewogICAgdHJ5IHsKICAgICAgb2JqZWN0IG8gPSB0aGlzLkdldE9jeCgpOwogICAgICBvLkdldFR5cGUoKS5JbnZva2VNZW1iZXIoIlNyYyIsIFN5c3RlbS5SZWZsZWN0aW9uLkJpbmRpbmdGbGFncy5TZXRQcm9wZXJ0eSwgbnVsbCwgbywgbmV3IG9iamVjdFtde3B9KTsKICAgICAgcmV0dXJuICJTUkNfT0siOwogICAgfSBjYXRjaCAoRXhjZXB0aW9uIGV4KSB7IHJldHVybiAiU1JDX0VSUjoiICsgZXguSW5uZXJFeGNlcHRpb24uTWVzc2FnZSArICIgLyAiICsgZXguTWVzc2FnZTsgfQogIH0KICBwdWJsaWMgc3RyaW5nIEdldFAoc3RyaW5nIG5hbWUpIHsKICAgIHRyeSB7CiAgICAgIG9iamVjdCBvID0gdGhpcy5HZXRPY3goKTsKICAgICAgcmV0dXJuICIiICsgby5HZXRUeXBlKCkuSW52b2tlTWVtYmVyKG5hbWUsIFN5c3RlbS5SZWZsZWN0aW9uLkJpbmRpbmdGbGFncy5HZXRQcm9wZXJ0eSwgbnVsbCwgbywgbnVsbCk7CiAgICB9IGNhdGNoIChFeGNlcHRpb24gZXgpIHsgcmV0dXJuICJQX0VSUjoiICsgZXguTWVzc2FnZTsgfQogIH0KfQonQAogIEFkZC1UeXBlIC1QYXRoICIkUFdEXFZ2V2YuZGxsIgogIFcgImFkZHR5cGU9T0siCiAgJGMgPSBOZXctT2JqZWN0IFZ2V2YyCiAgVyAiY29udHJvbD1jcmVhdGVkIgogICRmb3JtID0gTmV3LU9iamVjdCBTeXN0ZW0uV2luZG93cy5Gb3Jtcy5Gb3JtCiAgJGZvcm0uV2lkdGggPSA5MDA7ICRmb3JtLkhlaWdodCA9IDcwMAogICRmb3JtLkNvbnRyb2xzLkFkZCgkYyk7ICRjLkRvY2sgPSBbU3lzdGVtLldpbmRvd3MuRm9ybXMuRG9ja1N0eWxlXTo6RmlsbAogICRmb3JtLkNyZWF0ZUNvbnRyb2woKQogICRjLkNyZWF0ZUNvbnRyb2woKQogICRoMSA9ICRjLkhhbmRsZQogIFcgImFjdGl2YXRlZCBoYW5kbGU9JGgxIgogICRzY3JpcHQ6ciA9ICJOT1RfU0hPV04iCiAgJGZvcm0uQWRkX1Nob3duKHsgdHJ5IHsgJHNjcmlwdDpyID0gJGMuRG9TcmMoJFZzZHgpIH0gY2F0Y2ggeyAkc2NyaXB0OnIgPSAiU0hPV05fRVJSOiIgKyAkXy5FeGNlcHRpb24uTWVzc2FnZSB9IH0pCiAgJGZvcm0uU2hvdygpCiAgVyAic2hvd249JHNjcmlwdDpyIgogICRzdyA9IFtEaWFnbm9zdGljcy5TdG9wd2F0Y2hdOjpTdGFydE5ldygpCiAgJG4gPSAwCiAgd2hpbGUgKCRzdy5FbGFwc2VkLlRvdGFsU2Vjb25kcyAtbHQgJFNlY3MpIHsKICAgIFtTeXN0ZW0uV2luZG93cy5Gb3Jtcy5BcHBsaWNhdGlvbl06OkRvRXZlbnRzKCkKICAgIFN0YXJ0LVNsZWVwIC1NaWxsaXNlY29uZHMgMjAwCiAgICBpZiAoJHN3LkVsYXBzZWQuVG90YWxTZWNvbmRzIC1ndCAyMCAqICgkbiArIDEpKSB7CiAgICAgICRuKysKICAgICAgJHNjcmlwdDpyMiA9ICRjLkRvU3JjKCRWc2R4KTsgVyAicmVhcHBseSRuPSRzY3JpcHQ6cjIiCiAgICAgIHRyeSB7CiAgICAgICAgW1N5c3RlbS5SZWZsZWN0aW9uLkFzc2VtYmx5XTo6TG9hZFdpdGhQYXJ0aWFsTmFtZSgnU3lzdGVtLkRyYXdpbmcnKSB8IE91dC1OdWxsCiAgICAgICAgJGJtcCA9IE5ldy1PYmplY3QgU3lzdGVtLkRyYXdpbmcuQml0bWFwKCRmb3JtLldpZHRoLCAkZm9ybS5IZWlnaHQpCiAgICAgICAgJGcgPSBbU3lzdGVtLkRyYXdpbmcuR3JhcGhpY3NdOjpGcm9tSW1hZ2UoJGJtcCkKICAgICAgICAkZy5Db3B5RnJvbVNjcmVlbigkZm9ybS5Mb2NhdGlvbiwgW1N5c3RlbS5EcmF3aW5nLlBvaW50XTo6RW1wdHksICRmb3JtLlNpemUpCiAgICAgICAgJGcuRGlzcG9zZSgpCiAgICAgICAgJGJtcC5TYXZlKCIkUFdEXHNob3RfJHtUYWd9XyRuLnBuZyIsIFtTeXN0ZW0uRHJhd2luZy5JbWFnaW5nLkltYWdlRm9ybWF0XTo6UG5nKQogICAgICAgICRibXAuRGlzcG9zZSgpCiAgICAgICAgVyAic2hvdCRuPXNhdmVkIgogICAgICB9IGNhdGNoIHsgVyAic2hvdCRuPUVSUjokKCRfLkV4Y2VwdGlvbi5NZXNzYWdlKSIgfQogICAgfQogIH0KICBXICJwYWdlcz0kKCRjLkdldFAoJ1BhZ2VzJykpIGlkeD0kKCRjLkdldFAoJ0N1cnJlbnRQYWdlSW5kZXgnKSkiCn0gY2F0Y2ggewogIFcgKCJGQVRBTDoiICsgJF8uRXhjZXB0aW9uLlRvU3RyaW5nKCkpCn0K'))
         $hostPs1 | Set-Content vvhost_wf.ps1 -Encoding UTF8
-        Start-Process python -ArgumentList '-m','http.server','8000','--bind','127.0.0.1' -WorkingDirectory "$PWD\\srv" -WindowStyle Hidden
         $docs = @(
-          @{n='min'; p="http://127.0.0.1:8000/min_test.vsdx"}
-          @{n='real'; p="http://127.0.0.1:8000/base_real1.vsdx"}
+          @{n='txt'; p="$PWD\\assets\\vsdx\\real1_tahomx.vsdx"}
+          @{n='notxt'; p="$PWD\\assets\\vsdx\\base_real1.vsdx"}
+          @{n='min'; p="$PWD\\min_test.vsdx"}
         )
-        # enable ActiveX for Intranet/Local zones (runner-local only)
-        foreach ($z in @('CurrentUser\Internet','CurrentUser\Intranet','CurrentUser\TrustedSites','LMachine\Internet','LMachine\Intranet','LMachine\TrustedSites')) {
-          $k = "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Internet Settings\ZoneMap\$z"
-          New-Item -Path $k -Force | Out-Null
-          Set-ItemProperty -Path $k -Name "127.0.0.1" -Type DWord -Value 1
-        }
-        $k2 = "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Internet Settings\Zones\1"
-        New-Item -Path $k2 -Force | Out-Null
-        Set-ItemProperty -Path $k2 -Name "1C000000" -Type DWord -Value 0
-        Set-ItemProperty -Path $k2 -Name "1200" -Type DWord -Value 0
-        $k3 = "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Internet Settings\Zones\2"
-        New-Item -Path $k3 -Force | Out-Null
-        Set-ItemProperty -Path $k3 -Name "1C000000" -Type DWord -Value 0
-        Set-ItemProperty -Path $k3 -Name "1200" -Type DWord -Value 0
-        # html wrapper pages embedding the viewer object
         foreach ($d in $docs) {
-          $v = $d.n
-          $html = "<html><body style='margin:0'><object id='vv' classid='clsid:F8CF7A98-2C45-4c8d-9151-2D716989DDAB' width='100%' height='100%'></object><script>document.getElementById('vv').Src='$($d.p)';</script></body></html>"
-          $html | Set-Content "$PWD\srv\page_$v.html" -Encoding ASCII
-        }
-        foreach ($d in $docs) {
-          $v = $d.n
-          $url = "http://127.0.0.1:8000/page_$v.html"
-          $rlog = "$PWD\cdb_$v.log"
+          $v = $d.n; $docp = $d.p
+          $rlog = "$PWD\\cdb_$v.log"
           Remove-Item $rlog -Force -ErrorAction SilentlyContinue
-          Remove-Item "$PWD\r_$v.txt" -Force -ErrorAction SilentlyContinue
-          $p = Start-Process -FilePath $cdb -ArgumentList '-cf',"$PWD\bp_cmds.txt",'-logo',$rlog,'-o','C:\Program Files\Internet Explorer\iexplore.exe','-nohome',$url -PassThru -WindowStyle Hidden
+          Remove-Item "$PWD\\r_$v.txt" -Force -ErrorAction SilentlyContinue
+          $p = Start-Process -FilePath $cdb -ArgumentList '-cf',"$PWD\\bp_cmds.txt",'-logo',$rlog,'-o','C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe','-NoProfile','-ExecutionPolicy','Bypass','-STA','-File',"$PWD\\vvhost_wf.ps1",'-Vsdx',$docp,'-Secs','70','-Tag',$v -PassThru -WindowStyle Hidden -RedirectStandardError "$PWD\\err_$v.txt"
           $sw = [Diagnostics.Stopwatch]::StartNew()
-          while (-not $p.HasExited -and $sw.Elapsed.TotalSeconds -lt 100) { Start-Sleep 5 }
+          while (-not $p.HasExited -and $sw.Elapsed.TotalSeconds -lt 120) { Start-Sleep 5 }
           if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue }
           Start-Sleep 2
-          Stop-Process -Name iexplore,cdb -Force -ErrorAction SilentlyContinue
+          Get-Process powershell -ErrorAction SilentlyContinue | Where-Object { $_.Id -ne $PID } | Stop-Process -Force -ErrorAction SilentlyContinue
+          Stop-Process -Name cdb -Force -ErrorAction SilentlyContinue
           Start-Sleep 1
           if (Test-Path $rlog) {
             $raw = Get-Content $rlog
@@ -158,7 +131,9 @@ jobs:
             $gfh = @($raw | Where-Object { $_ -match 'GFDHIT rcx=[0-9a-f]' }).Count
             $f4h = @($raw | Where-Object { $_ -match 'F4HIT rcx=[0-9a-f]' }).Count
             $sgh = @($raw | Where-Object { $_ -match 'SEGHIT rbx=[0-9a-f]' }).Count
-            "[$v url=$url] lines=$($raw.Count) DGC=$dgch GFD=$gfh F4=$f4h SEG=$sgh"
+            $rf = "$PWD\\r_$v.txt"
+            $rline = if (Test-Path $rf) { (Get-Content $rf) -join ";" } else { "NO_RESULT_FILE" }
+            "[$v doc=$docp] lines=$($raw.Count) DGC=$dgch GFD=$gfh F4=$f4h SEG=$sgh RESULT=$rline"
             $raw | Where-Object { $_ -match 'DGC rdx=|GFDHIT rcx=|F4HIT rcx=|SEGHIT rbx=|access violation' } | Select-Object -First 8 | ForEach-Object { "  $_" }
           } else { "[$v] NO LOG" }
         }
