@@ -60,8 +60,10 @@ def patch(path_in, path_out, stress=0x7FFF0000):
         raise RuntimeError('no EOF record')
     pos = eof[-1][0]
     inj = build_comment(stress, (b'msOZMSOFFICE9.0' + b'\x00' * 5).ljust(20, b'\x00'))
-    # pattern-absent record: forces the wide search to scan the full declared length
-    inj += build_comment(stress, b'X\x00' * 10)
+    # NUL-free 4096-byte record: decisive test whether the wide search is
+    # length-driven (memmem semantics -> scans declared DataSize/2 words) or
+    # string-driven (stops at first NUL). 'A'*4096 contains no NUL.
+    inj += build_comment(stress, b'A' * 4096)
     d[pos:pos] = inj
     nb, nr = struct.unpack_from('<II', d, 0x30)
     struct.pack_into('<II', d, 0x30, nb + len(inj), nr + 2)
