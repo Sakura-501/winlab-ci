@@ -39,6 +39,7 @@ foreach($m in @('mso','ppcore')){
 }
 $scan = python "$env:EMFTOOLS\scan_targets.py" mso "$msoDll" 2>&1
 $scan += python "$env:EMFTOOLS\scan_targets.py" ppcore "$root\ppcore.dll" 2>&1
+$scan += python "$env:EMFTOOLS\scan_targets.py" wwlib "$root\wwlib.dll" 2>&1
 $scan | ForEach-Object { Log "  scan: $_" }
 $scan | Out-File scan_raw.txt -Encoding ascii
 Get-Content scan_raw.txt | python "$env:EMFTOOLS\mkbp.py" bps.txt
@@ -218,4 +219,20 @@ Probe "$root\EXCEL.EXE" @('/x') $xlsCopyPaste 'xls_copypaste'
 # Word InlineShapes.AddPicture direct EMF
 $wordAddPic={ param($p) try{ $w=[Runtime.InteropServices.Marshal]::GetActiveObject('Word.Application'); $d=$w.Documents.Add(); try{ $d.InlineShapes.AddPicture('C:\emfwork\evil.emf')|Out-Null; Log '  wrd addpic ok'; Start-Sleep 8 }catch{ Log ('  wrd addpic: ' + $_.Exception.Message) }; $d.Close(0); $w.Quit() }catch{ Log ('  com: ' + $_.Exception.Message) } }
 Probe "$root\WINWORD.EXE" @('/n','/q') $wordAddPic 'word_addpic'
+# Word: insert OLE object DisplayAsIcon (icon EMF cache -> FRecordRichTextEdit path)
+try{
+  $w=New-Object -ComObject Word.Application
+  $w.Visible=$false; $w.DisplayAlerts=0
+  $d=$w.Documents.Add()
+  try{
+    $d.OLEObjects.Add($false,"C:\emfwork\seed.txt","Word.Document.12","$env:windir\system32\shell32.dll",1,0,"Seed Icon",0,0)|Out-Null
+    Log '  wrd oleicon added'
+  }catch{ Log ('  wrd oleicon add: ' + $_.Exception.Message) }
+  $d.SaveAs2('C:\emfwork\oleicon.doc',0); $d.Close(0)
+  $w.Quit()
+  Log ('oleicon.doc ' + (Get-Item 'C:\emfwork\oleicon.doc' -ErrorAction SilentlyContinue).Length)
+}catch{ Log ("oleicon build fail: " + $_.Exception.Message) }
+$openOleIcon={ param($p) try{ $w=[Runtime.InteropServices.Marshal]::GetActiveObject('Word.Application'); $d=$w.Documents.Open('C:\emfwork\oleicon.doc'); Start-Sleep 6; try{ $d.OLEObjects.Item(1).Copy()|Out-Null; 'icon copied'; Start-Sleep 3; $r=$d.Range(); $r.Collapse(1); $r.PasteSpecial(,1); 'pasted'; Start-Sleep 6 }catch{ 'oleicon flow: ' + $_.Exception.Message }; $d.Close(0); $w.Quit() }catch{ 'com: ' + $_.Exception.Message } }
+$openOleIcon = [scriptblock]::Create($openOleIcon.ToString() + '#GUARD')
+Probe "$root\WINWORD.EXE" @('/n','/q') $openOleIcon 'word_oleicon'
 Log '=== done ==='

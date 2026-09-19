@@ -178,6 +178,65 @@ def analyze_mso(path):
             break
     res['mso_cbe_cb'] = cb
     res['mso_cboa_reg'] = reg
+    if cb is not None:
+        co = r2o(secs, cb)
+        cbody = d[co:co + 0x200]
+        # last direct call inside cb = GELOASCAN::FRead consumer
+        i = 0; last = None
+        while True:
+            i = cbody.find(b'\xe8', i)
+            if i < 0 or i + 5 > len(cbody): break
+            rel = struct.unpack_from('<i', cbody, i + 1)[0]
+            tgt = cb + i + 5 + rel
+            if func_of(fs, tgt):
+                last = tgt
+            i += 1
+        res['mso_fread'] = last
+    return res
+
+def analyze_wwlib(path):
+    d = open(path, 'rb').read()
+    secs = sections(d)
+    text = [s for s in secs if s[0] == '.text'][0]
+    body = d[text[3]:text[3]+text[4]]
+    fs = pdata_funcs(d, secs)
+    slot = delayed_iat_slot(d, secs, 'gdi32', 'EnumEnhMetaFile')
+    res = {}
+    if slot is None:
+        return res
+    ico = None
+    needle = b'I\x00c\x00o\x00n\x00O\x00n\x00l\x00y\x00'
+    for nm, va, vsz, ptr, rsz in secs:
+        if nm.startswith('.rdata'):
+            j = d[ptr:ptr+rsz].find(needle)
+            if j >= 0:
+                ico = va + j
+                break
+    if ico is None:
+        return res
+    for site in call_sites_of_slot(body, text[1], slot):
+        fo = func_of(fs, site)
+        if not fo:
+            continue
+        o = r2o(secs, fo[0]); n = site - fo[0]
+        win = d[o:o+n]
+        seen = set()
+        for j in range(len(win) - 7, -1, -1):
+            if win[j:j+2] in (b'\x48\x8d', b'\x4c\x8d') and (win[j+2] & 0xC7) == 0x05:
+                disp = struct.unpack_from('<i', win, j + 3)[0]
+                tgt = fo[0] + j + 7 + disp
+                if tgt in seen:
+                    continue
+                seen.add(tgt)
+                cfo = func_of(fs, tgt)
+                if cfo:
+                    co = r2o(secs, cfo[0])
+                    cbody = d[co:co + (cfo[1]-cfo[0])]
+                    if lea_targets(cbody, cfo[0], ico):
+                        res['wwlib_icon_cb'] = cfo[0]
+                        res['wwlib_icon_drv'] = fo[0]
+        if res:
+            break
     return res
 
 def enumemf_registrar(d, secs, fs, text, icononly=None):
@@ -261,6 +320,7 @@ def analyze_ppcore(path):
 
 if __name__ == '__main__':
     mode, path = sys.argv[1], sys.argv[2]
-    r = analyze_mso(path) if mode == 'mso' else analyze_ppcore(path)
+    fns = {'mso': analyze_mso, 'ppcore': analyze_ppcore, 'wwlib': analyze_wwlib}
+    r = fns[mode](path)
     for k, v in r.items():
         print(f'{k} {hex(v) if v else None}')

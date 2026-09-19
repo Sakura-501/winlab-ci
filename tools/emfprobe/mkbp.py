@@ -2,7 +2,7 @@
 """Convert scan_targets.py output into a cdb breakpoint command file."""
 import sys
 lines = ['.echo ===ATTACHED===']
-mods = {'mso': 'mso', 'ppc': 'ppcore'}
+mods = {'mso': 'mso', 'ppc': 'ppcore', 'wwlib': 'wwlib'}
 for line in sys.stdin:
     q = line.split()
     if len(q) != 2 or not q[1].startswith('0x'):
@@ -15,6 +15,8 @@ for line in sys.stdin:
         cmd = f'bp {mod}+{rva} ".echo ===HIT_{tag}===; dd rcx L3; g"'
     elif tag == 'ppc_scancall':
         cmd = f'bp {mod}+{rva} ".echo ===HIT_{tag}===; r rcx; r rdx; r r8; g"'
+    elif tag == 'mso_fread':
+        cmd = f'bp {mod}+{rva} ".echo ===HIT_{tag}===; r rcx; r rdx; r r8; r r9; g"'
     else:
         cmd = f'bp {mod}+{rva} ".echo ===HIT_{tag}===; g"'
     lines.append(cmd)
