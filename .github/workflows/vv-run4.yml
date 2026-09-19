@@ -111,7 +111,7 @@ jobs:
           '.printf "BPSL\n"',
           'g'
         )
-        $cmds | Set-Content bp_cmds.txt -Encoding ASCII
+        ('.childdbg 1') + $cmds | Set-Content bp_cmds.txt -Encoding ASCII
         $hostPs1 = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('cGFyYW0oW3N0cmluZ10kVnNkeCwgW2ludF0kU2VjcyA9IDcwLCBbc3RyaW5nXSRUYWcgPSAidCIpCiRsb2cgPSAiJFBXRFxyXyRUYWcudHh0IgpmdW5jdGlvbiBXKCRtKSB7ICRtIHwgT3V0LUZpbGUgJGxvZyAtQXBwZW5kIC1FbmNvZGluZyBVVEY4IH0KdHJ5IHsKICBBZGQtVHlwZSAtQXNzZW1ibHlOYW1lIFN5c3RlbS5XaW5kb3dzLkZvcm1zCiAgVyAiYXNzZW1ibGllcz1PSyIKICAkc3JjID0gQCcKdXNpbmcgU3lzdGVtOwp1c2luZyBTeXN0ZW0uV2luZG93cy5Gb3JtczsKcHVibGljIGNsYXNzIFZ2V2YgOiBBeEhvc3QgewogIHB1YmxpYyBWdldmKCkgOiBiYXNlKCJ7RjhDRjdBOTgtMkM0NS00YzhkLTkxNTEtMkQ3MTY5ODlEREFCfSIpIHt9CiAgcHVibGljIHN0cmluZyBEb1NyYyhzdHJpbmcgcCkgewogICAgdHJ5IHsKICAgICAgb2JqZWN0IG8gPSB0aGlzLkdldE9jeCgpOwogICAgICBvLkdldFR5cGUoKS5JbnZva2VNZW1iZXIoIlNyYyIsIFN5c3RlbS5SZWZsZWN0aW9uLkJpbmRpbmdGbGFncy5TZXRQcm9wZXJ0eSwgbnVsbCwgbywgbmV3IG9iamVjdFtde3B9KTsKICAgICAgcmV0dXJuICJTUkNfT0siOwogICAgfSBjYXRjaCAoRXhjZXB0aW9uIGV4KSB7IHJldHVybiAiU1JDX0VSUjoiICsgZXguSW5uZXJFeGNlcHRpb24uTWVzc2FnZSArICIgLyAiICsgZXguTWVzc2FnZTsgfQogIH0KICBwdWJsaWMgc3RyaW5nIEdldFAoc3RyaW5nIG5hbWUpIHsKICAgIHRyeSB7CiAgICAgIG9iamVjdCBvID0gdGhpcy5HZXRPY3goKTsKICAgICAgcmV0dXJuICIiICsgby5HZXRUeXBlKCkuSW52b2tlTWVtYmVyKG5hbWUsIFN5c3RlbS5SZWZsZWN0aW9uLkJpbmRpbmdGbGFncy5HZXRQcm9wZXJ0eSwgbnVsbCwgbywgbnVsbCk7CiAgICB9IGNhdGNoIChFeGNlcHRpb24gZXgpIHsgcmV0dXJuICJQX0VSUjoiICsgZXguTWVzc2FnZTsgfQogIH0KfQonQAogIEFkZC1UeXBlIC1QYXRoICIkUFdEXFZ2V2YuZGxsIgogIFcgImFkZHR5cGU9T0siCiAgJGMgPSBOZXctT2JqZWN0IFZ2V2YyCiAgVyAiY29udHJvbD1jcmVhdGVkIgogICRmb3JtID0gTmV3LU9iamVjdCBTeXN0ZW0uV2luZG93cy5Gb3Jtcy5Gb3JtCiAgJGZvcm0uV2lkdGggPSA5MDA7ICRmb3JtLkhlaWdodCA9IDcwMAogICRmb3JtLkNvbnRyb2xzLkFkZCgkYyk7ICRjLkRvY2sgPSBbU3lzdGVtLldpbmRvd3MuRm9ybXMuRG9ja1N0eWxlXTo6RmlsbAogICRmb3JtLkNyZWF0ZUNvbnRyb2woKQogICRjLkNyZWF0ZUNvbnRyb2woKQogICRoMSA9ICRjLkhhbmRsZQogIFcgImFjdGl2YXRlZCBoYW5kbGU9JGgxIgogICRzY3JpcHQ6ciA9ICJOT1RfU0hPV04iCiAgJGZvcm0uQWRkX1Nob3duKHsgdHJ5IHsgJHNjcmlwdDpyID0gJGMuRG9TcmMoJFZzZHgpIH0gY2F0Y2ggeyAkc2NyaXB0OnIgPSAiU0hPV05fRVJSOiIgKyAkXy5FeGNlcHRpb24uTWVzc2FnZSB9IH0pCiAgJGZvcm0uU2hvdygpCiAgVyAic2hvd249JHNjcmlwdDpyIgogICRzdyA9IFtEaWFnbm9zdGljcy5TdG9wd2F0Y2hdOjpTdGFydE5ldygpCiAgJG4gPSAwCiAgd2hpbGUgKCRzdy5FbGFwc2VkLlRvdGFsU2Vjb25kcyAtbHQgJFNlY3MpIHsKICAgIFtTeXN0ZW0uV2luZG93cy5Gb3Jtcy5BcHBsaWNhdGlvbl06OkRvRXZlbnRzKCkKICAgIFN0YXJ0LVNsZWVwIC1NaWxsaXNlY29uZHMgMjAwCiAgICBpZiAoJHN3LkVsYXBzZWQuVG90YWxTZWNvbmRzIC1ndCAyMCAqICgkbiArIDEpKSB7CiAgICAgICRuKysKICAgICAgJHNjcmlwdDpyMiA9ICRjLkRvU3JjKCRWc2R4KTsgVyAicmVhcHBseSRuPSRzY3JpcHQ6cjIiCiAgICAgIHRyeSB7CiAgICAgICAgW1N5c3RlbS5SZWZsZWN0aW9uLkFzc2VtYmx5XTo6TG9hZFdpdGhQYXJ0aWFsTmFtZSgnU3lzdGVtLkRyYXdpbmcnKSB8IE91dC1OdWxsCiAgICAgICAgJGJtcCA9IE5ldy1PYmplY3QgU3lzdGVtLkRyYXdpbmcuQml0bWFwKCRmb3JtLldpZHRoLCAkZm9ybS5IZWlnaHQpCiAgICAgICAgJGcgPSBbU3lzdGVtLkRyYXdpbmcuR3JhcGhpY3NdOjpGcm9tSW1hZ2UoJGJtcCkKICAgICAgICAkZy5Db3B5RnJvbVNjcmVlbigkZm9ybS5Mb2NhdGlvbiwgW1N5c3RlbS5EcmF3aW5nLlBvaW50XTo6RW1wdHksICRmb3JtLlNpemUpCiAgICAgICAgJGcuRGlzcG9zZSgpCiAgICAgICAgJGJtcC5TYXZlKCIkUFdEXHNob3RfJHtUYWd9XyRuLnBuZyIsIFtTeXN0ZW0uRHJhd2luZy5JbWFnaW5nLkltYWdlRm9ybWF0XTo6UG5nKQogICAgICAgICRibXAuRGlzcG9zZSgpCiAgICAgICAgVyAic2hvdCRuPXNhdmVkIgogICAgICB9IGNhdGNoIHsgVyAic2hvdCRuPUVSUjokKCRfLkV4Y2VwdGlvbi5NZXNzYWdlKSIgfQogICAgfQogIH0KICBXICJwYWdlcz0kKCRjLkdldFAoJ1BhZ2VzJykpIGlkeD0kKCRjLkdldFAoJ0N1cnJlbnRQYWdlSW5kZXgnKSkiCn0gY2F0Y2ggewogIFcgKCJGQVRBTDoiICsgJF8uRXhjZXB0aW9uLlRvU3RyaW5nKCkpCn0K'))
         $hostPs1 | Set-Content vvhost_wf.ps1 -Encoding UTF8
         Start-Process python -ArgumentList '-m','http.server','8000','--bind','127.0.0.1' -WorkingDirectory "$PWD\\srv" -WindowStyle Hidden
@@ -136,14 +136,27 @@ jobs:
           if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue }
           Start-Sleep 2
           try {
-            [Reflection.Assembly]::LoadWithPartialName('System.Windows.Forms') | Out-Null
-            [Reflection.Assembly]::LoadWithPartialName('System.Drawing') | Out-Null
-            $b = New-Object System.Drawing.Bitmap([Windows.Forms.Screen]::PrimaryScreen.Bounds.Width, [Windows.Forms.Screen]::PrimaryScreen.Bounds.Height)
-            $gg = [System.Drawing.Graphics]::FromImage($b)
-            $gg.CopyFromScreen(0,0,0,0,$b.Size)
-            $b.Save("$PWD\\ie_shot_$v.png", [System.Drawing.Imaging.ImageFormat]::Png)
-            $gg.Dispose(); $b.Dispose()
-            "ie_shot_$v saved"
+            Add-Type -AssemblyName System.Drawing
+            Add-Type -TypeDefinition "using System;using System.Runtime.InteropServices;public class PW{[DllImport(\"user32.dll\")]public static extern bool PrintWindow(IntPtr h,IntPtr d,uint f);[DllImport(\"user32.dll\")]public static extern bool GetWindowRect(IntPtr h,out RECT r);[DllImport(\"user32.dll\")]public static extern bool SetForegroundWindow(IntPtr h);public struct RECT{public int L,T,R,B;}}" -ErrorAction SilentlyContinue
+            $iw = Get-Process iexplore -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1
+            if ($iw) {
+              [PW]::SetForegroundWindow($iw.MainWindowHandle) | Out-Null
+              Start-Sleep 2
+              $r = New-Object PW+RECT
+              [PW]::GetWindowRect($iw.MainWindowHandle, [ref]$r) | Out-Null
+              $bw = $r.R - $r.L; $bh = $r.B - $r.T
+              "ie_win title=$($iw.MainWindowTitle) size=${bw}x${bh}"
+              if ($bw -gt 0 -and $bh -gt 0) {
+                $b = New-Object System.Drawing.Bitmap($bw, $bh)
+                $gg = [System.Drawing.Graphics]::FromImage($b)
+                $hdc = $gg.GetHdc()
+                [PW]::PrintWindow($iw.MainWindowHandle, $hdc, 2) | Out-Null
+                $gg.ReleaseHdc($hdc); $gg.Dispose()
+                $b.Save("$PWD\\ie_win_$v.png", [System.Drawing.Imaging.ImageFormat]::Png)
+                $b.Dispose()
+                "ie_win_$v saved"
+              }
+            } else { "no iexplore window" }
           } catch { "ie_shot ERR: $($_.Exception.Message)" }
           Stop-Process -Name iexplore,cdb -Force -ErrorAction SilentlyContinue
           Start-Sleep 1
@@ -165,7 +178,7 @@ jobs:
       shell: pwsh
       run: |
         New-Item -ItemType Directory -Force -Path outart | Out-Null
-        Copy-Item cdb_*.log, r_*.txt, err_*.txt, shot_*.png, ie_shot_*.png, bp_cmds.txt, craft.py, probe_*.hta, min_test.vsdx, embed_*.vsdx -Destination outart -ErrorAction SilentlyContinue
+        Copy-Item cdb_*.log, r_*.txt, err_*.txt, shot_*.png, ie_shot_*.png, ie_win_*.png, bp_cmds.txt, craft.py, probe_*.hta, min_test.vsdx, embed_*.vsdx -Destination outart -ErrorAction SilentlyContinue
     - uses: actions/upload-artifact@v4
       if: always()
       with:
