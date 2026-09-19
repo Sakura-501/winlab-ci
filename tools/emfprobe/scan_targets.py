@@ -247,6 +247,13 @@ def analyze_ppcore(path):
                     icononly = fo[0]
                     break
     res = {'ppc_icononly': icononly}
+    if icononly is not None:
+        fo2 = func_of(fs, icononly)
+        o2 = r2o(secs, fo2[0])
+        fbody = d[o2:o2 + (fo2[1] - fo2[0])]
+        j = fbody.find(b'\xff\x15')
+        if j >= 0:
+            res['ppc_scancall'] = fo2[0] + j  # regs set: rcx=data rdx=len r8=pat
     for idx, (reg, cb) in enumerate(enumemf_registrar(d, secs, fs, text, icononly)):
         res[f'ppc_enumemf{"" if idx==0 else idx}'] = cb
         res[f'ppc_reg{"" if idx==0 else idx}'] = reg

