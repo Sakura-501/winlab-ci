@@ -26,6 +26,8 @@ jobs:
         $vv = Get-Item "C:\Program Files\Microsoft Office\root\Office16\VVIEWER.DLL" -ErrorAction SilentlyContinue
         if (-not $vv) { throw "no VVIEWER" }
         "VVIEWER v{0}" -f $vv.VersionInfo.FileVersion
+    - name: Checkout assets
+      uses: actions/checkout@v4
     - name: Install debugger
       shell: pwsh
       run: |
@@ -96,12 +98,10 @@ jobs:
           'g'
         )
         $cmds | Set-Content bp_cmds.txt -Encoding ASCII
-        Write-Host "=== searching real .vsdx samples ==="
-        $samples = @(Get-ChildItem "C:\\Program Files\\Microsoft Office", "C:\\Program Files (x86)", "C:\\ProgramData\\Microsoft", "$env:LOCALAPPDATA" -Recurse -Filter *.vsdx -ErrorAction SilentlyContinue | Select-Object -First 3 -ExpandProperty FullName)
-        if (-not $samples) { $samples = @(Get-ChildItem "C:\\vsstest" -Recurse -Filter *.vsdx -ErrorAction SilentlyContinue | Select-Object -First 3 -ExpandProperty FullName) }
-        Write-Host ("samples found: " + ($samples -join " | "))
-        $docs = @(@{n='norm'; p="$PWD\\min_test.vsdx"})
-        foreach ($s in $samples) { $docs += @{n=("s" + [Math]::Abs($s.GetHashCode())); p=$s} }
+        $docs = @(
+          @{n='min'; p="$PWD\\min_test.vsdx"}
+          @{n='real'; p="$PWD\\repo\\assets\\vsdx\\base_real1.vsdx"}
+        )
         foreach ($d in $docs) {
           $v = $d.n; $docp = $d.p
           $hta = "$PWD\\probe_$v.hta"
