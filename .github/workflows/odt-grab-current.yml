@@ -1,0 +1,59 @@
+name: odt-grab-current
+on:
+  workflow_dispatch:
+jobs:
+  grab:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - name: Download ODT
+        shell: pwsh
+        run: |
+          $page = (Invoke-WebRequest -Uri "https://www.microsoft.com/en-us/download/details.aspx?id=49117" -UseBasicParsing).Content
+          if ($page -match 'href="(https://download\.microsoft\.com/download/[^"]+officedeploymenttool[^"]*\.exe)"') {
+            Invoke-WebRequest -Uri $Matches[1] -OutFile odt.exe
+          } else { throw "odt link not found" }
+          Start-Process -Wait -FilePath .\odt.exe -ArgumentList "/extract:odtx /quiet"
+      - name: Install Current Channel x64
+        shell: pwsh
+        run: |
+          $xml = '<Configuration><Add OfficeClientEdition="64" Channel="http://officecdn.microsoft.com/pr/492350f6-3a01-4f07-b9c0-c07960c82d24"><Product ID="O365ProPlusRetail"><Language ID="en-us" /><ExcludeApp ID="Excel" /><ExcludeApp ID="PowerPoint" /><ExcludeApp ID="Outlook" /><ExcludeApp ID="OneDrive" /><ExcludeApp ID="OneNote" /><ExcludeApp ID="Lync" /><ExcludeApp ID="Bing" /></Product></Add><Display Level="None" AcceptEULA="TRUE" /><Updates Enabled="FALSE" /></Configuration>'
+          Set-Content -Path cfg.xml -Value $xml
+          Start-Process -Wait -FilePath .\odtx\setup.exe -ArgumentList "/configure","cfg.xml"
+          $w = Get-Item "C:\Program Files\Microsoft Office\root\Office16\wwlib.dll" -ErrorAction SilentlyContinue
+          if (-not $w) { throw "install failed" }
+          "wwlib: {0} v{1}" -f $w.Length, $w.VersionInfo.FileVersion
+          $w.VersionInfo.FileVersion | Out-File ver.txt
+          $cfg = Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Office\ClickToRun\Configuration" -ErrorAction SilentlyContinue
+          if ($cfg) { "channel=" + $cfg.UpdateChannel + " ver=" + $cfg.VersionToReport | Out-File ver.txt -Append }
+      - name: Pack core modules (chunked 8MB)
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path pack | Out-Null
+          foreach ($m in @('wwlib.dll','Wordcnv.dll','excel.exe','oart.dll','CHART.DLL','mso.dll','ppcore.dll','MSOSPECTRE.DLL','OLMAPI32.DLL','onmain.DLL','VVIEWER.DLL')) {
+            $src = "C:\Program Files\Microsoft Office\root\Office16\$m"
+            if (-not (Test-Path $src)) { $src = Get-ChildItem "C:\Program Files\Microsoft Office\root\vfs\ProgramFilesCommonX64" -Recurse -Filter $m -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName }
+            if ($src -and (Test-Path $src)) { Copy-Item $src "pack\$m" -Force }
+          }
+          # split each module into <=8MB chunks: <name>.<nn>
+          New-Item -ItemType Directory -Force -Path chunks | Out-Null
+          foreach ($f in Get-ChildItem pack) {
+            $bytes = [IO.File]::ReadAllBytes($f.FullName)
+            $chunk = 8MB
+            $n = [math]::Ceiling($bytes.Length / $chunk)
+            for ($i = 0; $i -lt $n; $i++) {
+              $len = [math]::Min($chunk, $bytes.Length - $i * $chunk)
+              $part = New-Object byte[] $len
+              [Array]::Copy($bytes, $i * $chunk, $part, 0, $len)
+              [IO.File]::WriteAllBytes(("chunks\{0}.{1:D3}" -f $f.Name, $i), $part)
+            }
+            ("{0} -> {1} chunks" -f $f.Name, $n) | Out-File split.txt -Append
+          }
+          Get-ChildItem chunks | Measure-Object -Property Length -Sum | ForEach-Object { ("total chunks: " + (Get-ChildItem chunks).Count + " bytes: " + $_.Sum) | Out-File split.txt -Append }
+          Get-Content split.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: chunks-20430-x64
+          path: chunks
+          if-no-files-found: ignore
