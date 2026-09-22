@@ -106,6 +106,7 @@ jobs:
         if (Test-Path out\avfull.txt) { Get-Content out\avfull.txt | Select-Object -First 60 }
         $last = Get-Content out\headD.txt -Raw
         if ($last -notmatch 'touched=[1-9]') { throw "held streams were never touched: coverage void" }
+        if ($last -notmatch 'wraps=[1-9]') { throw "OpenProperty/Wrap never produced a held stream: coverage void" }
 
     - name: Upload evidence
       if: always()
