@@ -9,7 +9,7 @@ name: olm-rtfsync-dph-x64
       cap:
         description: 'max corpus cases this wave'
         required: false
-        default: '1600'
+        default: '2400'
       flags:
         description: 'comma list of WrapCompressedRTFStream ulFlags (hex)'
         required: false
@@ -57,6 +57,7 @@ jobs:
         (Get-ChildItem corpus -Filter *.msg).Count
         python tools\mk_msg_corpus.py bin\base_valid.msg payloads corpus 2>&1 | Select-Object -Last 4
         python tools\mk_sync_corpus.py bin\base_valid.msg corpus
+        python tools\mk_esc_corpus.py bin\base_valid.msg corpus
         (Get-ChildItem corpus -Filter *.msg).Count
         Remove-Item corpus\_p_*.bin -Force -ErrorAction SilentlyContinue
 
