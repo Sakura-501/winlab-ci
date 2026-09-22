@@ -61,6 +61,7 @@ jobs:
     - name: Arm full page heap and prove it behaviourally
       shell: pwsh
       run: |
+        $ErrorActionPreference='Continue'
         $hk = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options"
         foreach ($exe in @('crtfbench8_x64.exe','OUTLOOK.EXE')) {
           $k = "$hk\$exe"
@@ -75,12 +76,18 @@ jobs:
         $armed = if (('{0:X8}' -f $rc) -eq 'C0000005' -and $s -notmatch 'NOT_DETECTED' -and $s -match 'ABOUT_TO_WRITE_PAST_END') { 'ARMED' } else { 'NOT_ARMED' }
         "SELFTEST rc=0x$('{0:X8}' -f $rc) verdict=$armed" | Tee-Object out\selftest.txt -Append
         if ($armed -ne 'ARMED') { throw "instrument blind: aborting" }
-        New-Item -Force -Path "HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting\LocalDumps\OUTLOOK.EXE" | Out-Null
-        $ld = "HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting\LocalDumps\OUTLOOK.EXE"
-        New-ItemProperty -Path $ld -Name DumpFolder -Value "$PWD\out\dumps" -PropertyType ExpandString -Force | Out-Null
-        New-ItemProperty -Path $ld -Name DumpType -Value 2 -PropertyType DWord -Force | Out-Null
-        New-ItemProperty -Path $ld -Name DumpCount -Value 400 -PropertyType DWord -Force | Out-Null
         New-Item -ItemType Directory -Force -Path out\dumps | Out-Null
+        try {
+            $wer = "HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting"
+            New-Item -Path "$wer\LocalDumps" -Force | Out-Null
+            $ld = "$wer\LocalDumps\OUTLOOK.EXE"
+            New-Item -Path $ld -Force | Out-Null
+            New-ItemProperty -Path $ld -Name DumpFolder -Value (Join-Path (Get-Location).Path "out\dumps") -PropertyType ExpandString -Force | Out-Null
+            New-ItemProperty -Path $ld -Name DumpType -Value 2 -PropertyType DWord -Force | Out-Null
+            New-ItemProperty -Path $ld -Name DumpCount -Value 400 -PropertyType DWord -Force | Out-Null
+            "WER local dumps -> out\dumps"
+        } catch { "WER setup unavailable (non-fatal; exit-code detection still active): $($_.Exception.Message)" }
+        if (-not (Test-Path out\dumps)) { throw "dumps dir missing" }
 
     - name: Positive control - the importer must actually load
       shell: pwsh
