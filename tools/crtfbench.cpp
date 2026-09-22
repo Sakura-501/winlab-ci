@@ -14,6 +14,8 @@ typedef HRESULT (STDAPICALLTYPE *PFN_WRAP)(IStream *, ULONG, IStream **);
 typedef HRESULT (STDAPICALLTYPE *PFN_OPEN_TNEF)(IStream *, void **, LPCSTR, ULONG, void *, void *, void *);
 typedef HRESULT (STDAPICALLTYPE *PFN_GET_TNEF_STM)(void *, IStream **);
 typedef HRESULT (STDAPICALLTYPE *PFN_RTFSYNC)(void *, ULONG, int *);
+typedef HRESULT (STDAPICALLTYPE *PFN_PARSE_ADDR)(ULONG, ULONG, const char *, void *);
+typedef HRESULT (STDAPICALLTYPE *PFN_OPEN_TNEF_MSG)(void *, IStream *, void **, LPCSTR, ULONG, void *, void *);
 typedef HRESULT (STDAPICALLTYPE *PFN_OPENMSGSESS)(void *, ULONG, void **);
 typedef HRESULT (STDAPICALLTYPE *PFN_OPENMSGONI)(void *, void *, void *, void *, void *, void *, void *, void *, ULONG, ULONG, void **);
 typedef HRESULT (STDAPICALLTYPE *PFN_ALLOCBUF)(ULONG, void **);
@@ -28,6 +30,8 @@ static HMODULE        g_hOlm = nullptr;
 static char           g_modname[260] = {0};
 static uintptr_t      g_modbase = 0;
 static volatile LONG  g_in_handler = 0;
+static volatile LONG  g_soft = 0;        // mode 40: report the fault and let SEH swallow it
+static unsigned long  g_faults = 0;
 
 static void ModuleFor(uintptr_t a, char *out, size_t cch, uintptr_t *base)
 {
@@ -62,7 +66,15 @@ LONG CALLBACK Veh(PEXCEPTION_POINTERS ep)
     if (InterlockedCompareExchange(&g_in_handler, 1, 0) != 0)
         return EXCEPTION_CONTINUE_SEARCH;
     DWORD code = ep->ExceptionRecord->ExceptionCode;
-    if (code == EXCEPTION_ACCESS_VIOLATION) {
+    if (code == EXCEPTION_ACCESS_VIOLATION || code == 0xC0000409 || code == 0xC0000374 ||
+        code == 0x80000003 || code == (DWORD)0xC00000FD) {
+        if (code != EXCEPTION_ACCESS_VIOLATION) {
+            printf("!!!EXC code=%08x addr=%p\n", (unsigned)code, ep->ExceptionRecord->ExceptionAddress);
+            fflush(stdout);
+            InterlockedExchange(&g_in_handler, 0);
+            if (g_soft) { InterlockedIncrement(&g_faults); return EXCEPTION_CONTINUE_SEARCH; }
+            TerminateProcess(GetCurrentProcess(), code);
+        }
         ULONG_PTR info0 = ep->ExceptionRecord->ExceptionInformation[0];
         ULONG_PTR info1 = ep->ExceptionRecord->ExceptionInformation[1];
         uintptr_t addr = (uintptr_t)ep->ExceptionRecord->ExceptionAddress;
@@ -93,6 +105,7 @@ LONG CALLBACK Veh(PEXCEPTION_POINTERS ep)
         }
         fflush(stdout);
         InterlockedExchange(&g_in_handler, 0);
+        if (g_soft) { InterlockedIncrement(&g_faults); return EXCEPTION_CONTINUE_SEARCH; }
         TerminateProcess(GetCurrentProcess(), 0xC0000005);
     }
     InterlockedExchange(&g_in_handler, 0);
@@ -146,7 +159,8 @@ int main(int argc, char **argv)
     g_pWrapEx = (PFN_WRAP)GetProcAddress(g_hOlm, "WrapCompressedRTFStreamEx");
     PFN_MAPIINIT pInit = (PFN_MAPIINIT)GetProcAddress(g_hOlm, "MAPIInitialize");
     if (!g_pWrap) { printf("NOWRAP\n"); return 4; }
-    if (pInit) { HRESULT hr = pInit(nullptr); printf("MAPIInitialize hr=%08x\n", (unsigned)hr); }
+    if (pInit && !getenv("CRTF_NOMAPI")) { HRESULT hr = pInit(nullptr); printf("MAPIInitialize hr=%08x\n", (unsigned)hr); }
+    else printf("MAPIInitialize skipped\n");
 
     if (argc > 1 && strcmp(argv[1], "selftest") == 0) {
         // armed-heap gate: in-bounds write must pass, +0x100 write must fault (0xC0000005)
@@ -174,6 +188,109 @@ int main(int argc, char **argv)
     int mode = (argc > 4) ? atoi(argv[4]) : 0;
     printf("blob=%zu flags=%x chunk=%u mode=%d\n", cb, flags, chunk, mode);
 
+    if (mode == 40) {
+        g_soft = 1;
+        if (getenv("CRTF_NOMAPI")) printf("NOMAPI\n");
+        // MimeOleParseRfc822Address(cch, encType, psz, ADDRESSLIST*) -- exported, no COM object needed.
+        // argv[1] = file with one address string per line (length-prefixed: "<len>\n<bytes>\n").
+        HMODULE hm = LoadLibraryExA("OUTLMIME.dll", nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
+        if (!hm) hm = LoadLibraryExA("C:\\Program Files\\Microsoft Office\\root\\Office16\\OUTLMIME.dll",
+                                      nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
+        PFN_PARSE_ADDR pParse = (PFN_PARSE_ADDR)GetProcAddress(hm, "MimeOleParseRfc822Address");
+        printf("OUTLMIME=%p parse=%p\n", (void *)hm, (void *)pParse);
+        fflush(stdout);
+        if (!pParse) { printf("NOPARSE\n"); return 10; }
+        size_t fsz = 0; BYTE *fb = LoadBlob(argv[1], &fsz);
+        if (!fb) { printf("NOINPUT\n"); return 11; }
+        size_t off = 0; unsigned long n = 0, okc = 0, errc = 0;
+        char *line = (char *)malloc(1u << 20);
+        while (off + 1 < fsz && n < 200000) {
+            size_t e1 = off; while (e1 < fsz && fb[e1] != '\n') e1++;
+            if (e1 >= fsz) break;
+            long want = strtol((char *)fb + off, nullptr, 10);
+            size_t body = e1 + 1;
+            if (want < 0 || body + (size_t)want > fsz) break;
+            memcpy(line, (char *)fb + body, want);
+            line[want] = 0;
+            off = body + want;
+            if (want && fb[body + want] == '\n') off = body + want + 1;
+            if (want == 0) continue;
+            unsigned char alist[512];
+            memset(alist, 0, sizeof(alist));
+            for (ULONG enc = 1; enc <= 3; enc++) {
+                printf("REC %lu off=%zu len=%ld enc=%lu\n", n, off, want, enc);
+                __try {
+                    HRESULT hr2 = pParse((ULONG)want, enc, line, alist);
+                    if (SUCCEEDED(hr2)) okc++; else errc++;
+                } __except (EXCEPTION_EXECUTE_HANDLER) {
+                    printf("FAULT rec=%lu off=%zu len=%ld enc=%lu code=%08x\n", n, off, want, enc,
+                           (unsigned)GetExceptionCode());
+                    fflush(stdout);
+                }
+                n++;
+            }
+            if ((n % 300) == 0) { fflush(stdout); }
+        }
+        printf("ADDRCASES n=%lu ok=%lu err=%lu faults=%lu\nEND addr\n", n, okc, errc, g_faults);
+        fflush(stdout);
+        return 0;
+    }
+    if (mode == 30) {
+        // TNEF decode with a real IMessage as the property sink:
+        //   base .msg -> IMessage ; file -> IStream ; OpenTnefStream(service,stream,&h,name,flags,msg,advise)
+        HMODULE hl = GetModuleHandleA("OLMAPI32.dll");
+        PFN_OPEN_TNEF_MSG pOpenT = (PFN_OPEN_TNEF_MSG)GetProcAddress(hl, "OpenTnefStream");
+        PFN_OPENMSGSESS pSess = (PFN_OPENMSGSESS)GetProcAddress(hl, "OpenIMsgSession");
+        PFN_OPENMSGONI pOpenI = (PFN_OPENMSGONI)GetProcAddress(hl, "OpenIMsgOnIStg");
+        PFN_ALLOCBUF pAB = (PFN_ALLOCBUF)GetProcAddress(hl, "MAPIAllocateBuffer");
+        PFN_ALLOCMORE pAM = (PFN_ALLOCMORE)GetProcAddress(hl, "MAPIAllocateMore");
+        PFN_FREEBUF pFB = (PFN_FREEBUF)GetProcAddress(hl, "MAPIFreeBuffer");
+        PFN_GET_TNEF_STM pGetStm = (PFN_GET_TNEF_STM)GetProcAddress(hl, "HrGetOpenTnefStream");
+        if (!pOpenT || !pSess || !pOpenI) { printf("TNEFEXPORTS t=%p sess=%p i=%p\n", (void *)pOpenT, (void *)pSess, (void *)pOpenI); return 9; }
+        const char *msgpath = getenv("CRTF_MSG");
+        if (!msgpath) msgpath = "C:\\crtf\\base_valid.msg";
+        WCHAR wpath[1024];
+        MultiByteToWideChar(CP_ACP, 0, msgpath, -1, wpath, 1020);
+        void *pSession = nullptr;
+        pSess(nullptr, 0, &pSession);
+        IStorage *pStg = nullptr;
+        HRESULT hs = StgOpenStorageEx(wpath, STGM_READWRITE | STGM_SHARE_EXCLUSIVE | STGM_DIRECT,
+                                      STGFMT_STORAGE, 0, nullptr, nullptr, __uuidof(IStorage), (void **)&pStg);
+        printf("MSG_STG hr=%08x\n", (unsigned)hs);
+        IMalloc *pMalloc = nullptr; CoGetMalloc(MEMCTX_TASK, &pMalloc);
+        void *pMsg = nullptr;
+        hs = pOpenI(pSession, (void *)pAB, (void *)pAM, (void *)pFB, pMalloc, nullptr, pStg, nullptr, 0, 0, &pMsg);
+        printf("MSG_OPEN hr=%08x msg=%p\n", (unsigned)hs, pMsg);
+        // the tnef blob goes through its own ole32 stream (this mode runs before pSrc exists)
+        IStream *pT = nullptr;
+        CreateStreamOnHGlobal(nullptr, TRUE, &pT);
+        ULONG putT = 0;
+        pT->Write(buf, (ULONG)cb, &putT);
+        LARGE_INTEGER zT; zT.QuadPart = 0;
+        pT->Seek(zT, STREAM_SEEK_SET, nullptr);
+        HRESULT hr = S_OK;
+        void *hT = nullptr;
+        hr = pOpenT(nullptr, pT, &hT, "tnef", flags, pMsg, nullptr);
+        printf("OPENTNEF hr=%08x h=%p\n", (unsigned)hr, hT);
+        fflush(stdout);
+        if (SUCCEEDED(hr) && hT && pGetStm) {
+            IStream *pBody = nullptr;
+            HRESULT h2 = pGetStm(hT, &pBody);
+            printf("GETSTM hr=%08x p=%p\n", (unsigned)h2, (void *)pBody);
+            if (SUCCEEDED(h2) && pBody) {
+                BYTE *b3 = (BYTE *)malloc(chunk + 32);
+                ULONG g3 = 0, t3 = 0, n3 = 0;
+                while (n3 < 20000 && SUCCEEDED(pBody->Read(b3, chunk, &g3)) && g3) { t3 += g3; ++n3; }
+                printf("TNEFBODY n=%u total=%u\n", n3, t3);
+                pBody->Release();
+            }
+        }
+        printf("END tnefmsg\n"); fflush(stdout);
+        if (pMsg) ((HRESULT (STDMETHODCALLTYPE *)(void *, REFIID, void **))(*(void ***)pMsg)[0])(pMsg, IID_IUnknown, nullptr);
+        if (pStg) pStg->Release();
+        pT->Release();
+        return 0;
+    }
     if (mode == 20 || mode == 21) {
         // .msg -> IStorage -> IMessage -> exported RTFSync(message, flags, &updated)
         //   RTFSync -> RTFSyncCpid -> ScFullRTFSync / ScComputeBodyFromRTF -> ScUpdateRTF (chunk + CRC map + body tag)
