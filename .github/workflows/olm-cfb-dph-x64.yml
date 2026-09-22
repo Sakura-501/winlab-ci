@@ -29,11 +29,37 @@ jobs:
     - name: Download ODT
       shell: pwsh
       run: |
-        $page = (Invoke-WebRequest -Uri "https://www.microsoft.com/en-us/download/details.aspx?id=49117" -UseBasicParsing).Content
-        if ($page -match 'href="(https://download\.microsoft\.com/download/[^"]+officedeploymenttool[^"]*\.exe)"') {
-          Invoke-WebRequest -Uri $Matches[1] -OutFile odt.exe
-        } else { throw "odt link not found" }
-        Start-Process -Wait -FilePath .\odt.exe -ArgumentList "/extract:odtx /quiet"
+        # Hardened: the page scrape and the self-extractor each failed transiently on 2026-09-22
+        # (blank extractor output, exit 1) after succeeding minutes earlier, so both now retry and
+        # the step asserts the extracted setup.exe before handing off to the install step.
+        $urls = @()
+        for ($t = 0; $t -lt 4 -and $urls.Count -eq 0; $t++) {
+          try {
+            $page = (Invoke-WebRequest -Uri "https://www.microsoft.com/en-us/download/details.aspx?id=49117" -UseBasicParsing -TimeoutSec 90).Content
+            foreach ($m in [regex]::Matches($page, 'https://download[.]microsoft[.]com/download/[^ <>"]+officedeploymenttool[^ <>"]+[.]exe')) { $urls += $m.Value }
+          } catch { "fetch attempt $t failed: $($_.Exception.Message)" }
+          if ($urls.Count -eq 0) { Start-Sleep -Seconds (5 * ($t + 1)) }
+        }
+        if ($urls.Count -eq 0) { throw "odt link not found after retries" }
+        "odt urls=$($urls.Count) first=$($urls[0])"
+        $got = $false
+        foreach ($u in $urls) {
+          for ($t = 0; $t -lt 3 -and -not $got; $t++) {
+            try { Invoke-WebRequest -Uri $u -OutFile odt.exe -UseBasicParsing -TimeoutSec 300; if ((Get-Item odt.exe).Length -gt 1MB) { $got = $true } }
+            catch { "dl attempt $t failed: $($_.Exception.Message)"; Start-Sleep -Seconds (5 * ($t + 1)) }
+          }
+          if ($got) { break }
+        }
+        if (-not $got) { throw "odt.exe download failed" }
+        Remove-Item odtx -Recurse -Force -EA SilentlyContinue
+        $x = $false
+        for ($t = 0; $t -lt 3 -and -not $x; $t++) {
+          Start-Process -Wait -FilePath .\odt.exe -ArgumentList "/extract:`"$PWD\odtx`" /quiet"
+          $x = Test-Path odtx\setup.exe
+          if (-not $x) { "extract attempt $t produced no setup.exe"; Start-Sleep -Seconds (5 * ($t + 1)); Remove-Item odtx -Recurse -Force -EA SilentlyContinue }
+        }
+        if (-not $x) { throw "odt extract failed: odtx\setup.exe missing" }
+        "odt_ready"
 
     - name: Install Current x64 (Outlook kept, rest excluded)
       shell: pwsh
