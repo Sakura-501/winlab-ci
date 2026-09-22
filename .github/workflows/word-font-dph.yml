@@ -1,0 +1,184 @@
+name: word-font-dph
+'on':
+  workflow_dispatch:
+    inputs:
+      cap:
+        description: 'max carriers'
+        required: false
+        default: '320'
+jobs:
+  t:
+    runs-on: windows-latest
+    timeout-minutes: 330
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Download ODT
+      shell: pwsh
+      run: |
+        $page = (Invoke-WebRequest -Uri "https://www.microsoft.com/en-us/download/details.aspx?id=49117" -UseBasicParsing).Content
+        if ($page -match 'href="(https://download\.microsoft\.com/download/[^"]+officedeploymenttool[^"]*\.exe)"') {
+          Invoke-WebRequest -Uri $Matches[1] -OutFile odt.exe
+        } else { throw "odt link not found" }
+        Start-Process -Wait -FilePath .\odt.exe -ArgumentList "/extract:odtx /quiet"
+
+    - name: Install x64 Office (Excel needed)
+      shell: pwsh
+      run: |
+        $xml = '<Configuration><Add OfficeClientEdition="64" Channel="CurrentChannel"><Product ID="O365ProPlusRetail"><Language ID="en-us" /><ExcludeApp ID="OneDrive" /><ExcludeApp ID="Lync" /><ExcludeApp ID="Bing" /></Product></Add><Display Level="None" AcceptEULA="TRUE" /><Updates Enabled="FALSE" /></Configuration>'
+        Set-Content -Path cfg.xml -Value $xml
+        Start-Process -Wait -FilePath .\odtx\setup.exe -ArgumentList "/configure","cfg.xml"
+        $e = Get-Item "C:\Program Files\Microsoft Office\root\Office16\WINWORD.EXE" -ErrorAction SilentlyContinue
+        if (-not $e) { throw "word install failed" }
+        "excel: $($e.Length) bytes v=$($e.VersionInfo.FileVersion)"
+        $e.VersionInfo.FileVersion | Out-File ver.txt
+
+    - name: Page heap for EXCEL plus WER full dumps
+      shell: pwsh
+      run: |
+        $log = "out\setup_log.txt"
+        New-Item -ItemType Directory -Force -Path out, C:\dumps | Out-Null
+        $gfs = @(Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\Debuggers" -Recurse -Include gflags.exe -EA SilentlyContinue)
+        $gf = @($gfs | Where-Object { $_.FullName -match '\\x64\\' } | Select-Object -First 1)
+        if (-not $gf) { $gf = @($gfs | Select-Object -First 1) }
+        if ($gf) {
+          try { & $gf.FullName /p /enable WINWORD.EXE /full | Out-Null; "gflags_path=$($gf.FullName)" | Add-Content $log }
+          catch { "gflags_unusable=$($gf.FullName) -> registry page heap only" | Add-Content $log }
+        }
+        $k = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\WINWORD.EXE"
+        New-Item -Path $k -Force | Out-Null
+        Set-ItemProperty -Path $k -Name GlobalFlag -Value 0x02000000 -Type DWord
+        Set-ItemProperty -Path $k -Name EnableVerifier -Value 1 -Type DWord
+        Set-ItemProperty -Path $k -Name VerifierFlags -Value 0 -Type DWord
+        Set-ItemProperty -Path $k -Name PageHeapFlags -Value 0x3 -Type DWord
+        $ld = "HKLM:\SOFTWARE\Microsoft\Windows Error Reporting\LocalDumps"
+        New-Item -Path $ld -Force | Out-Null
+        Set-ItemProperty -Path $ld -Name DumpFolder -Value "C:\dumps" -Type ExpandString
+        Set-ItemProperty -Path $ld -Name DumpType -Value 2 -Type DWord
+        Set-ItemProperty -Path $ld -Name DumpCount -Value 40 -Type DWord
+        "pageheap GlobalFlag=$((Get-ItemProperty $k).GlobalFlag) verifier=$((Get-ItemProperty $k).EnableVerifier)" | Tee-Object -FilePath $log -Append
+
+    - name: Build carriers
+      shell: pwsh
+      run: |
+        python tools\mk_font_corpus.py corpus
+        (Get-ChildItem corpus | Measure-Object).Count
+
+    - name: Positive control - page heap must be loaded in EXCEL
+      shell: pwsh
+      run: |
+        $exe = "C:\Program Files\Microsoft Office\root\Office16\WINWORD.EXE"
+        Set-Content -Path corpus\ctrl_plain.csv -Value "a,b`r`n1,=1+1`r`n" -Encoding ASCII
+        $k2 = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\WINWORD.EXE"
+        $p = Start-Process -FilePath $exe -ArgumentList '"corpus\ctrl_plain.csv"' -PassThru
+        $ver = 0
+        for ($i = 0; $i -lt 30; $i++) {
+          Start-Sleep -Seconds 2
+          try {
+            $mods = @($p.Modules | ForEach-Object { $_.ModuleName.ToLower() })
+            if ($mods -contains 'verifier.dll') { $ver = 1; break }
+          } catch { }
+          if ($p.HasExited) { break }
+        }
+        "CONTROL verifier_loaded=$ver title=$($p.MainWindowTitle)" | Tee-Object -FilePath out\control.txt
+        Get-Process WINWORD -EA SilentlyContinue | Stop-Process -Force
+        "CONTROL readback GlobalFlag=$((Get-ItemProperty $k2).GlobalFlag) PageHeapFlags=$((Get-ItemProperty $k2).PageHeapFlags) EnableVerifier=$((Get-ItemProperty $k2).EnableVerifier)" | Add-Content out\control.txt
+        if ($ver -ne 1) { "NOTE page heap not observed in the control run; sweep continues on WER-dump detection only" | Add-Content out\control.txt }
+
+    - name: Open every carrier, watch for faults
+      shell: pwsh
+      run: |
+        $exe = "C:\Program Files\Microsoft Office\root\Office16\WINWORD.EXE"
+        $log = "out\sweep_log.txt"
+        $cap = [int]('${{ github.event.inputs.cap }}')
+        if ($cap -le 0) { $cap = 320 }
+        function DumpList { @(Get-ChildItem C:\dumps -EA SilentlyContinue | ForEach-Object { $_.Name }) }
+        $files = @(Get-ChildItem corpus | Where-Object { $_.Name -notlike 'ctrl_*' } | Sort-Object Name | Select-Object -First $cap)
+        "cases=$($files.Count)" | Tee-Object -FilePath $log
+        $bad = @()
+        foreach ($f in $files) {
+          $before = DumpList
+          Set-Content -Path ($f.FullName + ':Zone.Identifier') -Value "[ZoneTransfer]`r`nZoneId=3" -Encoding ASCII
+          $t0 = Get-Date
+          $p = Start-Process -FilePath $exe -ArgumentList ('"' + $f.FullName + '"') -PassThru
+          $alive = 1; $opened = 0; $ver = 0; $exit = ''; $title = ''
+          for ($i = 0; $i -lt 12; $i++) {
+            Start-Sleep -Seconds 2
+            try { if ($p.HasExited) { $alive = 0; $exit = '0x' + ('{0:X8}' -f $p.ExitCode); break } } catch { $alive = 0; break }
+            try { if (@($p.Modules | Where-Object { $_.ModuleName -ieq 'verifier.dll' }).Count) { $ver = 1 } } catch { }
+            $tt = @(Get-Process WINWORD -EA SilentlyContinue | ForEach-Object { $_.MainWindowTitle } | Where-Object { $_ })
+            $title = ($tt | Where-Object { $_ -like ('*' + $f.BaseName + '*') }) | Select-Object -First 1
+            if ($title) { $opened = 1 }
+            if ((DumpList).Count -gt $before.Count) { break }
+          }
+          $after = DumpList
+          $new = @($after | Where-Object { $before -notcontains $_ })
+          $line = '{0,-24} alive={1} opened={2} verifier={3} dumps={4} exit={5} s={6}' -f $f.Name, $alive, $opened, $ver, $new.Count, $exit, [int]((Get-Date) - $t0).TotalSeconds
+          $line | Tee-Object -FilePath $log -Append
+          if ($new.Count -or ($alive -eq 0 -and $opened -eq 0)) {
+            $bad += $f.Name
+            New-Item -ItemType Directory -Force -Path out\bad | Out-Null
+            Copy-Item $f.FullName ('out\bad\CRASH_' + $f.Name) -Force -EA SilentlyContinue
+            foreach ($d in $new) { Copy-Item ('C:\dumps\' + $d) ('out\bad\' + $d) -Force -EA SilentlyContinue }
+          }
+          Get-Process WINWORD -EA SilentlyContinue | Stop-Process -Force -EA SilentlyContinue
+          Remove-Item 'HKCU:\SOFTWARE\Microsoft\Office\16.0\Word\Resiliency' -Recurse -Force -EA SilentlyContinue
+          for ($i = 0; $i -lt 40; $i++) { if (-not (Get-Process WINWORD -EA SilentlyContinue)) { break }; Start-Sleep -Milliseconds 500 }
+        }
+        "SUMMARY cases=$($files.Count) flagged=$($bad.Count) [$($bad -join ' ')]" | Tee-Object -FilePath $log -Append
+        "dumps_total=$((DumpList).Count)" | Tee-Object -FilePath $log -Append
+        $bad -join "`r`n" | Out-File out\bad.txt
+        if ($bad.Count) { throw "flagged carriers: $($bad -join ', ')" }
+
+    - name: Page heap self test (instrument must fault)
+      shell: pwsh
+      run: |
+        $csc = "C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
+        $cs = @'
+        using System;
+        using System.IO;
+        using System.Runtime.InteropServices;
+        class HProbe {
+          static string LOG;
+          static void L(string s) { File.AppendAllText(LOG, s + Environment.NewLine); }
+          static int Main(string[] args) {
+            LOG = args[0];
+            int size = 0x100;
+            L("BEGIN size=0x" + size.ToString("x"));
+            IntPtr p = Marshal.AllocHGlobal(size);
+            L("ALLOC addr=0x" + p.ToInt64().ToString("x"));
+            Marshal.WriteByte(p, size - 1, 1);
+            L("INBOUNDS_OK");
+            L("ABOUT_TO_WRITE_PAST_END");
+            Marshal.WriteByte((IntPtr)(p.ToInt64() + size), 1);
+            L("PAST_END_WRITE_RETURNED_NO_FAULT");
+            L("END_OK");
+            return 0;
+          }
+        }
+        '@
+        Set-Content -Path work_hprobe.cs -Value $cs -Encoding UTF8
+        & $csc /nologo /out:hprobe.exe work_hprobe.cs | Out-Null
+        $kh = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\hprobe.exe"
+        Remove-Item $kh -Recurse -Force -EA SilentlyContinue
+        New-Item -Path $kh -Force | Out-Null
+        Set-ItemProperty -Path $kh -Name GlobalFlag -Value 0x02000000 -Type DWord
+        Set-ItemProperty -Path $kh -Name PageHeapFlags -Value 0x3 -Type DWord
+        Remove-Item out\selftest_log.txt -Force -EA SilentlyContinue
+        $r = Start-Process -FilePath (Join-Path $PWD.Path "hprobe.exe") -ArgumentList (Join-Path $PWD.Path "out\selftest_log.txt") -PassThru -Wait
+        $code = "0x{0:X8}" -f $r.ExitCode
+        $log = @(Get-Content out\selftest_log.txt -EA SilentlyContinue) -join '|'
+        $armed = "unknown"
+        if ($code -eq "0xC0000005" -and $log.Contains("ABOUT_TO_WRITE_PAST_END") -and -not $log.Contains("NO_FAULT")) { $armed = "ARMED" }
+        elseif ($code -eq "0x00000000") { $armed = "NOT_ARMED" }
+        "SELFTEST hprobe_exit=$code verdict=$armed log=$log" | Tee-Object -FilePath out\selftest.txt
+        Remove-Item $kh -Recurse -Force -EA SilentlyContinue
+    - name: Upload evidence
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: word-font-dph
+        path: |
+          out
+          ver.txt
+          corpus
