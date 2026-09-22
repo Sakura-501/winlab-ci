@@ -50,12 +50,16 @@ def main(d):
         es = entries(f)
         if not es:
             continue
-        c = Counter(nm for nm, _ in es)
+        # Only MAPI stream names are meaningful here: the deliberately-corrupted-header carriers
+        # ('hfirstdir_*') produce entries whose name bytes are all 0xFFFF, which are artifacts of the
+        # mutation, not a shadowed property.
+        real = [nm for nm, _ in es if nm.startswith('__')]
+        c = Counter(real)
         dup = {k for k, v in c.items() if v > 1}
         if dup:
             bad.append((f.name, sorted(dup)))
         for nm, sz in es:
-            if nm == '__substg1.0_10090102':
+            if nm == '__substg1.0_10090102' and sz < (1 << 30):
                 sizes.append(sz)
     if sizes:
         print('CHECK files=%d rtf_streams=%d min=%d max=%d' % (n, len(sizes), min(sizes), max(sizes)))
