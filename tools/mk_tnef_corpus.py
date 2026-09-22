@@ -182,6 +182,35 @@ add("junk_lead", b"\xff" * 8 + tnef_ok)
 add("attid_unknown", level(1) + attr(0x7FFF, b"junkjunk"))
 add("attid_huge", level(1) + attr(0xFFFF, b"junkjunk"))
 
+
+# --- nested objects: props inside attBeginObject/attEndObject and inside the
+# --- attAttachAttributes / attRecipAttributes sub-blocks (how real winmail.dat
+# --- carries per-attachment properties; the flat corpus above only exercises top level)
+inner = attr(ATT_PROPS, props_blob([(0x0C04, PT_UNICODE, sub), (0x6720, PT_MV_UNICODE, (4, ["a", "bb", "ccc", "dddd"]))]))
+big_inner = attr(ATT_PROPS, props_blob([(0x0C04, PT_UNICODE, sub)], c_count=99))
+for depth in (1, 2, 3):
+    blob = b""
+    for _ in range(depth):
+        blob += attr(ATT_BEGINOBJ, struct.pack("<I", 1)) + attr(0x8000 | ATT_SUBJECT, sub)
+    blob += inner
+    for _ in range(depth):
+        blob += attr(ATT_ENDOBJ, struct.pack("<I", 1))
+    add("nest_d%u" % depth, level(1) + attr(0x8000 | ATT_SUBJECT, sub) + blob)
+add("nest_unclosed", level(1) + attr(ATT_BEGINOBJ, struct.pack("<I", 3)) + inner)
+add("nest_extra_close", level(1) + attr(ATT_ENDOBJ, struct.pack("<I", 0)) + inner)
+for aid in (ATT_ATTACHATTR, ATT_RECIPIATTR):
+    add("sub_%u_ok" % aid, level(1) + attr(aid, recip_table(1, 1, ["3001001f"])) + inner)
+    add("sub_%u_count_hi" % aid, level(1) + attr(aid, recip_table(0x7FFFFFFF, 0x7FFFFFFF, ["3001001f"])) + inner)
+    add("sub_%u_zero" % aid, level(1) + attr(aid, recip_table(0, 0, [])) + inner)
+add("attach_then_props_big", level(1) + attr(ATT_ATTACHATTR, recip_table(1, 1, ["3701001f"]))
+    + attr(ATT_ATTACHDATA, struct.pack("<I", 8) + b"12345678") + big_inner)
+add("mv_in_object_mismatch", level(1) + attr(ATT_BEGINOBJ, struct.pack("<I", 1))
+    + attr(ATT_PROPS, props_blob([(0x6720, PT_MV_UNICODE, (1000, ["x", "yy"]))]))
+    + attr(ATT_ENDOBJ, struct.pack("<I", 1)))
+add("ole10_in_object", level(1) + attr(ATT_BEGINOBJ, struct.pack("<I", 1))
+    + attr(ATT_OLE10NATIVE, struct.pack("<I", 300) + b"n.bin\0\0" + struct.pack("<HHI", 1, 2, 4) + b"y" * 8)
+    + attr(ATT_ENDOBJ, struct.pack("<I", 1)))
+
 os.makedirs(OUT, exist_ok=True)
 with open(os.path.join(OUT, "attr.txt"), "wb") as f:
     for name, blob in recs:
