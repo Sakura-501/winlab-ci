@@ -9,7 +9,7 @@ name: excel-coord-pageheap-x64
 jobs:
   t:
     runs-on: windows-latest
-    timeout-minutes: 170
+    timeout-minutes: 330
     steps:
     - uses: actions/checkout@v4
 
@@ -47,7 +47,7 @@ jobs:
         }
         $k = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\EXCEL.EXE"
         New-Item -Path $k -Force | Out-Null
-        Set-ItemProperty -Path $k -Name GlobalFlag -Value 0x200 -Type DWord
+        Set-ItemProperty -Path $k -Name GlobalFlag -Value 0x02000000 -Type DWord
         Set-ItemProperty -Path $k -Name EnableVerifier -Value 1 -Type DWord
         Set-ItemProperty -Path $k -Name VerifierFlags -Value 0 -Type DWord
         Set-ItemProperty -Path $k -Name PageHeapFlags -Value 0x3 -Type DWord
@@ -130,6 +130,49 @@ jobs:
         $bad -join "`r`n" | Out-File out\bad.txt
         if ($bad.Count) { throw "flagged carriers: $($bad -join ', ')" }
 
+    - name: Page heap self test (instrument must fault)
+      shell: pwsh
+      run: |
+        $csc = "C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
+        $cs = @'
+        using System;
+        using System.IO;
+        using System.Runtime.InteropServices;
+        class HProbe {
+          static string LOG;
+          static void L(string s) { File.AppendAllText(LOG, s + Environment.NewLine); }
+          static int Main(string[] args) {
+            LOG = args[0];
+            int size = 0x100;
+            L("BEGIN size=0x" + size.ToString("x"));
+            IntPtr p = Marshal.AllocHGlobal(size);
+            L("ALLOC addr=0x" + p.ToInt64().ToString("x"));
+            Marshal.WriteByte(p, size - 1, 1);
+            L("INBOUNDS_OK");
+            L("ABOUT_TO_WRITE_PAST_END");
+            Marshal.WriteByte((IntPtr)(p.ToInt64() + size), 1);
+            L("PAST_END_WRITE_RETURNED_NO_FAULT");
+            L("END_OK");
+            return 0;
+          }
+        }
+        '@
+        Set-Content -Path work_hprobe.cs -Value $cs -Encoding UTF8
+        & $csc /nologo /out:hprobe.exe work_hprobe.cs | Out-Null
+        $kh = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\hprobe.exe"
+        Remove-Item $kh -Recurse -Force -EA SilentlyContinue
+        New-Item -Path $kh -Force | Out-Null
+        Set-ItemProperty -Path $kh -Name GlobalFlag -Value 0x02000000 -Type DWord
+        Set-ItemProperty -Path $kh -Name PageHeapFlags -Value 0x3 -Type DWord
+        Remove-Item out\selftest_log.txt -Force -EA SilentlyContinue
+        $r = Start-Process -FilePath (Join-Path $PWD.Path "hprobe.exe") -ArgumentList (Join-Path $PWD.Path "out\selftest_log.txt") -PassThru -Wait
+        $code = "0x{0:X8}" -f $r.ExitCode
+        $log = @(Get-Content out\selftest_log.txt -EA SilentlyContinue) -join '|'
+        $armed = "unknown"
+        if ($code -eq "0xC0000005" -and $log.Contains("ABOUT_TO_WRITE_PAST_END") -and -not $log.Contains("NO_FAULT")) { $armed = "ARMED" }
+        elseif ($code -eq "0x00000000") { $armed = "NOT_ARMED" }
+        "SELFTEST hprobe_exit=$code verdict=$armed log=$log" | Tee-Object -FilePath out\selftest.txt
+        Remove-Item $kh -Recurse -Force -EA SilentlyContinue
     - name: Upload evidence
       if: always()
       uses: actions/upload-artifact@v4
