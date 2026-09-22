@@ -1,0 +1,133 @@
+name: olm-msgseq-dph-x64
+# OLMAPI32's own CFB (MS-CFB) container reader, reached the way Outlook reaches it:
+# StgOpenStorageEx(.msg) -> OpenIMsgOnIStg -> property streams. Corpus = 1787 mutations of a real
+# .msg's header/FAT/DIFAT/directory records (FAT sector count, DIFAT chain, dir entry start sect /
+# stream length, mini-fat sector, name length), so the sector-table sizing paths are fed
+# inconsistent-but-parseable values. Armed full page heap, native x64.
+'on':
+  workflow_dispatch:
+    inputs:
+      cap:
+        description: 'max corpus cases this wave'
+        required: false
+        default: '1900'
+      flags:
+        description: 'comma list of WrapCompressedRTFStream ulFlags (hex)'
+        required: false
+        default: '1,2,3'
+      chunks:
+        description: 'comma list of read chunk sizes'
+        required: false
+        default: '13,256'
+jobs:
+  t:
+    runs-on: windows-latest
+    timeout-minutes: 170
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Download ODT
+      shell: pwsh
+      run: |
+        $page = (Invoke-WebRequest -Uri "https://www.microsoft.com/en-us/download/details.aspx?id=49117" -UseBasicParsing).Content
+        if ($page -match 'href="(https://download\.microsoft\.com/download/[^"]+officedeploymenttool[^"]*\.exe)"') {
+          Invoke-WebRequest -Uri $Matches[1] -OutFile odt.exe
+        } else { throw "odt link not found" }
+        Start-Process -Wait -FilePath .\odt.exe -ArgumentList "/extract:odtx /quiet"
+
+    - name: Install Current x64 (Outlook kept, rest excluded)
+      shell: pwsh
+      run: |
+        $xml = '<Configuration><Add OfficeClientEdition="64" Channel="Current"><Product ID="O365ProPlusRetail"><Language ID="en-us" /><ExcludeApp ID="Excel" /><ExcludeApp ID="PowerPoint" /><ExcludeApp ID="OneDrive" /><ExcludeApp ID="OneNote" /><ExcludeApp ID="Lync" /><ExcludeApp ID="Access" /><ExcludeApp ID="Groove" /><ExcludeApp ID="Publisher" /><ExcludeApp ID="Teams" /><ExcludeApp ID="Bing" /><ExcludeApp ID="Word" /></Product></Add><Display Level="None" AcceptEULA="TRUE" /><Updates Enabled="FALSE" /></Configuration>'
+        Set-Content -Path cfg.xml -Value $xml
+        Start-Process -Wait -FilePath .\odtx\setup.exe -ArgumentList "/configure","cfg.xml"
+        $o = Get-Item "C:\Program Files\Microsoft Office\root\Office16\OUTLOOK.EXE" -ErrorAction SilentlyContinue
+        if (-not $o) { throw "outlook install failed" }
+        $olm = Get-Item "C:\Program Files\Microsoft Office\root\Office16\OLMAPI32.DLL" -ErrorAction SilentlyContinue
+        "olmapi32: len=$($olm.Length) v=$($olm.VersionInfo.FileVersion)"
+        $olm.VersionInfo.FileVersion | Out-File ver.txt
+        "outlook_v=$($o.VersionInfo.FileVersion)" | Out-File ver.txt -Append
+        Get-Content ver.txt
+
+    - name: Build .msg corpus (adversarial RTF inside PR_RTF_COMPRESSED)
+      shell: pwsh
+      run: |
+        New-Item -ItemType Directory -Force -Path corpus, out | Out-Null
+        tar -xzf bin\cfbcorpus.tgz -C corpus
+        python tools\lzfu_mut.py payloads
+        python tools\mk_msg_corpus.py bin\base_valid.msg payloads corpus
+        python tools\mk_sync_corpus.py bin\base_valid.msg corpus
+        python tools\mk_esc_corpus.py bin\base_valid.msg corpus
+        Remove-Item corpus\_p_*.bin -Force -ErrorAction SilentlyContinue
+        (Get-ChildItem corpus -Filter *.msg).Count
+
+    - name: Arm full page heap and gate it behaviourally
+      shell: pwsh
+      run: |
+        $k = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\crtfbench6_x64.exe"
+        New-Item -Path $k -Force | Out-Null
+        New-ItemProperty -Path $k -Name GlobalFlag -Value 0x02000000 -PropertyType DWord -Force | Out-Null
+        New-ItemProperty -Path $k -Name PageHeapFlags -Value 0x3 -PropertyType DWord -Force | Out-Null
+        "GlobalFlag=$((Get-Item $k).GetValue('GlobalFlag')) PageHeapFlags=$((Get-Item $k).GetValue('PageHeapFlags'))" | Out-File out\pageheap.txt
+        $s = & .\bin\crtfbench6_x64.exe selftest 2>&1 | Out-String
+        $rc = $LASTEXITCODE -band [int]0xFFFFFFFF
+        $armed = if (('{0:X8}' -f $rc) -eq 'C0000005' -and $s -notmatch 'NOT_DETECTED' -and $s -match 'ABOUT_TO_WRITE_PAST_END') { 'ARMED' } else { 'NOT_ARMED' }
+        "SELFTEST rc=0x$('{0:X8}' -f $rc) verdict=$armed log=$(($s.Trim() -replace '\r?\n',' | '))" | Out-File out\selftest.txt
+        Get-Content out\selftest.txt
+        if ($armed -ne 'ARMED') { throw "instrument blind: aborting" }
+        # positive control: base_valid.msg must open and RTFSync(flags=2) must report updated=1
+        $pc = & .\bin\crtfbench6_x64.exe corpus 0 256 22 120000 2>&1 | Out-String
+        "SEQ_HEAD $(($pc.Trim() -split "\r?\n" | Select-Object -First 4 | ForEach-Object { $_ }) -join ' | ')" | Out-File out\seq_head.txt
+        "PCTRL $(($pc.Trim() -replace '\r?\n',' | '))" | Out-File out\pctrl.txt
+        Get-Content out\pctrl.txt
+        if ($pc -notmatch 'opened=[1-9]') { throw "positive control opened no carrier" }
+
+    - name: Run the whole corpus as one in-process sequence
+      shell: pwsh
+      run: |
+        $flagset = @('0')
+        $chunkset = @('256')
+        $cap = 3   # repeat the whole sequence a few times to deepen heap reuse
+        $det = 'out\detail.txt'
+        'pass|rc|seq|summary|note' | Set-Content $det
+        $files = @(Get-ChildItem corpus -Filter *.msg | Sort-Object Name)
+        "CASES files=$($files.Count) flags=$($flagset.Count) chunks=$($chunkset.Count)" | Out-File out\sweep_head.txt
+        $n=0; $ok=0; $hang=0; $av=@(); $wr=@{}
+        foreach ($f in $files) {
+          foreach ($fl in $flagset) {
+            foreach ($ck in $chunkset) {
+              if ($n -ge $cap) { break }
+              $o = & .\bin\crtfbench6_x64.exe $f.FullName $fl 256 20 20000 2>&1 | Out-String
+              $rc = $LASTEXITCODE -band [int]0xFFFFFFFF
+              $wh = if ($o -match 'OpenIMsgOnIStg hr=([0-9a-f]{8})') { $matches[1] } else { 'none' }
+              $rd = if ($o -match 'RTFSYNC flags=\d+ hr=([0-9a-f]{8}) updated=(-?\d+)') { "sync=$($matches[1]) updated=$($matches[2])" } else { '-' }
+              $note = if ($rc -eq 0x48414E47) { 'HANG' } elseif ($o -match '!!!AV') { 'AV' } else { 'ret' }
+              if ($note -eq 'HANG') { $hang++ } elseif ($note -eq 'AV') { $av += $f.Name } else { $ok++ }
+              if (-not $wr.ContainsKey($wh)) { $wr[$wh] = 0 }
+              $wr[$wh] += 1
+              "$($f.Name)|$fl|$ck|0x$('{0:X8}' -f $rc)|$wh|$rd|$note" | Add-Content $det
+              if ($o -match '!!!AV') { "AVFULL $($f.Name) flags=$fl chunk=$ck :: $(($o.Trim() -replace '\r?\n',' | '))" | Add-Content out\avfull.txt }
+              $n++
+              if ($n % 100 -eq 0) { "PROG $n ok=$ok hang=$hang av=$($av.Count) $(Get-Date -Format HH:mm:ss)" | Add-Content out\sweep_head.txt }
+            }
+            if ($n -ge $cap) { break }
+          }
+        }
+        "TOTAL n=$n ok=$ok hang=$hang av=$($av.Count)" | Add-Content out\sweep_head.txt
+        foreach ($k in ($wr.Keys | Sort-Object)) { "WRAPRC $k count=$($wr[$k])" | Add-Content out\sweep_head.txt }
+        foreach ($x in $av) { "AVCASE $x" | Add-Content out\sweep_head.txt }
+        Get-Content out\sweep_head.txt
+        if (Test-Path out\avfull.txt) { Get-Content out\avfull.txt | Select-Object -First 40 }
+        $k = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\crtfbench6_x64.exe"
+        Remove-Item $k -Recurse -Force -ErrorAction SilentlyContinue
+        "page-heap key removed"
+
+    - name: Upload evidence
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: olm-msgseq-dph-x64
+        path: |
+          out
+          ver.txt
+          corpus
