@@ -49,10 +49,14 @@ jobs:
         tar -xzf bin\cfbcorpus.tgz -C corpus
         Get-ChildItem corpus -Recurse -Force -Filter '._*' | Remove-Item -Force -ErrorAction SilentlyContinue
         python tools\lzfu_mut.py payloads
-        python tools\mk_msg_corpus.py bin\base_valid.msg payloads corpus
-        python tools\mk_sync_corpus.py bin\base_valid.msg corpus
-        python tools\mk_esc_corpus.py bin\base_valid.msg corpus
+        python tools\mk_msg_corpus.py bin\base_valid_dedup.msg payloads corpus
+        python tools\mk_sync_corpus.py bin\base_valid_dedup.msg corpus
+        python tools\mk_esc_corpus.py bin\base_valid_dedup.msg corpus
         Remove-Item corpus\_p_*.bin -Force -ErrorAction SilentlyContinue
+        python tools\check_msg_dupes.py corpus
+        if ($LASTEXITCODE -ne 0) { throw "corpus carriers are stub-fed: MAPI would resolve a shadowed PR_RTF_COMPRESSED" }
+        # also re-run the armed gate AFTER the corpus so the gate proves the harness, not the old files
+
         "corpus_msg=" + (Get-ChildItem corpus -Filter *.msg).Count
 
     - name: Arm full page heap and gate it behaviourally
