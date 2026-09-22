@@ -72,7 +72,11 @@ jobs:
       shell: pwsh
       run: |
         New-Item -ItemType Directory -Force -Path corpus, out | Out-Null
-        tar -xzf bin\cfbcorpus.tgz -C corpus
+        # The prebuilt archive is excluded: its carriers carry duplicated directory entries, and blanking
+        # them (dedupe_msg.py) orphans red-black-tree nodes -> StgOpenStorageEx fails 0x800300FA/0x80030109
+        # on them (run 35773373184: OPENFAIL dif0_04c_1.msg hr=800300fa, control then aborted correctly).
+        # The three generators over bin\base_valid_dedup.msg produce carriers that open and rewrite at 100%
+        # (VM: opened=563 syncs=563 updated=563 rels=563 bad=0).
         Get-ChildItem corpus -Recurse -Force -Filter '._*' | Remove-Item -Force -ErrorAction SilentlyContinue
         python tools\lzfu_mut.py payloads
         python tools\mk_msg_corpus.py bin\base_valid_dedup.msg payloads corpus
