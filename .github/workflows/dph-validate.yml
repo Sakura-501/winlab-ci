@@ -1,0 +1,186 @@
+name: dph-validate
+on:
+  workflow_dispatch:
+jobs:
+  validate:
+    runs-on: windows-latest
+    timeout-minutes: 70
+    steps:
+      - name: Build heap-probe control program
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path work, corpus, dumps | Out-Null
+          $cs = @'
+          using System;
+          using System.IO;
+          using System.Runtime.InteropServices;
+          class HProbe {
+            static string LOG;
+            static void L(string s) { File.AppendAllText(LOG, s + Environment.NewLine); }
+            static int Main(string[] args) {
+              LOG = args.Length > 0 ? args[0] : "probe_log.txt";
+              int size = args.Length > 1 ? int.Parse(args[1]) : 0x100;
+              L("BEGIN pid=" + System.Diagnostics.Process.GetCurrentProcess().Id + " size=0x" + size.ToString("x"));
+              IntPtr p = Marshal.AllocHGlobal(size);
+              long a = p.ToInt64();
+              L("ALLOC addr=0x" + a.ToString("x"));
+              Marshal.WriteByte(p, size - 1, 1);
+              L("INBOUNDS_OK");
+              L("ABOUT_TO_WRITE_PAST_END");
+              Marshal.WriteByte((IntPtr)(a + size), 1);
+              L("PAST_END_WRITE_RETURNED_NO_FAULT");
+              Marshal.FreeHGlobal(p);
+              L("END_OK");
+              return 0;
+            }
+          }
+          '@
+          Set-Content -Path work\hprobe.cs -Value $cs -Encoding UTF8
+          $csc = "C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
+          "csc_exists=$(Test-Path $csc)" | Out-File work\build.txt
+          & $csc /nologo /out:work\hprobe.exe work\hprobe.cs 2>&1 | Out-File work\build.txt -Append
+          "build_exit=$LASTEXITCODE exe=$(Test-Path work\hprobe.exe)" | Out-File work\build.txt -Append
+          Get-Content work\build.txt
+
+      - name: Locate gflags and cdb
+        shell: pwsh
+        run: |
+          $g = @(Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\Debuggers" -Recurse -Include gflags.exe -EA SilentlyContinue | Where-Object { $_.FullName -match '\\x64\\' })
+          $c = @(Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\Debuggers" -Recurse -Include cdb.exe -EA SilentlyContinue | Where-Object { $_.FullName -match '\\x64\\' })
+          $gv = if ($g.Count -gt 0) { $g[0].FullName } else { "NONE" }
+          $cv = if ($c.Count -gt 0) { $c[0].FullName } else { "NONE" }
+          "gflags=$gv" | Out-File work\tools.txt
+          "cdb=$cv" | Out-File work\tools.txt -Append
+          Get-Content work\tools.txt
+
+      - name: Arm 1 - baseline without any page heap key
+        shell: pwsh
+        run: |
+          $k = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\hprobe.exe"
+          Remove-Item $k -Recurse -Force -EA SilentlyContinue
+          Remove-Item work\base_log.txt -Force -EA SilentlyContinue
+          $pi = Start-Process -FilePath (Join-Path $PWD.Path "work\hprobe.exe") -ArgumentList "work\base_log.txt" -PassThru -Wait
+          "exit=0x{0:X8}" -f $pi.ExitCode | Out-File work\arm1.txt
+          Get-Content work\base_log.txt -EA SilentlyContinue | Out-File work\arm1.txt -Append
+          Get-Content work\arm1.txt
+
+      - name: Arm 2 - gflags /p /enable hprobe /full
+        shell: pwsh
+        run: |
+          $t = Get-Content work\tools.txt
+          $gv = ($t | Where-Object { $_ -like "gflags=*" }) -replace "gflags=", ""
+          $k = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\hprobe.exe"
+          Remove-Item $k -Recurse -Force -EA SilentlyContinue
+          if ($gv -ne "NONE") {
+            & $gv /p /enable hprobe.exe /full
+            "gflags_exit=$LASTEXITCODE" | Out-File work\arm2.txt
+            Start-Sleep -Seconds 2
+          } else { "gflags_missing" | Out-File work\arm2.txt }
+          $props = Get-ItemProperty $k -EA SilentlyContinue
+          if ($props) {
+            foreach ($n in $props.PSObject.Properties.Name) {
+              if ($n -notmatch '^PS') { "reg $n=$($props.$n)" | Out-File work\arm2.txt -Append }
+            }
+          } else { "reg_no_key" | Out-File work\arm2.txt -Append }
+          Remove-Item work\gf_log.txt -Force -EA SilentlyContinue
+          $pi = Start-Process -FilePath (Join-Path $PWD.Path "work\hprobe.exe") -ArgumentList "work\gf_log.txt" -PassThru -Wait
+          "exit=0x{0:X8}" -f $pi.ExitCode | Out-File work\arm2.txt -Append
+          Get-Content work\gf_log.txt -EA SilentlyContinue | Out-File work\arm2.txt -Append
+          Get-Content work\arm2.txt
+
+      - name: Arm 3 - legacy GlobalFlag 0x2000000 page heap
+        shell: pwsh
+        run: |
+          $k = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\hprobe.exe"
+          Remove-Item $k -Recurse -Force -EA SilentlyContinue
+          New-Item -Path $k -Force | Out-Null
+          New-ItemProperty -Path $k -Name GlobalFlag -Value 0x2000000 -PropertyType DWord -Force | Out-Null
+          Remove-Item work\leg_log.txt -Force -EA SilentlyContinue
+          $pi = Start-Process -FilePath (Join-Path $PWD.Path "work\hprobe.exe") -ArgumentList "work\leg_log.txt" -PassThru -Wait
+          "exit=0x{0:X8}" -f $pi.ExitCode | Out-File work\arm3.txt
+          "reg_GlobalFlag=$((Get-ItemProperty $k).GlobalFlag)" | Out-File work\arm3.txt -Append
+          Get-Content work\leg_log.txt -EA SilentlyContinue | Out-File work\arm3.txt -Append
+          Get-Content work\arm3.txt
+
+      - name: Disarm hprobe keys
+        shell: pwsh
+        run: |
+          Remove-Item "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\hprobe.exe" -Recurse -Force -EA SilentlyContinue
+          "hprobe_ifeo_removed=$(-not (Test-Path 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\hprobe.exe'))"
+
+      - name: Install Current channel x64 Word and Excel
+        shell: pwsh
+        run: |
+          $page = (Invoke-WebRequest -Uri "https://www.microsoft.com/en-us/download/details.aspx?id=49117" -UseBasicParsing).Content
+          if ($page -match 'href="(https://download\.microsoft\.com/download/[^"]+officedeploymenttool[^"]*\.exe)"') {
+            Invoke-WebRequest -Uri $Matches[1] -OutFile odt.exe
+          } else { throw "odt link not found" }
+          Start-Process -Wait -FilePath .\odt.exe -ArgumentList "/extract:odtx /quiet"
+          $xml = '<Configuration><Add SourcePath="C:\odtpkg" OfficeClientEdition="64" Channel="Current"><Product ID="O365ProPlusRetail"><Language ID="en-us" /><ExcludeApp ID="Access" /><ExcludeApp ID="Groove" /><ExcludeApp ID="Lync" /><ExcludeApp ID="OneDrive" /><ExcludeApp ID="OneNote" /><ExcludeApp ID="Outlook" /><ExcludeApp ID="PowerPoint" /><ExcludeApp ID="Publisher" /><ExcludeApp ID="Teams" /><ExcludeApp ID="Bing" /></Product></Add><Display Level="None" AcceptEULA="TRUE" /><Updates Enabled="FALSE" /></Configuration>'
+          Set-Content -Path cfg.xml -Value $xml
+          $sw = [Diagnostics.Stopwatch]::StartNew()
+          Start-Process -Wait -FilePath .\odtx\setup.exe -ArgumentList "/configure","cfg.xml"
+          "install_seconds=$($sw.Elapsed.TotalSeconds)" | Out-File ver.txt
+          $e = Get-Item "C:\Program Files\Microsoft Office\root\Office16\EXCEL.EXE" -EA SilentlyContinue
+          if (-not $e) { throw "excel install failed" }
+          "excel: {0} v{1}" -f $e.Length, $e.VersionInfo.FileVersion | Out-File ver.txt -Append
+          $cfg = Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Office\ClickToRun\Configuration" -EA SilentlyContinue
+          if ($cfg) { "channel=" + $cfg.UpdateChannel + " ver=" + $cfg.VersionToReport | Out-File ver.txt -Append }
+          Get-Content ver.txt
+
+      - name: Arm EXCEL page heap and read applied flags under cdb
+        shell: pwsh
+        run: |
+          $k = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\EXCEL.EXE"
+          Remove-Item $k -Recurse -Force -EA SilentlyContinue
+          $t = Get-Content work\tools.txt
+          $gv = ($t | Where-Object { $_ -like "gflags=*" }) -replace "gflags=", ""
+          $cv = ($t | Where-Object { $_ -like "cdb=*" }) -replace "cdb=", ""
+          $ld = "HKLM:\SOFTWARE\Microsoft\Windows Error Reporting\LocalDumps"
+          New-Item -Path $ld -Force | Out-Null
+          New-ItemProperty -Path $ld -Name DumpFolder -Value "C:\dphdumps" -PropertyType ExpandString -Force | Out-Null
+          New-ItemProperty -Path $ld -Name DumpType -Value 2 -PropertyType DWord -Force | Out-Null
+          New-ItemProperty -Path $ld -Name DumpCount -Value 30 -PropertyType DWord -Force | Out-Null
+          New-Item -ItemType Directory -Force -Path C:\dphdumps | Out-Null
+          if ($gv -ne "NONE") { & $gv /p /enable EXCEL.EXE /full; "gflags_excel_exit=$LASTEXITCODE" | Out-File work\armexcel.txt }
+          Start-Sleep -Seconds 2
+          $props = Get-ItemProperty $k -EA SilentlyContinue
+          if ($props) { foreach ($n in $props.PSObject.Properties.Name) { if ($n -notmatch '^PS') { "reg $n=$($props.$n)" | Out-File work\armexcel.txt -Append } } }
+          Set-Content -Path corpus\ctrl.csv -Value "a,b`r`n1,=1+1`r`n" -Encoding ASCII
+          $p = Start-Process -FilePath "C:\Program Files\Microsoft Office\root\Office16\EXCEL.EXE" -ArgumentList ('"'+(Join-Path $PWD.Path "corpus\ctrl.csv")+'"') -PassThru
+          "excel_pid=$($p.Id)" | Out-File work\armexcel.txt -Append
+          $ready = 0
+          for ($i = 0; $i -lt 45; $i++) {
+            Start-Sleep -Seconds 2
+            try { Get-Process -Id $p.Id | Out-Null; $mt = (Get-Process -Id $p.Id).MainWindowTitle } catch { break }
+            if ($mt -match 'ctrl') { $ready = 1; break }
+          }
+          "excel_ready=$ready title=$mt" | Out-File work\armexcel.txt -Append
+          $mods = @()
+          try { $mods = @((Get-Process -Id $p.Id).Modules | ForEach-Object { $_.ModuleName }) } catch { }
+          "module_count=$($mods.Count) verifier=$(($mods | Where-Object { $_ -match 'verifier' }).Count)" | Out-File work\armexcel.txt -Append
+          if ($cv -ne "NONE") {
+            $env:_NT_SYMBOL_PATH = "srv*C:\symcache*https://msdl.microsoft.com/download/symbols"
+            & $cv -pv -p $p.Id -logo work\cdb_gflags.txt -c "!gflags;.echo MARK_GFLAGS_END;qd"
+            & $cv -pv -p $p.Id -logo work\cdb_verifier.txt -c "!verifier;.echo MARK_VERIFIER_END;qd"
+            & $cv -pv -p $p.Id -logo work\cdb_heap.txt -c "!heap -p;.echo MARK_HEAP_END;qd"
+          } else { "cdb_missing" | Out-File work\cdb_gflags.txt }
+          Get-Content work\armexcel.txt
+          Get-Process EXCEL -EA SilentlyContinue | Stop-Process -Force
+
+      - name: Report cdb readings
+        shell: pwsh
+        run: |
+          foreach ($f in @('work\cdb_gflags.txt','work\cdb_verifier.txt','work\cdb_heap.txt')) {
+            "===== $f ====="
+            if (Test-Path $f) { (Get-Content $f | Select-String -Pattern 'GFLAGS|VERIFIER|page heap|Page Heap|HEAP|Flags|MARK_|Dynamic|extension' | Select-Object -First 40) }
+          }
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: dph-validate
+          path: |
+            work
+            ver.txt
+          if-no-files-found: ignore
