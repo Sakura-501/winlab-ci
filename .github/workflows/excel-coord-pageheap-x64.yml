@@ -100,7 +100,7 @@ jobs:
           $before = DumpList
           Set-Content -Path ($f.FullName + ':Zone.Identifier') -Value "[ZoneTransfer]`r`nZoneId=3" -Encoding ASCII
           $t0 = Get-Date
-          $p = Start-Process -FilePath $exe -ArgumentList '"' + $f.FullName + '"' -PassThru
+          $p = Start-Process -FilePath $exe -ArgumentList ('"' + $f.FullName + '"') -PassThru
           $alive = 1; $opened = 0; $ver = 0; $exit = ''; $title = ''
           for ($i = 0; $i -lt 25; $i++) {
             Start-Sleep -Seconds 2
