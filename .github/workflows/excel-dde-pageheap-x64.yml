@@ -38,8 +38,13 @@ jobs:
       run: |
         $log = "out\setup_log.txt"
         New-Item -ItemType Directory -Force -Path out, C:\dumps | Out-Null
-        $gf = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\Debuggers" -Recurse -Include gflags.exe -EA SilentlyContinue | Select-Object -First 1
-        if ($gf) { & $gf.FullName /p /enable EXCEL.EXE /full | Out-Null; "gflags_path=$($gf.FullName)" | Add-Content $log }
+        $gfs = @(Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\Debuggers" -Recurse -Include gflags.exe -EA SilentlyContinue)
+        $gf = @($gfs | Where-Object { $_.FullName -match '\\x64\\' } | Select-Object -First 1)
+        if (-not $gf) { $gf = @($gfs | Select-Object -First 1) }
+        if ($gf) {
+          try { & $gf.FullName /p /enable EXCEL.EXE /full | Out-Null; "gflags_path=$($gf.FullName)" | Add-Content $log }
+          catch { "gflags_unusable=$($gf.FullName) -> registry page heap only" | Add-Content $log }
+        }
         $k = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\EXCEL.EXE"
         New-Item -Path $k -Force | Out-Null
         Set-ItemProperty -Path $k -Name GlobalFlag -Value 0x200 -Type DWord
