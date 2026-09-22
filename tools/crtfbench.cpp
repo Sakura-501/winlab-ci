@@ -56,6 +56,25 @@ static const char *Base(const char *p)
     return s ? s + 1 : p;
 }
 
+static LONG CALLBACK VehReport(PEXCEPTION_POINTERS ep)
+{
+    // __fastfail (int 0x29) is deliberately uncatchable by SEH, but a vectored handler still sees
+    // it before termination - without this the wave just dies with rc=0xC0000409 and no location.
+    DWORD c = ep->ExceptionRecord->ExceptionCode;
+    if (c == 0xC0000409 || c == 0xC0000374 || c == 0xC0000379 || c == 0xC0000389 || c == 0x80000003) {
+        char mod[260]; uintptr_t base = 0;
+        ModuleFor((uintptr_t)ep->ExceptionRecord->ExceptionAddress, mod, sizeof(mod), &base);
+        printf("!!!VEH code=%08x addr=%p %s+0x%llX sub=%u\n", (unsigned)c,
+               (void *)ep->ExceptionRecord->ExceptionAddress, Base(mod),
+               base ? (unsigned long long)((uintptr_t)ep->ExceptionRecord->ExceptionAddress - base) : 0ULL,
+               (c == 0xC0000409 && ep->ExceptionRecord->NumberParameters > 1)
+                   ? (unsigned)ep->ExceptionRecord->ExceptionInformation[1] : 0u);
+        fflush(stdout);
+    }
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+
+
 static BOOL TargetReadable(uintptr_t a)
 {
     MEMORY_BASIC_INFORMATION mbi;
@@ -529,6 +548,7 @@ int main(int argc, char **argv)
         // Anything that changes at or past the promised size is a write beyond the callee's own
         // declaration, which is a stricter reading than the page guard the armed heap also gives.
         g_soft = 1;
+        AddVectoredExceptionHandler(1, VehReport);
         HMODULE hm2 = LoadLibraryExA("OUTLMIME.dll", nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
         if (!hm2)
             hm2 = LoadLibraryExA("C:\\Program Files\\Microsoft Office\\root\\Office16\\OUTLMIME.dll",
@@ -549,6 +569,30 @@ int main(int argc, char **argv)
         fflush(stdout);
         size_t fsz = 0; BYTE *fb = LoadBlob(argv[1], &fsz);
         if (!fb) { printf("NOINPUT\n"); return 11; }
+        // convention probe: the same tiny record offered to each kind under three call shapes, so a
+        // callee-side fault can be told apart from a wrong argument convention on the first record.
+        static const BYTE kGood[] = { 0x30,0x0B,0x06,0x09,0x2B,0x06,0x01,0x04,0x01,0x82,0x37,0x2E,0x01 };
+        if (getenv("CRTF_PROBE")) {
+            for (int k = 0; k < NK; k++) {
+                if (!pDec[k]) continue;
+                unsigned long nd; void *pv; int r;
+                nd = 0; r = 0;
+                __try { r = pDec[k](k, 0, (unsigned char *)kGood, sizeof(kGood), 0, nullptr, nullptr, &nd); }
+                __except (EXCEPTION_EXECUTE_HANDLER) { r = -1; }
+                printf("PROBE k=%d shapeA(flags0,pv=NULL) rc=%d need=%lu\n", k, r, nd);
+                nd = 0; r = 0;
+                __try { r = pDec[k](k, 0, (unsigned char *)kGood, sizeof(kGood), 0x8000, nullptr, nullptr, &nd); }
+                __except (EXCEPTION_EXECUTE_HANDLER) { r = -1; }
+                printf("PROBE k=%d shapeB(flags8000) rc=%d need=%lu\n", k, r, nd);
+                nd = 0; pv = nullptr; r = 0;
+                __try { r = pDec[k](k, 0, (unsigned char *)kGood, sizeof(kGood), 0x8000, nullptr, &pv, &nd); }
+                __except (EXCEPTION_EXECUTE_HANDLER) { r = -1; }
+                printf("PROBE k=%d shapeC(pvOut=&pv) rc=%d need=%lu pv=%p\n", k, r, nd, pv);
+                fflush(stdout);
+            }
+            printf("PROBEEND\n"); fflush(stdout);
+            return 0;
+        }
         unsigned long recs = 0, entered = 0, fills = 0, pastn = 0, faults = 0;
         unsigned long percnt[8] = { 0 }, perenter[8] = { 0 }, perfault[8] = { 0 }, perpast[8] = { 0 };
         unsigned long maxpast = 0;

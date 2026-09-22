@@ -102,6 +102,19 @@ jobs:
         "corpus bytes=$($f.Length)" | Tee-Object -Append ver.txt
         if ($f.Length -lt 10000) { throw "corpus too small to be usable" }
 
+    - name: Convention probe (which call shape the exports accept)
+      shell: pwsh
+      run: |
+        # Runs before the wave: tells a callee-side fault apart from a wrong argument convention.
+        # Not a gate - a nonzero rc here is itself the reading.
+        $env:CRTF_PROBE = '1'
+        $o = & .\bin\crtfbench42_x64.exe - 0 256 42 300000 2>&1 | Out-String
+        $rc = $LASTEXITCODE -band [int]0xFFFFFFFF
+        $global:LASTEXITCODE = 0
+        $o | Set-Content out\probe.txt
+        "PROBE rc=0x$('{0:X8}' -f $rc)" | Tee-Object -Append out\probe.txt
+        (@($o -split "\r?\n" | Where-Object { $_ -match 'PROBE|VEH' }) -join "`n")
+
     - name: Wave - Ess decoders at the size each one promises
       shell: pwsh
       run: |
@@ -121,6 +134,7 @@ jobs:
         $kinds = @($o -split "\r?\n" | Where-Object { $_ -match 'PERKIND' -and $_ -match 'entered=[1-9]' }).Count
         "kinds_with_coverage=$kinds" | Tee-Object -Append out\head.txt
         if ($kinds -lt 1) { throw "ZERO-COVERAGE: no kind was entered at all" }
+        (@($o -split "\r?\n" | Where-Object { $_ -match '!!!VEH' })) | Out-File out\veh.txt
         if ($endLine -notmatch 'faults=0') { (@($o -split "\r?\n" | Where-Object { $_ -match 'FAULT' })) | Out-File out\avfull.txt; throw "MEMORY FAULT observed in the Ess decoders - see avfull.txt" }
         if ($endLine -notmatch 'past=0') { (@($o -split "\r?\n" | Where-Object { $_ -match 'past=[1-9]' })) | Out-File out\past.txt; throw "WRITE PAST THE CALLEE'S OWN PROMISED SIZE - see past.txt" }
         "coverage ok, no faults, no past-write" | Tee-Object -Append out\head.txt
