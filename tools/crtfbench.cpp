@@ -664,7 +664,8 @@ int main(int argc, char **argv)
         if (!fb) { printf("NOINPUT\n"); return 11; }
         size_t off = 0; unsigned long n = 0, okc = 0, errc = 0;
         char *line = (char *)malloc(1u << 20);
-        while (off + 1 < fsz && n < 200000) {
+        unsigned long nmax40 = getenv("CRTF_NMAX") ? strtoul(getenv("CRTF_NMAX"), nullptr, 10) : 5000000ul;
+        while (off + 1 < fsz && n < nmax40) {
             size_t e1 = off; while (e1 < fsz && fb[e1] != '\n') e1++;
             if (e1 >= fsz) break;
             long want = strtol((char *)fb + off, nullptr, 10);
