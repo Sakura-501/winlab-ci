@@ -1,0 +1,115 @@
+name: olm-conv27-dph-x64
+# OLMAPI32 exported RTF<->PT converters on an armed full page heap (native x64 runner).
+# Stages A/B (mode 23/24) are the page-heap gate + RTF-sync positive controls carried over from
+#   olm-mlt26-dph-x64; they also re-prove the instrument is live before Stage C is trusted.
+# Stage C (mode 27): ConvertRTFPT is the only exported entry point whose path reaches
+#   ConvertRTFPTStreamInt's store into (*pProps)[5] with no test against the returned cValues, and
+#   the pProps[4].Value free over that same array (findings/.../STATE.md 30-31). 20 arg combos per
+#   carrier; SEH-guarded with a 3-fault abort so a wrong prototype cannot look like a product fault.
+# Gates: the job throws unless ok>=1 and msgs>=1 (converter really produced a property array).
+'on':
+  workflow_dispatch:
+    inputs:
+      klist:
+        description: 'comma list of interleave depths K'
+        required: false
+        default: '12,64'
+jobs:
+  t:
+    runs-on: windows-latest
+    timeout-minutes: 170
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Download ODT
+      shell: pwsh
+      run: |
+        $page = (Invoke-WebRequest -Uri "https://www.microsoft.com/en-us/download/details.aspx?id=49117" -UseBasicParsing).Content
+        if ($page -match 'href="(https://download\.microsoft\.com/download/[^"]+officedeploymenttool[^"]*\.exe)"') {
+          Invoke-WebRequest -Uri $Matches[1] -OutFile odt.exe
+        } else { throw "odt link not found" }
+        Start-Process -Wait -FilePath .\odt.exe -ArgumentList "/extract:odtx /quiet"
+
+    - name: Install Current x64 (Outlook kept, rest excluded)
+      shell: pwsh
+      run: |
+        $xml = '<Configuration><Add OfficeClientEdition="64" Channel="Current"><Product ID="O365ProPlusRetail"><Language ID="en-us" /><ExcludeApp ID="Excel" /><ExcludeApp ID="PowerPoint" /><ExcludeApp ID="OneDrive" /><ExcludeApp ID="OneNote" /><ExcludeApp ID="Lync" /><ExcludeApp ID="Access" /><ExcludeApp ID="Groove" /><ExcludeApp ID="Publisher" /><ExcludeApp ID="Teams" /><ExcludeApp ID="Bing" /><ExcludeApp ID="Word" /></Product></Add><Display Level="None" AcceptEULA="TRUE" /><Updates Enabled="FALSE" /></Configuration>'
+        Set-Content -Path cfg.xml -Value $xml
+        Start-Process -Wait -FilePath .\odtx\setup.exe -ArgumentList "/configure","cfg.xml"
+        $o = Get-Item "C:\Program Files\Microsoft Office\root\Office16\OUTLOOK.EXE" -ErrorAction SilentlyContinue
+        if (-not $o) { throw "outlook install failed" }
+        $olm = Get-Item "C:\Program Files\Microsoft Office\root\Office16\OLMAPI32.DLL"
+        "olmapi32 len=$($olm.Length) v=$($olm.VersionInfo.FileVersion)" | Tee-Object ver.txt
+
+    - name: Build .msg corpus
+      shell: pwsh
+      run: |
+        New-Item -ItemType Directory -Force -Path corpus, out | Out-Null
+        tar -xzf bin\cfbcorpus.tgz -C corpus
+        Get-ChildItem corpus -Recurse -Force -Filter '._*' | Remove-Item -Force -ErrorAction SilentlyContinue
+        python tools\lzfu_mut.py payloads
+        python tools\mk_msg_corpus.py bin\base_valid.msg payloads corpus
+        python tools\mk_sync_corpus.py bin\base_valid.msg corpus
+        python tools\mk_esc_corpus.py bin\base_valid.msg corpus
+        Remove-Item corpus\_p_*.bin -Force -ErrorAction SilentlyContinue
+        "corpus_msg=" + (Get-ChildItem corpus -Filter *.msg).Count
+
+    - name: Arm full page heap and gate it behaviourally
+      shell: pwsh
+      run: |
+        $k = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\crtfbench8_x64.exe"
+        New-Item -Path $k -Force | Out-Null
+        New-ItemProperty -Path $k -Name GlobalFlag -Value 0x02000000 -PropertyType DWord -Force | Out-Null
+        New-ItemProperty -Path $k -Name PageHeapFlags -Value 0x3 -PropertyType DWord -Force | Out-Null
+        "GlobalFlag=$((Get-Item $k).GetValue('GlobalFlag')) PageHeapFlags=$((Get-Item $k).GetValue('PageHeapFlags'))" | Out-File out\pageheap.txt
+        $s = & .\bin\crtfbench8_x64.exe selftest 0 256 0 120000 2>&1 | Out-String
+        $rc = $LASTEXITCODE -band [int]0xFFFFFFFF
+        $armed = if (('{0:X8}' -f $rc) -eq 'C0000005' -and $s -notmatch 'NOT_DETECTED' -and $s -match 'ABOUT_TO_WRITE_PAST_END') { 'ARMED' } else { 'NOT_ARMED' }
+        "SELFTEST rc=0x$('{0:X8}' -f $rc) verdict=$armed log=$(($s.Trim() -replace '\r?\n',' | '))" | Out-File out\selftest.txt
+        Get-Content out\selftest.txt
+        if ($armed -ne 'ARMED') { throw "instrument blind: aborting" }
+        # RESET_EXITCODE: the intentional selftest AV leaves $LASTEXITCODE=0xC0000005;
+        # the pwsh wrapper would fail the step on it before any case ran.
+        $global:LASTEXITCODE = 0
+        $env:CRTF_MAX = '12'
+        $pc = & .\bin\crtfbench8_x64.exe corpus 0 256 23 300000 2>&1 | Out-String
+        "PCTRL23 $(($pc.Trim() -replace '\r?\n',' | '))" | Out-File out\pctrl23.txt
+        Get-Content out\pctrl23.txt
+        if ($pc -notmatch 'updated=[1-9]' -or $pc -notmatch 'rels=[1-9]' -or $pc -match 'bad=[1-9]') { throw "positive control stage A did not rewrite/release a carrier cleanly" }
+        $pc2 = & .\bin\crtfbench8_x64.exe corpus 0 256 24 300000 2>&1 | Out-String
+        "PCTRL24 $(($pc2.Trim() -replace '\r?\n',' | '))" | Out-File out\pctrl24.txt
+        Get-Content out\pctrl24.txt
+        if ($pc2 -notmatch 'updated=[1-9]' -or $pc2 -match 'bad=[1-9]') { throw "positive control stage B did not rewrite a carrier cleanly" }
+        Remove-Item Env:CRTF_MAX
+
+    - name: Stage C - exported RTF<->PT property-table converters over the corpus
+      shell: pwsh
+      run: |
+        # mode 27: ConvertRTFPT is the only exported entry that reaches ConvertRTFPTStreamInt's
+        # store into (*pProps)[5] (no test on the returned cValues) and the pProps[4].Value free
+        # over the same array. 20 argument combinations per carrier, SEH-guarded, abort after 3
+        # faults so a prototype error cannot masquerade as a per-carrier product fault.
+        $sw = [Diagnostics.Stopwatch]::StartNew()
+        $o = & .\bin\crtfbench8_x64.exe corpus 1 256 27 900000 2>&1 | Out-String
+        $rc = $LASTEXITCODE -band [int]0xFFFFFFFF
+        $sw.Stop()
+        $o | Set-Content out\conv27.log
+        $sum = (@($o -split "\r?\n" | Where-Object { $_ -match 'CFEND' }) -join ' ')
+        $note = if ($rc -eq 0x48414E47) { 'HANG' } elseif ($o -match 'CFAV') { 'AV' } elseif ($rc -ne 0) { 'rc' } else { 'ret' }
+        "C rc=0x$('{0:X8}' -f $rc) s=$([int]$sw.Elapsed.TotalSeconds) note=$note $sum" | Add-Content out\headC.txt
+        (@($o -split "\r?\n" | Where-Object { $_ -match 'CFAV|!!!AV|^CF file=|RAX=|CODE=|CODE:|TGTBYTES' }) | Select-Object -First 80) | Add-Content out\convalert.txt
+        Get-Content out\headC.txt
+        if (Test-Path out\convalert.txt) { Get-Content out\convalert.txt | Select-Object -First 40 }
+        $last = Get-Content out\headC.txt -Raw
+        if ($last -notmatch 'ok=[1-9]') { throw "converter never produced a property array: coverage void" }
+        if ($last -notmatch 'msgs=[1-9]') { throw "no carrier reached the converter: coverage void" }
+        $global:LASTEXITCODE = 0
+
+    - name: Upload evidence
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: olm-conv27-dph-x64
+        path: |
+          out
+          ver.txt
