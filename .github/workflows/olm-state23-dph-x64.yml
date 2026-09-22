@@ -51,6 +51,7 @@ jobs:
       run: |
         New-Item -ItemType Directory -Force -Path corpus, out | Out-Null
         tar -xzf bin\cfbcorpus.tgz -C corpus
+        Get-ChildItem corpus -Recurse -Force -Filter '._*' | Remove-Item -Force -ErrorAction SilentlyContinue
         python tools\lzfu_mut.py payloads
         python tools\mk_msg_corpus.py bin\base_valid.msg payloads corpus
         python tools\mk_sync_corpus.py bin\base_valid.msg corpus
