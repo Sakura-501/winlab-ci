@@ -1,0 +1,114 @@
+name: olm-mlt26-dph-x64
+# OLMAPI32 RTF-sync layer driven as STATEFUL sequences on an armed full page heap (native x64).
+# Stage A (mode 23): the whole .msg corpus inside ONE process -- open -> exported RTFSync x3 flags ->
+#   verified IMessage::Release, per carrier, so heap blocks freed by carrier N are reused by N+1.
+# Stage B (mode 24): K messages held live at once, every RTFSync pass run after all K are allocated,
+#   releases in reverse order.
+# mode 22 (the first attempt) is not used: its hand-coded slot arithmetic was wrong and it crashed on
+#   the first carrier's Release (see findings/MSRC/M365-Insider/crtf-decompress-20260922/STATE.md §24).
+# Both stages carry a behavioural instrument gate (heap overrun must be observed) and a positive
+#   control that aborts the job unless real RTF rewriting is seen (updated>=1, rels>=1, bad=0).
+'on':
+  workflow_dispatch:
+    inputs:
+      klist:
+        description: 'comma list of interleave depths K'
+        required: false
+        default: '12,64'
+jobs:
+  t:
+    runs-on: windows-latest
+    timeout-minutes: 170
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Download ODT
+      shell: pwsh
+      run: |
+        $page = (Invoke-WebRequest -Uri "https://www.microsoft.com/en-us/download/details.aspx?id=49117" -UseBasicParsing).Content
+        if ($page -match 'href="(https://download\.microsoft\.com/download/[^"]+officedeploymenttool[^"]*\.exe)"') {
+          Invoke-WebRequest -Uri $Matches[1] -OutFile odt.exe
+        } else { throw "odt link not found" }
+        Start-Process -Wait -FilePath .\odt.exe -ArgumentList "/extract:odtx /quiet"
+
+    - name: Install Current x64 (Outlook kept, rest excluded)
+      shell: pwsh
+      run: |
+        $xml = '<Configuration><Add OfficeClientEdition="64" Channel="Current"><Product ID="O365ProPlusRetail"><Language ID="en-us" /><ExcludeApp ID="Excel" /><ExcludeApp ID="PowerPoint" /><ExcludeApp ID="OneDrive" /><ExcludeApp ID="OneNote" /><ExcludeApp ID="Lync" /><ExcludeApp ID="Access" /><ExcludeApp ID="Groove" /><ExcludeApp ID="Publisher" /><ExcludeApp ID="Teams" /><ExcludeApp ID="Bing" /><ExcludeApp ID="Word" /></Product></Add><Display Level="None" AcceptEULA="TRUE" /><Updates Enabled="FALSE" /></Configuration>'
+        Set-Content -Path cfg.xml -Value $xml
+        Start-Process -Wait -FilePath .\odtx\setup.exe -ArgumentList "/configure","cfg.xml"
+        $o = Get-Item "C:\Program Files\Microsoft Office\root\Office16\OUTLOOK.EXE" -ErrorAction SilentlyContinue
+        if (-not $o) { throw "outlook install failed" }
+        $olm = Get-Item "C:\Program Files\Microsoft Office\root\Office16\OLMAPI32.DLL"
+        "olmapi32 len=$($olm.Length) v=$($olm.VersionInfo.FileVersion)" | Tee-Object ver.txt
+
+    - name: Build .msg corpus
+      shell: pwsh
+      run: |
+        New-Item -ItemType Directory -Force -Path corpus, out | Out-Null
+        tar -xzf bin\cfbcorpus.tgz -C corpus
+        Get-ChildItem corpus -Recurse -Force -Filter '._*' | Remove-Item -Force -ErrorAction SilentlyContinue
+        python tools\lzfu_mut.py payloads
+        python tools\mk_msg_corpus.py bin\base_valid.msg payloads corpus
+        python tools\mk_sync_corpus.py bin\base_valid.msg corpus
+        python tools\mk_esc_corpus.py bin\base_valid.msg corpus
+        Remove-Item corpus\_p_*.bin -Force -ErrorAction SilentlyContinue
+        "corpus_msg=" + (Get-ChildItem corpus -Filter *.msg).Count
+
+    - name: Arm full page heap and gate it behaviourally
+      shell: pwsh
+      run: |
+        $k = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\crtfbench8_x64.exe"
+        New-Item -Path $k -Force | Out-Null
+        New-ItemProperty -Path $k -Name GlobalFlag -Value 0x02000000 -PropertyType DWord -Force | Out-Null
+        New-ItemProperty -Path $k -Name PageHeapFlags -Value 0x3 -PropertyType DWord -Force | Out-Null
+        "GlobalFlag=$((Get-Item $k).GetValue('GlobalFlag')) PageHeapFlags=$((Get-Item $k).GetValue('PageHeapFlags'))" | Out-File out\pageheap.txt
+        $s = & .\bin\crtfbench8_x64.exe selftest 0 256 0 120000 2>&1 | Out-String
+        $rc = $LASTEXITCODE -band [int]0xFFFFFFFF
+        $armed = if (('{0:X8}' -f $rc) -eq 'C0000005' -and $s -notmatch 'NOT_DETECTED' -and $s -match 'ABOUT_TO_WRITE_PAST_END') { 'ARMED' } else { 'NOT_ARMED' }
+        "SELFTEST rc=0x$('{0:X8}' -f $rc) verdict=$armed log=$(($s.Trim() -replace '\r?\n',' | '))" | Out-File out\selftest.txt
+        Get-Content out\selftest.txt
+        if ($armed -ne 'ARMED') { throw "instrument blind: aborting" }
+        $env:CRTF_MAX = '12'
+        $pc = & .\bin\crtfbench8_x64.exe corpus 0 256 23 300000 2>&1 | Out-String
+        "PCTRL23 $(($pc.Trim() -replace '\r?\n',' | '))" | Out-File out\pctrl23.txt
+        Get-Content out\pctrl23.txt
+        if ($pc -notmatch 'updated=[1-9]' -or $pc -notmatch 'rels=[1-9]' -or $pc -match 'bad=[1-9]') { throw "positive control stage A did not rewrite/release a carrier cleanly" }
+        $pc2 = & .\bin\crtfbench8_x64.exe corpus 0 256 24 300000 2>&1 | Out-String
+        "PCTRL24 $(($pc2.Trim() -replace '\r?\n',' | '))" | Out-File out\pctrl24.txt
+        Get-Content out\pctrl24.txt
+        if ($pc2 -notmatch 'updated=[1-9]' -or $pc2 -match 'bad=[1-9]') { throw "positive control stage B did not rewrite a carrier cleanly" }
+        Remove-Item Env:CRTF_MAX
+
+    - name: Stage D - many messages live at once, each holding a wrapped body stream
+      shell: pwsh
+      run: |
+        # mode 26: hold K messages each with OpenProperty(0x10090102,0,11) + Wrap(flags) handles,
+        # read them, then RTFSync them one at a time while every other held handle is still
+        # outstanding, re-reading ALL held handles after each rewrite; release in reverse order.
+        foreach ($kk in '${{ inputs.klist }}'.Split(',')) {
+          $env:CRTF_K = $kk.Trim()
+          $sw = [Diagnostics.Stopwatch]::StartNew()
+          $o = & .\bin\crtfbench8_x64.exe corpus 1 256 26 1500000 2>&1 | Out-String
+          $rc = $LASTEXITCODE -band [int]0xFFFFFFFF
+          $sw.Stop()
+          ("out\mlt_k$($kk.Trim()).log") | ForEach-Object { $o | Set-Content $_ }
+          $sum = (@($o -split "\r?\n" | Where-Object { $_ -match 'MLTEND' }) -join ' ')
+          $note = if ($rc -eq 0x48414E47) { 'HANG' } elseif ($o -match '!!!AV') { 'AV' } elseif ($rc -ne 0) { 'rc' } else { 'ret' }
+          "D K=$($kk.Trim()) rc=0x$('{0:X8}' -f $rc) s=$([int]$sw.Elapsed.TotalSeconds) note=$note $sum" | Add-Content out\headD.txt
+          if ($o -match '!!!AV') { ($o -split "\r?\n" | Select-String '!!!AV|RAX|CODE|TGTBYTES|RND ') | Add-Content out\avfull.txt }
+          Remove-Item Env:CRTF_K
+        }
+        Get-Content out\headD.txt
+        if (Test-Path out\avfull.txt) { Get-Content out\avfull.txt | Select-Object -First 60 }
+        $last = Get-Content out\headD.txt -Raw
+        if ($last -notmatch 'touched=[1-9]') { throw "held streams were never touched: coverage void" }
+
+    - name: Upload evidence
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: olm-mlt26-dph-x64
+        path: |
+          out
+          ver.txt
