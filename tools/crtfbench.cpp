@@ -23,6 +23,7 @@ typedef HRESULT (STDAPICALLTYPE *PFN_ALLOCMORE)(ULONG, void *, void **);
 typedef void (STDAPICALLTYPE *PFN_FREEBUF)(void *);
 typedef HRESULT (STDAPICALLTYPE *PFN_MAPIINIT)(void *);
 typedef HRESULT (STDAPICALLTYPE *PFN_MAPIUNINIT)(void);
+typedef ULONG (STDAPICALLTYPE *PFN_RELEASE)(void *);
 
 static PFN_WRAP       g_pWrap = nullptr;
 static PFN_WRAP       g_pWrapEx = nullptr;
@@ -175,6 +176,255 @@ int main(int argc, char **argv)
         printf("NOT_DETECTED p1[0x100]=%02x\n", (unsigned char)p1[0x100]); fflush(stdout);
         return 0;
     }
+    ULONG flags = (argc > 2) ? (ULONG)strtoul(argv[2], nullptr, 16) : 0;
+    ULONG chunk = (argc > 3) ? (ULONG)strtoul(argv[3], nullptr, 10) : 0x100;
+    int mode = (argc > 4) ? atoi(argv[4]) : 0;
+    if (mode == 22) {
+        // Stateful sequence: every .msg carrier in a directory is opened, its compressed-RTF body
+        // is decoded and the exported RTFSync rewrite runs -- all inside ONE process, so MAPI heap
+        // blocks freed by carrier N are reallocated with carrier N+1's data (the cross-carrier
+        // reuse a fresh process per case cannot exercise).
+        HMODULE hl2 = GetModuleHandleA("OLMAPI32.dll");
+        PFN_RTFSYNC pSync2 = (PFN_RTFSYNC)GetProcAddress(hl2, "RTFSync");
+        PFN_OPENMSGSESS pSess2 = (PFN_OPENMSGSESS)GetProcAddress(hl2, "OpenIMsgSession");
+        PFN_OPENMSGONI pOpen2 = (PFN_OPENMSGONI)GetProcAddress(hl2, "OpenIMsgOnIStg");
+        PFN_ALLOCBUF pAB2 = (PFN_ALLOCBUF)GetProcAddress(hl2, "MAPIAllocateBuffer");
+        PFN_ALLOCMORE pAM2 = (PFN_ALLOCMORE)GetProcAddress(hl2, "MAPIAllocateMore");
+        PFN_FREEBUF pFB2 = (PFN_FREEBUF)GetProcAddress(hl2, "MAPIFreeBuffer");
+        if (!pSync2 || !pSess2 || !pOpen2) { printf("SEQEXPORTS\n"); return 12; }
+        char pat[1100];
+        size_t bl0 = strlen(argv[1]);
+        _snprintf(pat, sizeof(pat) - 1, "%s%s*.msg", argv[1],
+                  (bl0 && argv[1][bl0 - 1] == '\\') ? "" : "\\");
+        WIN32_FIND_DATAA fd;
+        HANDLE hF = FindFirstFileA(pat, &fd);
+        if (hF == INVALID_HANDLE_VALUE) { printf("NOFILES\n"); return 13; }
+        IMalloc *pMalloc2 = nullptr; CoGetMalloc(MEMCTX_TASK, &pMalloc2);
+        void *pSession2 = nullptr;
+        pSess2(nullptr, 0, &pSession2);
+        unsigned long cnt = 0, opened2 = 0, syncs = 0, ups = 0;
+        do {
+            if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+            char full[1200];
+            size_t bl = strlen(argv[1]);
+            _snprintf(full, sizeof(full) - 1, "%s%s%s", argv[1],
+                      (bl && argv[1][bl - 1] == '\\') ? "" : "\\", fd.cFileName);
+            cnt++;
+            IStorage *pStg2 = nullptr;
+            WCHAR wp2[1100];
+            MultiByteToWideChar(CP_ACP, 0, full, -1, wp2, 1090);
+            HRESULT h3 = StgOpenStorageEx(wp2, STGM_READ | STGM_SHARE_DENY_WRITE, STGFMT_STORAGE, 0,
+                                          nullptr, nullptr, __uuidof(IStorage), (void **)&pStg2);
+            if (SUCCEEDED(h3) && pStg2) {
+                void *pMsg2 = nullptr;
+                h3 = pOpen2(pSession2, (void *)pAB2, (void *)pAM2, (void *)pFB2, pMalloc2, nullptr,
+                            pStg2, nullptr, 0, 0, &pMsg2);
+                if (SUCCEEDED(h3) && pMsg2) {
+                    opened2++;
+                    for (ULONG fl = 1; fl <= 3; fl++) {
+                        int upd = -1;
+                        HRESULT h4 = pSync2(pMsg2, fl, &upd);
+                        if (SUCCEEDED(h4)) { syncs++; if (upd) ups++; }
+                    }
+                    printf("CARRIER %lu %s released\n", cnt, fd.cFileName); fflush(stdout);
+                    ((ULONG (STDMETHODCALLTYPE *)(void *))*(void **)*((void **)pMsg2 + 2))(pMsg2);
+                }
+                pStg2->Release();
+            }
+            if ((cnt % 100) == 0) { printf("SEQ %lu opened=%lu syncs=%lu updated=%lu\n", cnt, opened2, syncs, ups); fflush(stdout); }
+        } while (FindNextFileA(hF, &fd));
+        FindClose(hF);
+        printf("SEQEND carriers=%lu opened=%lu syncs=%lu updated=%lu\n", cnt, opened2, syncs, ups);
+        fflush(stdout);
+        return 0;
+    }
+    if (mode == 23) {
+        // Staged, slot-verified version of mode 22. Every step prints a checkpoint before it runs,
+        // and the IMessage Release slot is checked to be an address inside OLMAPI32 before it is
+        // called (mode 22's hand-coded slot call double-dereferenced and jumped into a vtable).
+        HMODULE hl3 = GetModuleHandleA("OLMAPI32.dll");
+        PFN_RTFSYNC pSync3 = (PFN_RTFSYNC)GetProcAddress(hl3, "RTFSync");
+        PFN_OPENMSGSESS pSess3 = (PFN_OPENMSGSESS)GetProcAddress(hl3, "OpenIMsgSession");
+        PFN_OPENMSGONI pOpen3 = (PFN_OPENMSGONI)GetProcAddress(hl3, "OpenIMsgOnIStg");
+        PFN_ALLOCBUF pAB3 = (PFN_ALLOCBUF)GetProcAddress(hl3, "MAPIAllocateBuffer");
+        PFN_ALLOCMORE pAM3 = (PFN_ALLOCMORE)GetProcAddress(hl3, "MAPIAllocateMore");
+        PFN_FREEBUF pFB3 = (PFN_FREEBUF)GetProcAddress(hl3, "MAPIFreeBuffer");
+        if (!pSync3 || !pSess3 || !pOpen3) { printf("SEQEXPORTS\n"); return 12; }
+        ULONG textLo = 0, textHi = 0;
+        {
+            IMAGE_DOS_HEADER *dh = (IMAGE_DOS_HEADER *)hl3;
+            IMAGE_NT_HEADERS *nt = (IMAGE_NT_HEADERS *)((BYTE *)hl3 + dh->e_lfanew);
+            textLo = (ULONG)nt->OptionalHeader.BaseOfCode;
+            textHi = textLo + nt->OptionalHeader.SizeOfCode;
+            printf("STEP0 olm_text_rva=0x%X-0x%X\n", textLo, textHi); fflush(stdout);
+        }
+        char pat3[1100];
+        size_t bl3 = strlen(argv[1]);
+        _snprintf(pat3, sizeof(pat3) - 1, "%s%s*.msg", argv[1],
+                  (bl3 && argv[1][bl3 - 1] == '\\') ? "" : "\\");
+        WIN32_FIND_DATAA fd;
+        HANDLE hF = FindFirstFileA(pat3, &fd);
+        if (hF == INVALID_HANDLE_VALUE) { printf("NOFILES\n"); return 13; }
+        IMalloc *pMalloc3 = nullptr;
+        printf("STEP1 CoGetMalloc hr=%08x\n", (unsigned)CoGetMalloc(MEMCTX_TASK, &pMalloc3)); fflush(stdout);
+        void *pSession3 = nullptr;
+        HRESULT hs3 = pSess3((void *)pMalloc3, 0, &pSession3);
+        printf("STEP2 OpenIMsgSession hr=%08x sess=%p\n", (unsigned)hs3, pSession3); fflush(stdout);
+        unsigned long cnt = 0, opened3 = 0, syncs = 0, ups = 0, rels = 0, badslot = 0;
+        unsigned long maxc = getenv("CRTF_MAX") ? strtoul(getenv("CRTF_MAX"), nullptr, 10) : 0;
+        do {
+            if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+            if (maxc && cnt >= maxc) break;
+            char full[1200];
+            _snprintf(full, sizeof(full) - 1, "%s%s%s", argv[1],
+                      (bl3 && argv[1][bl3 - 1] == '\\') ? "" : "\\", fd.cFileName);
+            cnt++;
+            IStorage *pStg3 = nullptr;
+            WCHAR wp3[1100];
+            MultiByteToWideChar(CP_ACP, 0, full, -1, wp3, 1090);
+            HRESULT h3 = StgOpenStorageEx(wp3, STGM_READ | STGM_SHARE_DENY_WRITE, STGFMT_STORAGE, 0,
+                                          nullptr, nullptr, __uuidof(IStorage), (void **)&pStg3);
+            if (FAILED(h3) || !pStg3) { printf("OPENFAIL %s hr=%08x\n", fd.cFileName, (unsigned)h3); continue; }
+            void *pMsg3 = nullptr;
+            h3 = pOpen3(pSession3, (void *)pAB3, (void *)pAM3, (void *)pFB3, pMalloc3, nullptr,
+                        pStg3, nullptr, 0, 0, &pMsg3);
+            if (FAILED(h3) || !pMsg3) { printf("MSGFAIL %s hr=%08x\n", fd.cFileName, (unsigned)h3);
+                                        pStg3->Release(); continue; }
+            opened3++;
+            void **vtbl = (void **)pMsg3;
+            void **slots = (void **)vtbl[0];
+            uintptr_t vtRva = (uintptr_t)slots - (uintptr_t)hl3;
+            void *relFn = slots[2];
+            uintptr_t relRva = (uintptr_t)relFn - (uintptr_t)hl3;
+            printf("MSG %lu %s obj=%p vtbl_rva=0x%llX rel_rva=0x%llX\n", cnt, fd.cFileName,
+                   pMsg3, (unsigned long long)vtRva, (unsigned long long)relRva); fflush(stdout);
+            if ((uintptr_t)relFn < (uintptr_t)hl3 + textLo || (uintptr_t)relFn > (uintptr_t)hl3 + textHi) {
+                badslot++;
+                printf("BAD_SLOT %lu rel=%p outside .text -- skipping call\n", cnt, relFn); fflush(stdout);
+                pStg3->Release();
+                continue;
+            }
+            for (ULONG fl = 1; fl <= 3; fl++) {
+                int upd = -1;
+                HRESULT h4 = pSync3(pMsg3, fl, &upd);
+                if (SUCCEEDED(h4)) { syncs++; if (upd) ups++; }
+            }
+            PFN_RELEASE pRel = (PFN_RELEASE)relFn;
+            ULONG rc = pRel(pMsg3);
+            rels++;
+            printf("RELEASED %lu %s ref=%lu\n", cnt, fd.cFileName, rc); fflush(stdout);
+            pStg3->Release();
+            if ((cnt % 100) == 0) printf("SEQ %lu opened=%lu syncs=%lu updated=%lu rels=%lu bad=%lu\n",
+                                         cnt, opened3, syncs, ups, rels, badslot);
+        } while (FindNextFileA(hF, &fd));
+        FindClose(hF);
+        printf("SEQEND carriers=%lu opened=%lu syncs=%lu updated=%lu rels=%lu bad=%lu\n",
+               cnt, opened3, syncs, ups, rels, badslot);
+        fflush(stdout);
+        return 0;
+    }
+    if (mode == 24) {
+        // Interleaved live objects: hold K IMessage objects open at once, run every RTFSync pass after
+        // all K are allocated, then release in reverse order. Exercises the allocator pattern where
+        // carrier N's chunk buffers are still live while carrier N+1 grows its own.
+        HMODULE hl4 = GetModuleHandleA("OLMAPI32.dll");
+        PFN_RTFSYNC pSync4 = (PFN_RTFSYNC)GetProcAddress(hl4, "RTFSync");
+        PFN_OPENMSGSESS pSess4 = (PFN_OPENMSGSESS)GetProcAddress(hl4, "OpenIMsgSession");
+        PFN_OPENMSGONI pOpen4 = (PFN_OPENMSGONI)GetProcAddress(hl4, "OpenIMsgOnIStg");
+        PFN_ALLOCBUF pAB4 = (PFN_ALLOCBUF)GetProcAddress(hl4, "MAPIAllocateBuffer");
+        PFN_ALLOCMORE pAM4 = (PFN_ALLOCMORE)GetProcAddress(hl4, "MAPIAllocateMore");
+        PFN_FREEBUF pFB4 = (PFN_FREEBUF)GetProcAddress(hl4, "MAPIFreeBuffer");
+        if (!pSync4 || !pSess4 || !pOpen4) { printf("SEQEXPORTS\n"); return 12; }
+        ULONG textLo4 = 0, textHi4 = 0;
+        {
+            IMAGE_DOS_HEADER *dh = (IMAGE_DOS_HEADER *)hl4;
+            IMAGE_NT_HEADERS *nt = (IMAGE_NT_HEADERS *)((BYTE *)hl4 + dh->e_lfanew);
+            textLo4 = (ULONG)nt->OptionalHeader.BaseOfCode;
+            textHi4 = textLo4 + nt->OptionalHeader.SizeOfCode;
+        }
+        unsigned long K = getenv("CRTF_K") ? strtoul(getenv("CRTF_K"), nullptr, 10) : 8;
+        if (K < 2) K = 2;
+        if (K > 256) K = 256;
+        char pat4[1100];
+        size_t bl4 = strlen(argv[1]);
+        _snprintf(pat4, sizeof(pat4) - 1, "%s%s*.msg", argv[1],
+                  (bl4 && argv[1][bl4 - 1] == '\\') ? "" : "\\");
+        WIN32_FIND_DATAA fd;
+        HANDLE hF = FindFirstFileA(pat4, &fd);
+        if (hF == INVALID_HANDLE_VALUE) { printf("NOFILES\n"); return 13; }
+        IMalloc *pMalloc4 = nullptr;
+        CoGetMalloc(MEMCTX_TASK, &pMalloc4);
+        void *pSession4 = nullptr;
+        printf("SESS hr=%08x\n", (unsigned)pSess4((void *)pMalloc4, 0, &pSession4)); fflush(stdout);
+        struct Slot { IStorage *stg; void *msg; char name[260]; };
+        Slot *slots = (Slot *)calloc(K, sizeof(Slot));
+        char (*files)[260] = (char(*)[260])malloc(4096u * 260);
+        unsigned long nf = 0;
+        do {
+            if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+            if (nf >= 4096) break;
+            strncpy(files[nf], fd.cFileName, 259);
+            files[nf][259] = 0;
+            nf++;
+        } while (FindNextFileA(hF, &fd));
+        FindClose(hF);
+        unsigned long total = 0, syncs = 0, ups = 0, rels = 0, bad = 0, rounds = 0;
+        unsigned long maxc = getenv("CRTF_MAX") ? strtoul(getenv("CRTF_MAX"), nullptr, 10) : 0;
+        if (maxc && maxc < nf) nf = maxc;
+        for (unsigned long base = 0; base < nf; base += K) {
+            unsigned long live = 0;
+            for (unsigned long i = base; i < nf && live < K; i++) {
+                char full[1300];
+                _snprintf(full, sizeof(full) - 1, "%s%s%s", argv[1],
+                          (bl4 && argv[1][bl4 - 1] == '\\') ? "" : "\\", files[i]);
+                total++;
+                WCHAR wp4[1100];
+                MultiByteToWideChar(CP_ACP, 0, full, -1, wp4, 1090);
+                IStorage *stg = nullptr;
+                HRESULT h4 = StgOpenStorageEx(wp4, STGM_READ | STGM_SHARE_DENY_WRITE, STGFMT_STORAGE,
+                                              0, nullptr, nullptr, __uuidof(IStorage), (void **)&stg);
+                if (FAILED(h4) || !stg) continue;
+                void *msg = nullptr;
+                h4 = pOpen4(pSession4, (void *)pAB4, (void *)pAM4, (void *)pFB4, pMalloc4, nullptr,
+                            stg, nullptr, 0, 0, &msg);
+                if (FAILED(h4) || !msg) continue;
+                void **vt = (void **)*((void ***)msg);
+                if ((uintptr_t)vt[2] < (uintptr_t)hl4 + textLo4
+                    || (uintptr_t)vt[2] > (uintptr_t)hl4 + textHi4) {
+                    bad++;
+                    printf("BAD_SLOT %s vt0_rva=0x%llX rel_rva=0x%llX\n", files[i],
+                           (unsigned long long)((uintptr_t)vt - (uintptr_t)hl4),
+                           (unsigned long long)((uintptr_t)vt[2] - (uintptr_t)hl4)); fflush(stdout);
+                    continue;
+                }
+                slots[live].stg = stg;
+                slots[live].msg = msg;
+                strncpy(slots[live].name, files[i], 259);
+                live++;
+            }
+            if (!live) continue;
+            rounds++;
+            printf("ROUND %lu live=%lu\n", rounds, live); fflush(stdout);
+            for (ULONG pass = 0; pass < 3; pass++) {
+                for (unsigned long i = 0; i < live; i++) {
+                    int upd = -1;
+                    HRESULT h5 = pSync4(slots[i].msg, 2, &upd);
+                    if (SUCCEEDED(h5)) { syncs++; if (upd) ups++; }
+                }
+            }
+            for (unsigned long i = live; i-- > 0;) {
+                void **vt = (void **)*((void ***)slots[i].msg);
+                ((PFN_RELEASE)vt[2])(slots[i].msg);
+                rels++;
+                slots[i].stg->Release();
+                slots[i].msg = nullptr;
+                slots[i].stg = nullptr;
+            }
+        }
+        printf("ILVEND carriers=%lu files=%lu rounds=%lu syncs=%lu updated=%lu rels=%lu bad=%lu\n",
+               total, nf, rounds, syncs, ups, rels, bad); fflush(stdout);
+        return 0;
+    }
     size_t cb = 0; BYTE *buf = nullptr;
     if (strcmp(argv[1], "-") != 0) {
         buf = LoadBlob(argv[1], &cb);
@@ -183,9 +433,6 @@ int main(int argc, char **argv)
         cb = (size_t) fread(calloc(1, 1 << 20), 1, 1 << 20, stdin);
         buf = (BYTE *)realloc(buf, cb ? cb : 1);
     }
-    ULONG flags = (argc > 2) ? (ULONG)strtoul(argv[2], nullptr, 16) : 0;
-    ULONG chunk = (argc > 3) ? (ULONG)strtoul(argv[3], nullptr, 10) : 0x100;
-    int mode = (argc > 4) ? atoi(argv[4]) : 0;
     printf("blob=%zu flags=%x chunk=%u mode=%d\n", cb, flags, chunk, mode);
 
     if (mode == 40) {
@@ -218,7 +465,6 @@ int main(int argc, char **argv)
             unsigned char alist[512];
             memset(alist, 0, sizeof(alist));
             for (ULONG enc = 1; enc <= 3; enc++) {
-                printf("REC %lu off=%zu len=%ld enc=%lu\n", n, off, want, enc);
                 __try {
                     HRESULT hr2 = pParse((ULONG)want, enc, line, alist);
                     if (SUCCEEDED(hr2)) okc++; else errc++;
@@ -229,7 +475,7 @@ int main(int argc, char **argv)
                 }
                 n++;
             }
-            if ((n % 300) == 0) { fflush(stdout); }
+            if ((n % 20000) == 0) { printf("PROG %lu ok=%lu err=%lu faults=%lu\n", n, okc, errc, g_faults); fflush(stdout); }
         }
         printf("ADDRCASES n=%lu ok=%lu err=%lu faults=%lu\nEND addr\n", n, okc, errc, g_faults);
         fflush(stdout);
