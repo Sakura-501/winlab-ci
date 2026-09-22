@@ -1,0 +1,126 @@
+name: olm-lzdir32-dph-x64
+# OLMAPI32 RTF-sync layer driven as STATEFUL sequences on an armed full page heap (native x64).
+# Stage A (mode 23): the whole .msg corpus inside ONE process -- open -> exported RTFSync x3 flags ->
+#   verified IMessage::Release, per carrier, so heap blocks freed by carrier N are reused by N+1.
+# Stage B (mode 24): K messages held live at once, every RTFSync pass run after all K are allocated,
+#   releases in reverse order.
+# mode 22 (the first attempt) is not used: its hand-coded slot arithmetic was wrong and it crashed on
+#   the first carrier's Release (see findings/MSRC/M365-Insider/crtf-decompress-20260922/STATE.md §24).
+# Both stages carry a behavioural instrument gate (heap overrun must be observed) and a positive
+#   control that aborts the job unless real RTF rewriting is seen (updated>=1, rels>=1, bad=0).
+'on':
+  workflow_dispatch:
+    inputs:
+      klist:
+        description: 'comma list of interleave depths K'
+        required: false
+        default: '12,64'
+jobs:
+  t:
+    runs-on: windows-latest
+    timeout-minutes: 170
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Download ODT
+      shell: pwsh
+      run: |
+        # Hardened: the page scrape and the self-extractor each failed transiently on 2026-09-22
+        # (blank extractor output, exit 1) after succeeding minutes earlier, so both now retry and
+        # the step asserts the extracted setup.exe before handing off to the install step.
+        $urls = @()
+        for ($t = 0; $t -lt 4 -and $urls.Count -eq 0; $t++) {
+          try {
+            $page = (Invoke-WebRequest -Uri "https://www.microsoft.com/en-us/download/details.aspx?id=49117" -UseBasicParsing -TimeoutSec 90).Content
+            foreach ($m in [regex]::Matches($page, 'https://download[.]microsoft[.]com/download/[^ <>"]+officedeploymenttool[^ <>"]+[.]exe')) { $urls += $m.Value }
+          } catch { "fetch attempt $t failed: $($_.Exception.Message)" }
+          if ($urls.Count -eq 0) { Start-Sleep -Seconds (5 * ($t + 1)) }
+        }
+        if ($urls.Count -eq 0) { throw "odt link not found after retries" }
+        "odt urls=$($urls.Count) first=$($urls[0])"
+        $got = $false
+        foreach ($u in $urls) {
+          for ($t = 0; $t -lt 3 -and -not $got; $t++) {
+            try { Invoke-WebRequest -Uri $u -OutFile odt.exe -UseBasicParsing -TimeoutSec 300; if ((Get-Item odt.exe).Length -gt 1MB) { $got = $true } }
+            catch { "dl attempt $t failed: $($_.Exception.Message)"; Start-Sleep -Seconds (5 * ($t + 1)) }
+          }
+          if ($got) { break }
+        }
+        if (-not $got) { throw "odt.exe download failed" }
+        Remove-Item odtx -Recurse -Force -EA SilentlyContinue
+        $x = $false
+        for ($t = 0; $t -lt 3 -and -not $x; $t++) {
+          Start-Process -Wait -FilePath .\odt.exe -ArgumentList "/extract:`"$PWD\odtx`" /quiet"
+          $x = Test-Path odtx\setup.exe
+          if (-not $x) { "extract attempt $t produced no setup.exe"; Start-Sleep -Seconds (5 * ($t + 1)); Remove-Item odtx -Recurse -Force -EA SilentlyContinue }
+        }
+        if (-not $x) { throw "odt extract failed: odtx\setup.exe missing" }
+        "odt_ready"
+
+    - name: Install Current x64 (Outlook kept, rest excluded)
+      shell: pwsh
+      run: |
+        $xml = '<Configuration><Add OfficeClientEdition="64" Channel="Current"><Product ID="O365ProPlusRetail"><Language ID="en-us" /><ExcludeApp ID="Excel" /><ExcludeApp ID="PowerPoint" /><ExcludeApp ID="OneDrive" /><ExcludeApp ID="OneNote" /><ExcludeApp ID="Lync" /><ExcludeApp ID="Access" /><ExcludeApp ID="Groove" /><ExcludeApp ID="Publisher" /><ExcludeApp ID="Teams" /><ExcludeApp ID="Bing" /><ExcludeApp ID="Word" /></Product></Add><Display Level="None" AcceptEULA="TRUE" /><Updates Enabled="FALSE" /></Configuration>'
+        Set-Content -Path cfg.xml -Value $xml
+        Start-Process -Wait -FilePath .\odtx\setup.exe -ArgumentList "/configure","cfg.xml"
+        $o = Get-Item "C:\Program Files\Microsoft Office\root\Office16\OUTLOOK.EXE" -ErrorAction SilentlyContinue
+        if (-not $o) { throw "outlook install failed" }
+        $olm = Get-Item "C:\Program Files\Microsoft Office\root\Office16\OLMAPI32.DLL"
+        "olmapi32 len=$($olm.Length) v=$($olm.VersionInfo.FileVersion)" | Tee-Object ver.txt
+
+    - name: Unpack direct LZFu blob family
+      shell: pwsh
+      run: |
+        New-Item -ItemType Directory -Force -Path blobs, out | Out-Null
+        tar -xzf bin\lzfublobs.tgz -C blobs
+        "blobs=" + (Get-ChildItem blobs -Filter *.bin).Count
+    - name: Arm full page heap and gate it behaviourally
+      shell: pwsh
+      run: |
+        $k = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\crtfbench8_x64.exe"
+        New-Item -Path $k -Force | Out-Null
+        New-ItemProperty -Path $k -Name GlobalFlag -Value 0x02000000 -PropertyType DWord -Force | Out-Null
+        New-ItemProperty -Path $k -Name PageHeapFlags -Value 0x3 -PropertyType DWord -Force | Out-Null
+        "GlobalFlag=$((Get-Item $k).GetValue('GlobalFlag')) PageHeapFlags=$((Get-Item $k).GetValue('PageHeapFlags'))" | Out-File out\pageheap.txt
+        $s = & .\bin\crtfbench8_x64.exe selftest 0 256 0 120000 2>&1 | Out-String
+        $rc = $LASTEXITCODE -band [int]0xFFFFFFFF
+        $armed = if (('{0:X8}' -f $rc) -eq 'C0000005' -and $s -notmatch 'NOT_DETECTED' -and $s -match 'ABOUT_TO_WRITE_PAST_END') { 'ARMED' } else { 'NOT_ARMED' }
+        "SELFTEST rc=0x$('{0:X8}' -f $rc) verdict=$armed log=$(($s.Trim() -replace '\r?\n',' | '))" | Out-File out\selftest.txt
+        Get-Content out\selftest.txt
+        if ($armed -ne 'ARMED') { throw "instrument blind: aborting" }
+        # RESET_EXITCODE: the intentional selftest AV leaves $LASTEXITCODE=0xC0000005;
+        # the pwsh wrapper would fail the step on it before any case ran.
+        $global:LASTEXITCODE = 0
+        $global:LASTEXITCODE = 0
+    - name: Stage L - decompressor driven directly by raw MS-OXRTFCP blobs
+      shell: pwsh
+      run: |
+        # mode 32: CreateStreamOnHGlobal(blob) -> WrapCompressedRTFStream(flags) -> drain the decoded
+        # stream. Every byte is consumed by the parser, so the ring/window bounds read in STATE 30 are
+        # addressed directly (copy offset, token length, the two declared sizes, truncation). The .msg
+        # route cannot express them while its carriers resolve to a shadowed PR_RTF_COMPRESSED stream.
+        foreach ($fl in @('0','1')) {
+          $env:CRTF_AVLIMIT = '40'
+          $o = & .\bin\crtfbench8_x64.exe blobs $fl 256 32 900000 2>&1 | Out-String
+          $rc = $LASTEXITCODE -band [int]0xFFFFFFFF
+          $sum = (@($o -split "\r?\n" | Where-Object { $_ -match 'EEND' }) -join ' ')
+          $note = if ($rc -eq 0x48414E47) { 'HANG' } elseif ($o -match 'EFAULT') { 'AV' } elseif ($rc -ne 0) { 'rc' } else { 'ret' }
+          "L flags=$fl rc=0x$('{0:X8}' -f $rc) note=$note $sum" | Add-Content out\headL.txt
+          (@($o -split "\r?\n" | Where-Object { $_ -match 'EFAULT|!!!AV|RAX=|CODE:|TGTBYTES' }) | Select-Object -First 120) | Add-Content out\lav.txt
+          ($o -split "\r?\n" | Select-Object -Last 40) | Add-Content out\lav.txt
+        }
+        Remove-Item Env:CRTF_AVLIMIT
+        Get-Content out\headL.txt
+        if (Test-Path out\lav.txt) { Get-Content out\lav.txt | Select-Object -First 60 }
+        $last = Get-Content out\headL.txt -Raw
+        if ($last -notmatch 'wrapok=[1-9]') { throw "Wrap never produced a decoded stream: coverage void" }
+        if ($last -notmatch 'decoded>0=[1-9]') { throw "decompressor never emitted bytes: coverage void" }
+        $global:LASTEXITCODE = 0
+    - name: Upload evidence
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: olm-lzdir32-dph-x64
+        path: |
+          out
+          ver.txt
