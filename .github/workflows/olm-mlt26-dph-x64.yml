@@ -69,6 +69,9 @@ jobs:
         "SELFTEST rc=0x$('{0:X8}' -f $rc) verdict=$armed log=$(($s.Trim() -replace '\r?\n',' | '))" | Out-File out\selftest.txt
         Get-Content out\selftest.txt
         if ($armed -ne 'ARMED') { throw "instrument blind: aborting" }
+        # RESET_EXITCODE: the intentional selftest AV leaves $LASTEXITCODE=0xC0000005;
+        # the pwsh wrapper would fail the step on it before any case ran.
+        $global:LASTEXITCODE = 0
         $env:CRTF_MAX = '12'
         $pc = & .\bin\crtfbench8_x64.exe corpus 0 256 23 300000 2>&1 | Out-String
         "PCTRL23 $(($pc.Trim() -replace '\r?\n',' | '))" | Out-File out\pctrl23.txt

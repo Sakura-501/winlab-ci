@@ -88,6 +88,9 @@ jobs:
             "WER local dumps -> out\dumps"
         } catch { "WER setup unavailable (non-fatal; exit-code detection still active): $($_.Exception.Message)" }
         if (-not (Test-Path out\dumps)) { throw "dumps dir missing" }
+        # RESET_EXITCODE: the intentional selftest AV leaves $LASTEXITCODE=0xC0000005;
+        # the pwsh wrapper would fail the step on it before any case ran.
+        $global:LASTEXITCODE = 0
 
     - name: Positive control - the importer must actually load
       shell: pwsh
