@@ -108,7 +108,8 @@ jobs:
         # Runs before the wave: tells a callee-side fault apart from a wrong argument convention.
         # Not a gate - a nonzero rc here is itself the reading.
         $env:CRTF_PROBE = '1'
-        $o = & .\bin\crtfbench42_x64.exe - 0 256 42 300000 2>&1 | Out-String
+        # argv[1] must be a readable corpus: the probe runs after the blob is loaded
+        $o = & .\bin\crtfbench42_x64.exe esscorpus\ess.txt 0 256 42 300000 2>&1 | Out-String
         $rc = $LASTEXITCODE -band [int]0xFFFFFFFF
         $global:LASTEXITCODE = 0
         $o | Set-Content out\probe.txt
