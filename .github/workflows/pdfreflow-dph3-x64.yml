@@ -1,0 +1,189 @@
+name: pdfreflow-dph3-x64
+'on':
+  workflow_dispatch:
+    inputs:
+      cap:
+        description: 'max pdfs'
+        required: false
+        default: '500'
+jobs:
+  t:
+    runs-on: windows-latest
+    timeout-minutes: 170
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Download ODT
+      shell: pwsh
+      run: |
+        $ok=$false
+        for ($i=0; $i -lt 3; $i++) {
+          try {
+            $page = (Invoke-WebRequest -Uri "https://www.microsoft.com/en-us/download/details.aspx?id=49117" -UseBasicParsing).Content
+            if ($page -match 'href="(https://download\.microsoft\.com/download/[^"]+officedeploymenttool[^"]*\.exe)"') {
+              Invoke-WebRequest -Uri $Matches[1] -OutFile odt.exe -ErrorAction Stop
+            } else { throw "odt link not found" }
+            Start-Process -Wait -FilePath .\odt.exe -ArgumentList "/extract:odtx /quiet"
+            if (Test-Path odtx\setup.exe) { $ok=$true; break }
+            throw "setup.exe missing after extract"
+          } catch { "attempt $i failed: $($_.Exception.Message)"; Start-Sleep -Seconds 8 }
+        }
+        if (-not $ok) { throw "ODT unavailable after retries" }
+
+    - name: Install CurrentChannel x64 Word
+      shell: pwsh
+      run: |
+        $xml = '<Configuration><Add OfficeClientEdition="64" Channel="Current"><Product ID="O365ProPlusRetail"><Language ID="en-us" /><ExcludeApp ID="Excel" /><ExcludeApp ID="PowerPoint" /><ExcludeApp ID="Outlook" /><ExcludeApp ID="OneDrive" /><ExcludeApp ID="OneNote" /><ExcludeApp ID="Lync" /><ExcludeApp ID="Access" /><ExcludeApp ID="Groove" /><ExcludeApp ID="Publisher" /><ExcludeApp ID="Teams" /><ExcludeApp ID="Bing" /></Product></Add><Display Level="None" AcceptEULA="TRUE" /><Updates Enabled="FALSE" /></Configuration>'
+        Set-Content -Path cfg.xml -Value $xml
+        Start-Process -Wait -FilePath .\odtx\setup.exe -ArgumentList "/configure","cfg.xml"
+        $w = Get-Item "C:\Program Files\Microsoft Office\root\Office16\WINWORD.EXE" -ErrorAction SilentlyContinue
+        if (-not $w) { throw "word install failed" }
+        "word v=$($w.VersionInfo.FileVersion)" | Tee-Object -FilePath ver.txt
+        "pdfreflow_present=$(Test-Path 'C:\Program Files\Microsoft Office\root\Office16\PDFREFLOW.EXE')" | Tee-Object -FilePath ver.txt -Append
+
+    - name: Build marker-bearing pdf carriers
+      shell: pwsh
+      run: |
+        New-Item -ItemType Directory -Force -Path pdfs, out | Out-Null
+        python tools\mk_pdf4b.py pdfs
+        "pdfs=$((Get-ChildItem pdfs -Filter *.pdf | Measure-Object).Count)"
+        "markers=$((Get-Content pdfs\markers.txt | Measure-Object -Line).Lines)"
+        if (-not (Test-Path pdfs\markers.txt)) { throw "no markers.txt" }
+
+    - name: LocalDumps for word and pdfreflow
+      shell: pwsh
+      run: |
+        New-Item -ItemType Directory -Force -Path C:\pdumps | Out-Null
+        $ld = "HKLM:\SOFTWARE\Microsoft\Windows Error Reporting\LocalDumps"
+        New-Item -Path $ld -Force | Out-Null
+        foreach ($exe in @('WINWORD.EXE','PDFREFLOW.EXE')) {
+          $k = Join-Path $ld $exe
+          New-Item -Path $k -Force | Out-Null
+          New-ItemProperty -Path $k -Name DumpFolder -Value "C:\pdumps" -PropertyType ExpandString -Force | Out-Null
+          New-ItemProperty -Path $k -Name DumpType -Value 2 -PropertyType DWord -Force | Out-Null
+          New-ItemProperty -Path $k -Name DumpCount -Value 60 -PropertyType DWord -Force | Out-Null
+        }
+        "localdumps set"
+
+    - name: Page heap for PDFREFLOW plus self test
+      shell: pwsh
+      run: |
+        New-Item -ItemType Directory -Force -Path out | Out-Null
+        $k1 = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\PDFREFLOW.EXE"
+        New-Item -Path $k1 -Force | Out-Null
+        Set-ItemProperty -Path $k1 -Name GlobalFlag -Value 0x02000000 -Type DWord
+        Set-ItemProperty -Path $k1 -Name PageHeapFlags -Value 0x3 -Type DWord
+        ("pdfreflow GlobalFlag=" + (Get-ItemProperty $k1).GlobalFlag) | Out-File out\pageheap.txt
+        $csc = "C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
+        $cs = @'
+        using System;
+        using System.IO;
+        using System.Runtime.InteropServices;
+        class HProbe3 {
+          static string LOG;
+          static void L(string s) { File.AppendAllText(LOG, s + Environment.NewLine); }
+          static int Main(string[] args) {
+            LOG = args[0];
+            int size = 0x100;
+            L("BEGIN");
+            IntPtr p = Marshal.AllocHGlobal(size);
+            L("ALLOC addr=0x" + p.ToInt64().ToString("x"));
+            Marshal.WriteByte(p, size - 1, 1);
+            L("INBOUNDS_OK");
+            L("ABOUT_TO_WRITE_PAST_END");
+            Marshal.WriteByte((IntPtr)(p.ToInt64() + size), 1);
+            L("PAST_END_WRITE_RETURNED_NO_FAULT");
+            return 0;
+          }
+        }
+        '@
+        Set-Content -Path hprobe3.cs -Value $cs -Encoding UTF8
+        & $csc /nologo /out:hprobe3.exe hprobe3.cs | Out-Null
+        $kh = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\hprobe3.exe"
+        New-Item -Path $kh -Force | Out-Null
+        Set-ItemProperty -Path $kh -Name GlobalFlag -Value 0x02000000 -Type DWord
+        Set-ItemProperty -Path $kh -Name PageHeapFlags -Value 0x3 -Type DWord
+        Remove-Item out\hp3_log.txt -Force -EA SilentlyContinue
+        $r = Start-Process -FilePath (Join-Path $PWD.Path "hprobe3.exe") -ArgumentList (Join-Path $PWD.Path "out\hp3_log.txt") -PassThru -Wait
+        $code = "0x{0:X8}" -f $r.ExitCode
+        $lg = @(Get-Content out\hp3_log.txt -EA SilentlyContinue) -join '|'
+        $armed = "NOT_ARMED"
+        if ($code -eq "0xC0000005" -and $lg.Contains("ABOUT_TO_WRITE_PAST_END") -and -not $lg.Contains("NO_FAULT")) { $armed = "ARMED" }
+        "SELFTEST exit=$code verdict=$armed log=$lg" | Tee-Object -FilePath out\selftest.txt -Append
+        Remove-Item $kh -Recurse -Force -EA SilentlyContinue
+        if ($armed -ne "ARMED") { throw "page heap not armed" }
+
+    - name: Open each pdf, require marker coverage, catch parser faults
+      shell: pwsh
+      run: |
+        $log = "out\dph3_log.txt"
+        $cap = [int]('${{ github.event.inputs.cap }}')
+        if ($cap -le 0) { $cap = 500 }
+        function DL { @(Get-ChildItem C:\pdumps -Filter *.dmp -EA SilentlyContinue | ForEach-Object { $_.Name }) }
+        $exp = @{}
+        foreach ($l in Get-Content pdfs\markers.txt) {
+          $p2 = $l -split "`t"; if ($p2.Count -ge 2) { $exp[$p2[0] + '.pdf'] = $p2[1] }
+        }
+        $files = @(Get-ChildItem pdfs -Filter *.pdf | Sort-Object Name | Select-Object -First $cap)
+        ("cases={0} markers={1} start={2}" -f $files.Count, $exp.Count, (Get-Date -Format 'HH:mm:ss')) | Tee-Object -FilePath $log
+        $prev = DL
+        $flowPids = @{}
+        $okc=0; $noc=0; $errc=0; $dumpc=0
+        $w = $null
+        for ($i=0; $i -lt $files.Count; $i++) {
+          if ($i % 25 -eq 0) {
+            try { if ($w) { $w.Quit() } } catch { }
+            Get-Process WINWORD,PDFREFLOW -EA SilentlyContinue | Stop-Process -Force -EA SilentlyContinue
+            Start-Sleep -Seconds 2
+            $w = New-Object -ComObject Word.Application
+            $w.Visible = $false
+            $w.DisplayAlerts = 0
+          }
+          $f = $files[$i]
+          $before = DL
+          foreach ($p in @(Get-Process PDFREFLOW -EA SilentlyContinue)) { $flowPids[[string]$p.Id] = 1 }
+          $txt = ''; $err = ''
+          try {
+            $d = $w.Documents.Open($f.FullName, $false, $true)
+            $txt = [string]$d.Content.Text
+            $d.Close(0)
+          } catch { $err = $_.Exception.Message }
+          foreach ($p in @(Get-Process PDFREFLOW -EA SilentlyContinue)) { $flowPids[[string]$p.Id] = 1 }
+          $want = if ($exp.ContainsKey($f.Name)) { $exp[$f.Name] } else { 'ZFRM' }
+          $covered = $txt.Contains($want)
+          $after = DL
+          $new = @($after | Where-Object { $prev -notcontains $_ })
+          if ($new.Count) { $prev = $after; $dumpc += $new.Count }
+          if ($err) {
+            $errc++
+            ('{0,-26} ERROR dumps={1} msg={2}' -f $f.Name, $new.Count, $err.Substring(0,[Math]::Min(120,$err.Length))) | Tee-Object -FilePath $log -Append
+          } elseif ($covered) {
+            $okc++
+            $mm=[regex]::Match($txt,'ZFRM[A-Za-z0-9_]*')
+            ('{0,-26} covered marker={1} len={2} dumps={3}' -f $f.Name, $mm.Value, $txt.Length, $new.Count) | Tee-Object -FilePath $log -Append
+          } else {
+            $noc++
+            $head = $txt.Substring(0,[Math]::Min(40,$txt.Length)).Replace("`r",' ').Replace("`n",' ')
+            ('{0,-26} NOTPARSED want={1} len={2} dumps={3} head=[{4}]' -f $f.Name, $want, $txt.Length, $new.Count, $head) | Tee-Object -FilePath $log -Append
+          }
+          foreach ($dd in $new) {
+            New-Item -ItemType Directory -Force -Path out\dumps | Out-Null
+            Copy-Item ('C:\pdumps\' + $dd) ('out\dumps\' + $dd) -Force -EA SilentlyContinue
+            ('FAULT case={0} dump={1}' -f $f.Name, $dd) | Tee-Object -FilePath $log -Append
+          }
+          Remove-Item 'HKCU:\SOFTWARE\Microsoft\Office\16.0\Word\Resiliency' -Recurse -Force -EA SilentlyContinue
+        }
+        try { $w.Quit() } catch { }
+        ("END cases={0} covered={1} notparsed={2} errors={3} dumps={4} pdfreflow_pids={5}" -f $files.Count,$okc,$noc,$errc,$dumpc,$flowPids.Count) | Tee-Object -FilePath $log -Append
+        if ($flowPids.Count -lt 1) { throw "ZERO-COVERAGE pdfreflow never observed" }
+        if ($okc -lt 1) { throw "ZERO-COVERAGE no marker came back - reads are not usable" }
+
+    - uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: pdfreflow-dph3-x64
+        path: |
+          out
+          ver.txt
+          pdfs\markers.txt
+        if-no-files-found: ignore
