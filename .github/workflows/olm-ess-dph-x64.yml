@@ -1,0 +1,132 @@
+name: olm-ess-dph-x64
+# OUTLMIME's Ess*EncodeEx/Ess*DecodeEx flattener pair driven as a self-seeded round trip on an armed
+#   full page heap (native x64), plus a stricter read than a guard page: every fill pass is given the
+#   size the callee's own query pass promised, into a 0xCC-filled block, and the sentinel is re-scanned
+#   afterwards, so a write past the callee's own declaration is measured even when it stays on the page.
+# The encoders accept a caller-built flat struct, so the DER they emit is template-valid by
+#   construction - that is what makes the seven decode callbacks (inbound S/MIME security label,
+#   receipt request, receipt, mailing-list history, content hint, key-exchange preference, signing
+#   certificate) reachable at all without reversing the module's ASN.1 template tables.
+# Hard gates: behavioural ARMED proof, and encok>=1 + decok>=1 (a wave that never entered the
+#   callees reports nothing and is aborted as zero-coverage rather than read as a clean run).
+'on':
+  workflow_dispatch:
+    inputs:
+      dummy:
+        description: 'unused'
+        required: false
+        default: ''
+jobs:
+  t:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Build bench from source (x64)
+      shell: cmd
+      run: |
+        if not exist bin mkdir bin
+        "C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath > vsp.txt
+        set /p VS=<vsp.txt
+        call "%VS%\Common7\Tools\VsDevCmd.bat" -arch=amd64 -host_arch=amd64
+        cl /nologo /O2 /W3 /EHa /D_CRT_SECURE_NO_WARNINGS /Fobin\ /Febin\crtfbench42_x64.exe tools\crtfbench.cpp ole32.lib uuid.lib
+        if errorlevel 1 exit /b 1
+        dir bin\crtfbench42_x64.exe
+
+    - name: Download ODT
+      shell: pwsh
+      run: |
+        $urls = @()
+        for ($t = 0; $t -lt 4 -and $urls.Count -eq 0; $t++) {
+          try {
+            $page = (Invoke-WebRequest -Uri "https://www.microsoft.com/en-us/download/details.aspx?id=49117" -UseBasicParsing -TimeoutSec 90).Content
+            foreach ($m in [regex]::Matches($page, 'https://download[.]microsoft[.]com/download/[^ <>"]+officedeploymenttool[^ <>"]+[.]exe')) { $urls += $m.Value }
+          } catch { "fetch attempt $t failed: $($_.Exception.Message)" }
+          if ($urls.Count -eq 0) { Start-Sleep -Seconds (5 * ($t + 1)) }
+        }
+        if ($urls.Count -eq 0) { throw "odt link not found after retries" }
+        $got = $false
+        foreach ($u in $urls) {
+          for ($t = 0; $t -lt 3 -and -not $got; $t++) {
+            try { Invoke-WebRequest -Uri $u -OutFile odt.exe -UseBasicParsing -TimeoutSec 300; if ((Get-Item odt.exe).Length -gt 1MB) { $got = $true } }
+            catch { "dl attempt $t failed: $($_.Exception.Message)"; Start-Sleep -Seconds (5 * ($t + 1)) }
+          }
+          if ($got) { break }
+        }
+        if (-not $got) { throw "odt.exe download failed" }
+        Remove-Item odtx -Recurse -Force -EA SilentlyContinue
+        $x = $false
+        for ($t = 0; $t -lt 3 -and -not $x; $t++) {
+          Start-Process -Wait -FilePath .\odt.exe -ArgumentList "/extract:`"$PWD\odtx`" /quiet"
+          $x = Test-Path odtx\setup.exe
+          if (-not $x) { "extract attempt $t produced no setup.exe"; Start-Sleep -Seconds (5 * ($t + 1)); Remove-Item odtx -Recurse -Force -EA SilentlyContinue }
+        }
+        if (-not $x) { throw "odt extract failed: odtx\setup.exe missing" }
+        "odt_ready"
+
+    - name: Install Current x64 (Outlook kept, rest excluded)
+      shell: pwsh
+      run: |
+        $xml = '<Configuration><Add OfficeClientEdition="64" Channel="Current"><Product ID="O365ProPlusRetail"><Language ID="en-us" /><ExcludeApp ID="Excel" /><ExcludeApp ID="PowerPoint" /><ExcludeApp ID="OneDrive" /><ExcludeApp ID="OneNote" /><ExcludeApp ID="Lync" /><ExcludeApp ID="Access" /><ExcludeApp ID="Groove" /><ExcludeApp ID="Publisher" /><ExcludeApp ID="Teams" /><ExcludeApp ID="Bing" /><ExcludeApp ID="Word" /></Product></Add><Display Level="None" AcceptEULA="TRUE" /><Updates Enabled="FALSE" /></Configuration>'
+        Set-Content -Path cfg.xml -Value $xml
+        Start-Process -Wait -FilePath .\odtx\setup.exe -ArgumentList "/configure","cfg.xml"
+        $o = Get-Item "C:\Program Files\Microsoft Office\root\Office16\OUTLOOK.EXE" -ErrorAction SilentlyContinue
+        if (-not $o) { throw "outlook install failed" }
+        $om = Get-Item "C:\Program Files\Microsoft Office\root\Office16\OUTLMIME.dll"
+        $omP = Get-Item "C:\Program Files\Microsoft Office\root\Office16\OLMAPI32.DLL"
+        "outlmime len=$($om.Length) v=$($om.VersionInfo.FileVersion) olmapi32 v=$($omP.VersionInfo.FileVersion)" | Tee-Object ver.txt
+
+    - name: Arm full page heap for the bench image and gate it behaviourally
+      shell: pwsh
+      run: |
+        New-Item -ItemType Directory -Force -Path out | Out-Null
+        $k = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\crtfbench42_x64.exe"
+        New-Item -Path $k -Force | Out-Null
+        New-ItemProperty -Path $k -Name GlobalFlag -Value 0x02000000 -PropertyType DWord -Force | Out-Null
+        New-ItemProperty -Path $k -Name PageHeapFlags -Value 0x3 -PropertyType DWord -Force | Out-Null
+        "GlobalFlag=$((Get-Item $k).GetValue('GlobalFlag')) PageHeapFlags=$((Get-Item $k).GetValue('PageHeapFlags'))" | Out-File out\pageheap.txt
+        $s = & .\bin\crtfbench42_x64.exe selftest 0 256 0 120000 2>&1 | Out-String
+        $rc = $LASTEXITCODE -band [int]0xFFFFFFFF
+        $armed = if (('{0:X8}' -f $rc) -eq 'C0000005' -and $s -notmatch 'NOT_DETECTED' -and $s -match 'ABOUT_TO_WRITE_PAST_END') { 'ARMED' } else { 'NOT_ARMED' }
+        "SELFTEST rc=0x$('{0:X8}' -f $rc) verdict=$armed log=$(($s.Trim() -replace '\r?\n',' | '))" | Out-File out\selftest.txt
+        Get-Content out\selftest.txt
+        if ($armed -ne 'ARMED') { throw "instrument blind: aborting" }
+        $global:LASTEXITCODE = 0
+
+    - name: Wave - Ess round trip, measured size plus sentinel
+      shell: pwsh
+      run: |
+        $sw = [Diagnostics.Stopwatch]::StartNew()
+        $o = & .\bin\crtfbench42_x64.exe - 0 256 42 300000 2>&1 | Out-String
+        $rc = $LASTEXITCODE -band [int]0xFFFFFFFF
+        $sw.Stop()
+        $o | Set-Content out\ess42.log
+        $global:LASTEXITCODE = 0
+        $sum = (@($o -split "\r?\n" | Where-Object { $_ -match 'ESS42|KIND ' }) -join "`n")
+        $sum | Out-File out\ess42_summary.txt
+        Get-Content out\ess42_summary.txt | Select-Object -First 30
+        "WAVE rc=0x$('{0:X8}' -f $rc) s=$([int]$sw.Elapsed.TotalSeconds) lines=$((@($o -split "\r?\n")).Count) av=$(@($o -split "\r?\n" | Where-Object { $_ -match 'FAULT' }).Count)" | Tee-Object -Append out\head.txt
+        $endLine = (@($o -split "\r?\n" | Where-Object { $_ -match 'ESS42 cases=' }) -join '')
+        if ($endLine -notmatch 'encok=[1-9]') { throw "ZERO-COVERAGE: no encoder accepted a caller struct - nothing was measured" }
+        if ($endLine -notmatch 'decok=[1-9]') { throw "ZERO-COVERAGE: no decoder fill pass returned - the callbacks were never entered" }
+        if ($endLine -notmatch 'fault_enc=0 fault_dec=0') { (@($o -split "\r?\n" | Where-Object { $_ -match 'FAULT' })) | Out-File out\avfull.txt; throw "MEMORY FAULT observed in the Ess round trip - see avfull.txt" }
+        ($o -split "\r?\n" | Where-Object { $_ -match 'past=[1-9]' }) | Out-File out\past.txt
+        if ((Get-Item out\past.txt).Length -gt 3) { throw "WRITE PAST THE CALLEE'S OWN PROMISED SIZE - see past.txt" }
+        "coverage ok, no faults, no past-write" | Tee-Object -Append out\head.txt
+
+    - name: Clean up the IFEO key
+      if: always()
+      shell: pwsh
+      run: |
+        Remove-Item "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\crtfbench42_x64.exe" -Recurse -Force -EA SilentlyContinue
+        "ifeo_removed"
+
+    - name: Upload readings
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: olm-ess-dph-x64
+        path: |
+          out
+          ver.txt
