@@ -8,10 +8,17 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <objbase.h>
 
 typedef HRESULT (STDAPICALLTYPE *PFN_WRAP)(IStream *, ULONG, IStream **);
 typedef HRESULT (STDAPICALLTYPE *PFN_OPEN_TNEF)(IStream *, void **, LPCSTR, ULONG, void *, void *, void *);
 typedef HRESULT (STDAPICALLTYPE *PFN_GET_TNEF_STM)(void *, IStream **);
+typedef HRESULT (STDAPICALLTYPE *PFN_RTFSYNC)(void *, ULONG, int *);
+typedef HRESULT (STDAPICALLTYPE *PFN_OPENMSGSESS)(void *, ULONG, void **);
+typedef HRESULT (STDAPICALLTYPE *PFN_OPENMSGONI)(void *, void *, void *, void *, void *, void *, void *, void *, ULONG, ULONG, void **);
+typedef HRESULT (STDAPICALLTYPE *PFN_ALLOCBUF)(ULONG, void **);
+typedef HRESULT (STDAPICALLTYPE *PFN_ALLOCMORE)(ULONG, void *, void **);
+typedef void (STDAPICALLTYPE *PFN_FREEBUF)(void *);
 typedef HRESULT (STDAPICALLTYPE *PFN_MAPIINIT)(void *);
 typedef HRESULT (STDAPICALLTYPE *PFN_MAPIUNINIT)(void);
 
@@ -167,6 +174,51 @@ int main(int argc, char **argv)
     int mode = (argc > 4) ? atoi(argv[4]) : 0;
     printf("blob=%zu flags=%x chunk=%u mode=%d\n", cb, flags, chunk, mode);
 
+    if (mode == 20 || mode == 21) {
+        // .msg -> IStorage -> IMessage -> exported RTFSync(message, flags, &updated)
+        //   RTFSync -> RTFSyncCpid -> ScFullRTFSync / ScComputeBodyFromRTF -> ScUpdateRTF (chunk + CRC map + body tag)
+        HMODULE hl = GetModuleHandleA("OLMAPI32.dll");
+        PFN_RTFSYNC pSync = (PFN_RTFSYNC)GetProcAddress(hl, "RTFSync");
+        PFN_OPENMSGSESS pSess = (PFN_OPENMSGSESS)GetProcAddress(hl, "OpenIMsgSession");
+        PFN_OPENMSGONI pOpen = (PFN_OPENMSGONI)GetProcAddress(hl, "OpenIMsgOnIStg");
+        PFN_ALLOCBUF pAB = (PFN_ALLOCBUF)GetProcAddress(hl, "MAPIAllocateBuffer");
+        PFN_ALLOCMORE pAM = (PFN_ALLOCMORE)GetProcAddress(hl, "MAPIAllocateMore");
+        PFN_FREEBUF pFB = (PFN_FREEBUF)GetProcAddress(hl, "MAPIFreeBuffer");
+        if (!pSync || !pSess || !pOpen || !pAB || !pAM || !pFB) {
+            printf("MAPIEXPORTS sync=%p sess=%p open=%p ab=%p\n", (void *)pSync, (void *)pSess, (void *)pOpen, (void *)pAB);
+            return 8;
+        }
+        void *pSession = nullptr;
+        HRESULT h = pSess(nullptr, 0, &pSession);
+        printf("OpenIMsgSession hr=%08x\n", (unsigned)h);
+        IStorage *pStg = nullptr;
+        WCHAR wpath[1024];
+        MultiByteToWideChar(CP_ACP, 0, argv[1], -1, wpath, 1020);
+        h = StgOpenStorageEx(wpath, STGM_READ | STGM_SHARE_DENY_WRITE, STGFMT_STORAGE, 0, nullptr, nullptr,
+                             __uuidof(IStorage), (void **)&pStg);
+        printf("StgOpenStorageEx hr=%08x stg=%p\n", (unsigned)h, (void *)pStg);
+        if (SUCCEEDED(h) && pStg) {
+            IMalloc *pMalloc = nullptr;
+            CoGetMalloc(MEMCTX_TASK, &pMalloc);
+            void *pMsg = nullptr;
+            h = pOpen(pSession, (void *)pAB, (void *)pAM, (void *)pFB, pMalloc, nullptr, pStg,
+                      nullptr, 0, 0, &pMsg);
+            printf("OpenIMsgOnIStg hr=%08x msg=%p\n", (unsigned)h, pMsg);
+            if (SUCCEEDED(h) && pMsg) {
+                for (ULONG fl = (flags ? flags : 1); fl <= (flags ? flags : 3); fl++) {
+                    int updated = -1;
+                    HRESULT h2 = pSync(pMsg, fl, &updated);
+                    printf("RTFSYNC flags=%lu hr=%08x updated=%d\n", fl, (unsigned)h2, updated);
+                    fflush(stdout);
+                    if (flags) break;
+                }
+            }
+            if (pMalloc) pMalloc->Release();
+            pStg->Release();
+        }
+        printf("END rtfsync\n"); fflush(stdout);
+        return 0;
+    }
     IStream *pSrc = nullptr;
     HRESULT hr = CreateStreamOnHGlobal(nullptr, TRUE, &pSrc);
     if (FAILED(hr)) { printf("CREATESTREAM hr=%08x\n", (unsigned)hr); return 6; }
