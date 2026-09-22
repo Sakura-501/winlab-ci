@@ -60,19 +60,19 @@ jobs:
     - name: Arm full page heap and gate it behaviourally
       shell: pwsh
       run: |
-        $k = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\crtfbench5_x64.exe"
+        $k = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\crtfbench6_x64.exe"
         New-Item -Path $k -Force | Out-Null
         New-ItemProperty -Path $k -Name GlobalFlag -Value 0x02000000 -PropertyType DWord -Force | Out-Null
         New-ItemProperty -Path $k -Name PageHeapFlags -Value 0x3 -PropertyType DWord -Force | Out-Null
         "GlobalFlag=$((Get-Item $k).GetValue('GlobalFlag')) PageHeapFlags=$((Get-Item $k).GetValue('PageHeapFlags'))" | Out-File out\pageheap.txt
-        $s = & .\bin\crtfbench5_x64.exe selftest 2>&1 | Out-String
+        $s = & .\bin\crtfbench6_x64.exe selftest 2>&1 | Out-String
         $rc = $LASTEXITCODE -band [int]0xFFFFFFFF
         $armed = if (('{0:X8}' -f $rc) -eq 'C0000005' -and $s -notmatch 'NOT_DETECTED' -and $s -match 'ABOUT_TO_WRITE_PAST_END') { 'ARMED' } else { 'NOT_ARMED' }
         "SELFTEST rc=0x$('{0:X8}' -f $rc) verdict=$armed log=$(($s.Trim() -replace '\r?\n',' | '))" | Out-File out\selftest.txt
         Get-Content out\selftest.txt
         if ($armed -ne 'ARMED') { throw "instrument blind: aborting" }
         # positive control: base_valid.msg must open and RTFSync(flags=2) must report updated=1
-        $pc = & .\bin\crtfbench5_x64.exe addr.txt 0 256 40 120000 2>&1 | Out-String
+        $pc = & .\bin\crtfbench6_x64.exe addr.txt 0 256 40 120000 2>&1 | Out-String
         "PCTRL_HEAD $(($pc.Trim() -split "\r?\n" | Select-Object -First 5 | ForEach-Object { $_ }) -join ' | ')" | Out-File out\pctrl_head.txt
         "PCTRL $(($pc.Trim() -replace '\r?\n',' | '))" | Out-File out\pctrl.txt
         Get-Content out\pctrl.txt
@@ -81,40 +81,17 @@ jobs:
     - name: Walk the address corpus through the exported parser
       shell: pwsh
       run: |
-        $flagset = @('0')
-        $chunkset = @('256')
-        $cap = 1
-        $det = 'out\detail.txt'
-        'case|rc|parseaddr|summary|note' | Set-Content $det
-        $files = @(Get-ChildItem corpus -Filter *.msg | Sort-Object Name)
-        "CASES files=$($files.Count) flags=$($flagset.Count) chunks=$($chunkset.Count)" | Out-File out\sweep_head.txt
-        $n=0; $ok=0; $hang=0; $av=@(); $wr=@{}
-        foreach ($f in $files) {
-          foreach ($fl in $flagset) {
-            foreach ($ck in $chunkset) {
-              if ($n -ge $cap) { break }
-              $o = & .\bin\crtfbench5_x64.exe $f.FullName $fl 256 20 20000 2>&1 | Out-String
-              $rc = $LASTEXITCODE -band [int]0xFFFFFFFF
-              $wh = if ($o -match 'OpenIMsgOnIStg hr=([0-9a-f]{8})') { $matches[1] } else { 'none' }
-              $rd = if ($o -match 'RTFSYNC flags=\d+ hr=([0-9a-f]{8}) updated=(-?\d+)') { "sync=$($matches[1]) updated=$($matches[2])" } else { '-' }
-              $note = if ($rc -eq 0x48414E47) { 'HANG' } elseif ($o -match '!!!AV') { 'AV' } else { 'ret' }
-              if ($note -eq 'HANG') { $hang++ } elseif ($note -eq 'AV') { $av += $f.Name } else { $ok++ }
-              if (-not $wr.ContainsKey($wh)) { $wr[$wh] = 0 }
-              $wr[$wh] += 1
-              "$($f.Name)|$fl|$ck|0x$('{0:X8}' -f $rc)|$wh|$rd|$note" | Add-Content $det
-              if ($o -match '!!!AV') { "AVFULL $($f.Name) flags=$fl chunk=$ck :: $(($o.Trim() -replace '\r?\n',' | '))" | Add-Content out\avfull.txt }
-              $n++
-              if ($n % 100 -eq 0) { "PROG $n ok=$ok hang=$hang av=$($av.Count) $(Get-Date -Format HH:mm:ss)" | Add-Content out\sweep_head.txt }
-            }
-            if ($n -ge $cap) { break }
-          }
-        }
-        "TOTAL n=$n ok=$ok hang=$hang av=$($av.Count)" | Add-Content out\sweep_head.txt
-        foreach ($k in ($wr.Keys | Sort-Object)) { "WRAPRC $k count=$($wr[$k])" | Add-Content out\sweep_head.txt }
-        foreach ($x in $av) { "AVCASE $x" | Add-Content out\sweep_head.txt }
+        $ErrorActionPreference='Continue'
+        $sw=[Diagnostics.Stopwatch]::StartNew()
+        & .\bin\crtfbench6_x64.exe addr.txt 0 256 40 5400000 2>&1 | Out-File out\addr_run.log -Encoding ascii
+        $rc = $LASTEXITCODE -band [int]0xFFFFFFFF
+        $sw.Stop()
+        $t = Get-Content out\addr_run.log -Raw
+        "rc=0x{0:X8} elapsed_s={1} bytes={2}" -f $rc,[int]$sw.Elapsed.TotalSeconds,(Get-Item out\addr_run.log).Length | Out-File out\sweep_head.txt
+        ($t -split "\r?\n" | Select-String 'ADDRCASES|PROG |FAULT |!!!') | ForEach-Object { $_.ToString() } | Add-Content out\sweep_head.txt
+        "rec_lines=" + (($t -split "\r?\n" | Select-String '^REC ').Count)
         Get-Content out\sweep_head.txt
-        if (Test-Path out\avfull.txt) { Get-Content out\avfull.txt | Select-Object -First 40 }
-        $k = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\crtfbench5_x64.exe"
+        $k = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\crtfbench6_x64.exe"
         Remove-Item $k -Recurse -Force -ErrorAction SilentlyContinue
         "page-heap key removed"
 
