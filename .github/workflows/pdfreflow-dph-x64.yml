@@ -1,0 +1,171 @@
+name: pdfreflow-dph-x64
+'on':
+  workflow_dispatch:
+    inputs:
+      cap:
+        description: 'max pdfs'
+        required: false
+        default: '130'
+jobs:
+  t:
+    runs-on: windows-latest
+    timeout-minutes: 150
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Download ODT
+      shell: pwsh
+      run: |
+        $page = (Invoke-WebRequest -Uri "https://www.microsoft.com/en-us/download/details.aspx?id=49117" -UseBasicParsing).Content
+        if ($page -match 'href="(https://download\.microsoft\.com/download/[^"]+officedeploymenttool[^"]*\.exe)"') {
+          Invoke-WebRequest -Uri $Matches[1] -OutFile odt.exe
+        } else { throw "odt link not found" }
+        Start-Process -Wait -FilePath .\odt.exe -ArgumentList "/extract:odtx /quiet"
+
+    - name: Install CurrentChannelPreview x64 Word
+      shell: pwsh
+      run: |
+        $xml = '<Configuration><Add OfficeClientEdition="64" Channel="Current"><Product ID="O365ProPlusRetail"><Language ID="en-us" /><ExcludeApp ID="Excel" /><ExcludeApp ID="PowerPoint" /><ExcludeApp ID="Outlook" /><ExcludeApp ID="OneDrive" /><ExcludeApp ID="OneNote" /><ExcludeApp ID="Lync" /><ExcludeApp ID="Access" /><ExcludeApp ID="Groove" /><ExcludeApp ID="Publisher" /><ExcludeApp ID="Teams" /><ExcludeApp ID="Bing" /></Product></Add><Display Level="None" AcceptEULA="TRUE" /><Updates Enabled="FALSE" /></Configuration>'
+        Set-Content -Path cfg.xml -Value $xml
+        Start-Process -Wait -FilePath .\odtx\setup.exe -ArgumentList "/configure","cfg.xml"
+        $w = Get-Item "C:\Program Files\Microsoft Office\root\Office16\WINWORD.EXE" -ErrorAction SilentlyContinue
+        if (-not $w) { throw "word install failed" }
+        "word: $($e.Length) v=$($w.VersionInfo.FileVersion)"
+        $w.VersionInfo.FileVersion | Out-File ver.txt
+        "mip_pdf_sdk_present=$(Test-Path 'C:\Program Files\Microsoft Office\root\Office16\mip_pdf_sdk.dll')" | Out-File ver.txt -Append
+        "pdfreflow_present=$(Test-Path 'C:\Program Files\Microsoft Office\root\Office16\PDFREFLOW.EXE')" | Out-File ver.txt -Append
+        Get-Content ver.txt
+
+    - name: Build pdf carriers
+      shell: pwsh
+      run: |
+        New-Item -ItemType Directory -Force -Path pdfs, out | Out-Null
+        python tools\mk_pdf2.py pdfs
+        python tools\mk_pdf.py pdfs
+        python tools\mk_pdf3.py pdfs
+        (Get-ChildItem pdfs -Filter *.pdf | Measure-Object).Count
+        Get-ChildItem pdfs | Sort-Object Name | Select-Object -First 40 Name,Length | Format-Table -AutoSize | Out-String
+
+    - name: LocalDumps for word and pdfflow
+      shell: pwsh
+      run: |
+        New-Item -ItemType Directory -Force -Path C:\pdumps | Out-Null
+        $ld = "HKLM:\SOFTWARE\Microsoft\Windows Error Reporting\LocalDumps"
+        New-Item -Path $ld -Force | Out-Null
+        foreach ($exe in @('WINWORD.EXE','PDFREFLOW.EXE','mip_pdf_sdk.dll')) {
+          $k = Join-Path $ld $exe
+          New-Item -Path $k -Force | Out-Null
+          New-ItemProperty -Path $k -Name DumpFolder -Value "C:\pdumps" -PropertyType ExpandString -Force | Out-Null
+          New-ItemProperty -Path $k -Name DumpType -Value 2 -PropertyType DWord -Force | Out-Null
+          New-ItemProperty -Path $k -Name DumpCount -Value 40 -PropertyType DWord -Force | Out-Null
+        }
+        "localdumps set"
+
+    - name: Page heap for PDFREFLOW plus self test
+      shell: pwsh
+      run: |
+        New-Item -ItemType Directory -Force -Path out | Out-Null
+        $k1 = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\PDFREFLOW.EXE"
+        New-Item -Path $k1 -Force | Out-Null
+        Set-ItemProperty -Path $k1 -Name GlobalFlag -Value 0x02000000 -Type DWord
+        Set-ItemProperty -Path $k1 -Name PageHeapFlags -Value 0x3 -Type DWord
+        ("pdfreflow GlobalFlag=" + (Get-ItemProperty $k1).GlobalFlag) | Out-File out\pageheap.txt
+        $csc = "C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
+        $cs = @'
+        using System;
+        using System.IO;
+        using System.Runtime.InteropServices;
+        class HProbe2 {
+          static string LOG;
+          static void L(string s) { File.AppendAllText(LOG, s + Environment.NewLine); }
+          static int Main(string[] args) {
+            LOG = args[0];
+            int size = 0x100;
+            L("BEGIN");
+            IntPtr p = Marshal.AllocHGlobal(size);
+            L("ALLOC addr=0x" + p.ToInt64().ToString("x"));
+            Marshal.WriteByte(p, size - 1, 1);
+            L("INBOUNDS_OK");
+            L("ABOUT_TO_WRITE_PAST_END");
+            Marshal.WriteByte((IntPtr)(p.ToInt64() + size), 1);
+            L("PAST_END_WRITE_RETURNED_NO_FAULT");
+            return 0;
+          }
+        }
+        '@
+        Set-Content -Path hprobe2.cs -Value $cs -Encoding UTF8
+        & $csc /nologo /out:hprobe2.exe hprobe2.cs | Out-Null
+        $kh = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\hprobe2.exe"
+        New-Item -Path $kh -Force | Out-Null
+        Set-ItemProperty -Path $kh -Name GlobalFlag -Value 0x02000000 -Type DWord
+        Set-ItemProperty -Path $kh -Name PageHeapFlags -Value 0x3 -Type DWord
+        Remove-Item out\hp2_log.txt -Force -EA SilentlyContinue
+        $r = Start-Process -FilePath (Join-Path $PWD.Path "hprobe2.exe") -ArgumentList (Join-Path $PWD.Path "out\hp2_log.txt") -PassThru -Wait
+        $code = "0x{0:X8}" -f $r.ExitCode
+        $lg = @(Get-Content out\hp2_log.txt -EA SilentlyContinue) -join '|'
+        $armed = "NOT_ARMED"
+        if ($code -eq "0xC0000005" -and $lg.Contains("ABOUT_TO_WRITE_PAST_END") -and -not $lg.Contains("NO_FAULT")) { $armed = "ARMED" }
+        "SELFTEST exit=$code verdict=$armed log=$lg" | Tee-Object -FilePath out\selftest.txt -Append
+        Remove-Item $kh -Recurse -Force -EA SilentlyContinue
+
+    - name: Open each pdf and catch parser faults
+      shell: pwsh
+      run: |
+        $exe = "C:\Program Files\Microsoft Office\root\Office16\WINWORD.EXE"
+        $log = "out\which_log.txt"
+        $cap = [int]('${{ github.event.inputs.cap }}')
+        if ($cap -le 0) { $cap = 130 }
+        function DL { @(Get-ChildItem C:\pdumps -Filter *.dmp -EA SilentlyContinue | ForEach-Object { $_.Name }) }
+        function ModHits {
+          $m = @()
+          foreach ($p in @(Get-Process WINWORD,PDFREFLOW -EA SilentlyContinue)) {
+            try { $m += @($p.Modules | ForEach-Object { $_.ModuleName.ToLower() }) } catch { }
+          }
+          $m = @($m | Sort-Object -Unique)
+          return @($m | Where-Object { $_ -match 'pdf|mip|reflow|jpx|jp2|image|graphic|font|decode|fontace' })
+        }
+        $files = @(Get-ChildItem pdfs -Filter *.pdf | Sort-Object Name | Select-Object -First $cap)
+        ("cases={0} start={1}" -f $files.Count, (Get-Date -Format 'HH:mm:ss')) | Tee-Object -FilePath $log
+        $prev = DL
+        foreach ($f in $files) {
+          Get-Process WINWORD,PDFREFLOW -EA SilentlyContinue | Stop-Process -Force -EA SilentlyContinue
+          Start-Sleep -Seconds 2
+          Set-Content -Path ($f.FullName + ':Zone.Identifier') -Value "[ZoneTransfer]`r`nZoneId=3" -Encoding ASCII
+          $before = DL
+          $pidBefore = @(Get-Process -EA SilentlyContinue | ForEach-Object { $_.Id })
+          $p = Start-Process -FilePath $exe -ArgumentList ('"' + $f.FullName + '"') -PassThru
+          $title = ''; $opened = 0; $flow = 0; $hits = ''
+          $t0 = Get-Date
+          while (((Get-Date) - $t0).TotalSeconds -lt 45) {
+            Start-Sleep -Seconds 2
+            $flow = @(Get-Process PDFREFLOW -EA SilentlyContinue).Count
+            $tt = @(Get-Process WINWORD -EA SilentlyContinue | ForEach-Object { $_.MainWindowTitle } | Where-Object { $_ })
+            $c = @($tt | Where-Object { $_ -like ('*' + $f.BaseName + '*') })
+            if ($c.Count) { $opened = 1; $title = $c[0]; break }
+            if ($flow -gt 0) { break }
+            if ((DL).Count -gt $before.Count) { break }
+          }
+          $secs = [int]((Get-Date) - $t0).TotalSeconds
+          $hits = (ModHits) -join ','
+          $newp = @(Get-Process -EA SilentlyContinue | Where-Object { $pidBefore -notcontains $_.Id } | ForEach-Object { $_.ProcessName })
+          $after = DL
+          $new = @($after | Where-Object { $prev -notcontains $_ })
+          if ($new.Count) { $prev = $after }
+          $line = ('{0,-24} opened={1} pdfreflow={2} dumps={3} s={4} pdfmods=[{5}] newprocs=[{6}] title=[{7}]' -f `
+                  $f.Name, $opened, $flow, $new.Count, $secs, $hits, (($newp | Sort-Object -Unique) -join ' '), $title)
+          $line | Tee-Object -FilePath $log -Append
+          foreach ($d in $new) { New-Item -ItemType Directory -Force -Path out\dumps | Out-Null; Copy-Item ('C:\pdumps\' + $d) ('out\dumps\' + $d) -Force -EA SilentlyContinue }
+          Get-Process WINWORD,PDFREFLOW -EA SilentlyContinue | Stop-Process -Force -EA SilentlyContinue
+          Remove-Item 'HKCU:\SOFTWARE\Microsoft\Office\16.0\Word\Resiliency' -Recurse -Force -EA SilentlyContinue
+        }
+        ("DONE cases={0} dumps_total={1}" -f $files.Count, (DL).Count) | Tee-Object -FilePath $log -Append
+
+    - uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: pdfreflow-dph-x64
+        path: |
+          out
+          ver.txt
+          pdfs
+        if-no-files-found: ignore
