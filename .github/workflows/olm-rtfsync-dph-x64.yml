@@ -85,7 +85,7 @@ jobs:
         $cap = [int]'${{ inputs.cap }}'
         $det = 'out\detail.txt'
         'file|flags|chunk|rc|wraphr|reads|note' | Set-Content $det
-        $files = @(Get-ChildItem corpus -Filter *.bin | Sort-Object Name)
+        $files = @(Get-ChildItem corpus -Filter *.msg | Sort-Object Name)
         "CASES files=$($files.Count) flags=$($flagset.Count) chunks=$($chunkset.Count)" | Out-File out\sweep_head.txt
         $n=0; $ok=0; $hang=0; $av=@(); $wr=@{}
         foreach ($f in $files) {
