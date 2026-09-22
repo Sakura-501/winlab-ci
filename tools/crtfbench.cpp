@@ -569,7 +569,7 @@ int main(int argc, char **argv)
                 unsigned long need = 0;
                 int q = 0;
                 __try {
-                    q = pDec(k, 0, fb + body, (ULONG)want, 0, nullptr, nullptr, &need);
+                    q = pDec[k](k, 0, fb + body, (ULONG)want, 0, nullptr, nullptr, &need);
                 } __except (EXCEPTION_EXECUTE_HANDLER) {
                     printf("FAULTQ r=%lu k=%d len=%ld code=%08x\n", recs, k, want,
                            (unsigned)GetExceptionCode()); fflush(stdout);
@@ -585,7 +585,7 @@ int main(int argc, char **argv)
                     unsigned long cb = cap;
                     int r = 0;
                     __try {
-                        r = pDec(k, 0, fb + body, (ULONG)want, 0, nullptr, o, &cb);
+                        r = pDec[k](k, 0, fb + body, (ULONG)want, 0, nullptr, o, &cb);
                     } __except (EXCEPTION_EXECUTE_HANDLER) {
                         printf("FAULTR r=%lu k=%d len=%ld need=%lu d=%lu code=%08x\n", recs, k, want,
                                need, dl[di], (unsigned)GetExceptionCode()); fflush(stdout);
