@@ -239,7 +239,7 @@ def _patch_cmap(d, which, delta):
     return None
 
 
-def docx(font_bytes, rid='rId4', embed=True):
+def docx(font_bytes, rid='rIdF', embed=True):
     ct = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
           '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
           '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
@@ -255,18 +255,29 @@ def docx(font_bytes, rid='rId4', embed=True):
     wrels = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
              '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
              '<Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/fontTable" Target="fontTable.xml"/>'
-             + ('<Relationship Id="%s" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/oleObject" Target="fonts/font1.odttf"/>' % rid if embed else '')
-             + '</Relationships>')
+             '</Relationships>')
+    # the embedded-font relationship hangs off fontTable.xml, not document.xml.rels,
+    # and its type is .../relationships/font (verified against a Word-produced package)
+    ftrels = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+              '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+              + ('<Relationship Id="%s" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/font" Target="fonts/font1.odttf"/>' % rid if embed else '')
+              + '</Relationships>')
     doc = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
            '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" '
            'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
-           '<w:body><w:p><w:r><w:rFonts w:ascii="ProbeFont"/><w:t>hello</w:t></w:r></w:p></w:body></w:document>')
+           '<w:body><w:p><w:pPr><w:rPr><w:rFonts w:ascii="ProbeFont" w:hAnsi="ProbeFont"/></w:rPr></w:pPr>'
+           '<w:r><w:rPr><w:rFonts w:ascii="ProbeFont" w:hAnsi="ProbeFont"/></w:rPr><w:t>hello</w:t></w:r></w:p>'
+           '</w:body></w:document>')
     fnt = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-           '<w:fonts xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" '
-           'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
-           '<w:font w:name="ProbeFont"><w:panose1 w:val="020B0604020202020204"/>'
+           '<w:fonts xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" '
+           'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" '
+           'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+           '<w:font w:name="ProbeFont">'
+           '<w:panose1 w:val="020B0604020202020204"/>'
            '<w:charset w:val="00"/><w:family w:val="auto"/><w:pitch w:val="variable"/>'
-           + ('<w:embedRegular r:id="%s" w:fontKey="{00000000-0000-0000-0000-000000000000}"/>' % rid if embed else '')
+           '<w:sig w:usb0="E0002AFF" w:usb1="C0007841" w:usb2="00000009" w:usb3="00000000" '
+           'w:csb0="000001FF" w:csb1="00000000"/>'
+           + ('<w:embedRegular r:id="%s" w:fontKey="{00000000-0000-0000-0000-000000000001}"/>' % rid if embed else '')
            + '</w:font></w:fonts>')
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as z:
@@ -276,6 +287,7 @@ def docx(font_bytes, rid='rId4', embed=True):
         z.writestr('word/document.xml', doc)
         z.writestr('word/fontTable.xml', fnt)
         if embed:
+            z.writestr('word/_rels/fontTable.xml.rels', ftrels)
             z.writestr('word/fonts/font1.odttf', obfuscate(font_bytes))
     return buf.getvalue()
 
