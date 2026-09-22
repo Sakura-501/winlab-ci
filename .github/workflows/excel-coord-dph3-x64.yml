@@ -1,0 +1,166 @@
+name: excel-coord-dph3-x64
+# Declared-dimension vs supplied-record sweep for the Excel text importers, armed and coverage-proven.
+# History: the same corpus ran under excel-coord-pageheap-x64 (run 35698709490) whose own log recorded
+# `control verifier_loaded=0` and `slk* opened=0`, so that wave's zero-fault reading was never coverage
+# valid. This wave adds (a) a behavioural page-heap proof keyed on the EXCEL.EXE image name and
+# (b) a per-case coverage read (workbook actually parsed, protected view count recorded).
+'on':
+  workflow_dispatch:
+    inputs:
+      cap:
+        description: 'max carriers'
+        required: false
+        default: '300'
+jobs:
+  t:
+    runs-on: windows-latest
+    timeout-minutes: 170
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Download ODT
+      shell: pwsh
+      run: |
+        $ok=$false
+        for ($i=0; $i -lt 3; $i++) {
+          try {
+            $page = (Invoke-WebRequest -Uri "https://www.microsoft.com/en-us/download/details.aspx?id=49117" -UseBasicParsing).Content
+            if ($page -match 'href="(https://download\.microsoft\.com/download/[^"]+officedeploymenttool[^"]*\.exe)"') {
+              Invoke-WebRequest -Uri $Matches[1] -OutFile odt.exe -ErrorAction Stop
+            } else { throw "odt link not found" }
+            Start-Process -Wait -FilePath .\odt.exe -ArgumentList "/extract:odtx /quiet"
+            if (Test-Path odtx\setup.exe) { $ok=$true; break }
+            throw "setup.exe missing after extract"
+          } catch { "attempt $i failed: $($_.Exception.Message)"; Start-Sleep -Seconds 8 }
+        }
+        if (-not $ok) { throw "ODT unavailable after retries" }
+
+    - name: Install CurrentChannel x64 Excel
+      shell: pwsh
+      run: |
+        $xml = '<Configuration><Add OfficeClientEdition="64" Channel="Current"><Product ID="O365ProPlusRetail"><Language ID="en-us" /><ExcludeApp ID="PowerPoint" /><ExcludeApp ID="Outlook" /><ExcludeApp ID="Word" /><ExcludeApp ID="OneDrive" /><ExcludeApp ID="OneNote" /><ExcludeApp ID="Lync" /><ExcludeApp ID="Access" /><ExcludeApp ID="Groove" /><ExcludeApp ID="Publisher" /><ExcludeApp ID="Teams" /><ExcludeApp ID="Bing" /></Product></Add><Display Level="None" AcceptEULA="TRUE" /><Updates Enabled="FALSE" /></Configuration>'
+        Set-Content -Path cfg.xml -Value $xml
+        Start-Process -Wait -FilePath .\odtx\setup.exe -ArgumentList "/configure","cfg.xml"
+        $e = Get-Item "C:\Program Files\Microsoft Office\root\Office16\EXCEL.EXE" -ErrorAction SilentlyContinue
+        if (-not $e) { throw "excel install failed" }
+        "excel v=$($e.VersionInfo.FileVersion)" | Tee-Object -FilePath ver.txt
+
+    - name: LocalDumps for EXCEL
+      shell: pwsh
+      run: |
+        New-Item -ItemType Directory -Force -Path C:\xdumps, out | Out-Null
+        $ld = "HKLM:\SOFTWARE\Microsoft\Windows Error Reporting\LocalDumps\EXCEL.EXE"
+        New-Item -Path $ld -Force | Out-Null
+        New-ItemProperty -Path $ld -Name DumpFolder -Value "C:\xdumps" -PropertyType ExpandString -Force | Out-Null
+        New-ItemProperty -Path $ld -Name DumpType -Value 2 -PropertyType DWord -Force | Out-Null
+        New-ItemProperty -Path $ld -Name DumpCount -Value 60 -PropertyType DWord -Force | Out-Null
+        "localdumps set"
+
+    - name: Arm full page heap for EXCEL.EXE and prove it behaviourally on that image name
+      shell: pwsh
+      run: |
+        $k = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\EXCEL.EXE"
+        New-Item -Path $k -Force | Out-Null
+        Set-ItemProperty -Path $k -Name GlobalFlag -Value 0x02000000 -Type DWord
+        Set-ItemProperty -Path $k -Name PageHeapFlags -Value 0x3 -Type DWord
+        "EXCEL GlobalFlag=$((Get-ItemProperty $k).GlobalFlag) PageHeapFlags=$((Get-ItemProperty $k).PageHeapFlags)" | Tee-Object out\pageheap.txt
+        $csc = "C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
+        $cs = @'
+        using System;
+        using System.Runtime.InteropServices;
+        class P {
+          static void L(string s) { Console.WriteLine(s); }
+          static int Main() {
+            int size = 0x100;
+            IntPtr p = Marshal.AllocHGlobal(size);
+            L("ALLOC addr=0x" + p.ToInt64().ToString("x"));
+            Marshal.WriteByte(p, size - 1, 1);
+            L("INBOUNDS_OK");
+            L("ABOUT_TO_WRITE_PAST_END");
+            Marshal.WriteByte((IntPtr)(p.ToInt64() + size), 1);
+            L("PAST_END_WRITE_RETURNED_NO_FAULT");
+            return 0;
+          }
+        }
+        '@
+        Set-Content -Path hp.cs -Value $cs -Encoding UTF8
+        & $csc /nologo /out:hp.exe hp.cs | Out-Null
+        # IFEO keys match on image NAME: run the probe from a directory named EXCEL.EXE? no -- copy to EXCEL.EXE
+        New-Item -ItemType Directory -Force -Path hplx | Out-Null
+        Copy-Item hp.exe hplx\EXCEL.EXE -Force
+        $r = Start-Process -FilePath (Join-Path $PWD.Path "hplx\EXCEL.EXE") -PassThru -Wait -NoNewWindow
+        $code = "0x{0:X8}" -f $r.ExitCode
+        $armed = "NOT_ARMED"
+        if ($code -eq "0xC0000005") { $armed = "ARMED" }
+        "SELFTEST image=EXCEL.EXE exit=$code verdict=$armed" | Tee-Object out\selftest.txt -Append
+        Remove-Item -Recurse -Force hplx
+        if ($armed -ne "ARMED") { throw "page heap not armed for the EXCEL.EXE image name" }
+
+    - name: Build text-import carriers (declared vs supplied)
+      shell: pwsh
+      run: |
+        New-Item -ItemType Directory -Force -Path carriers | Out-Null
+        python tools\mk_coord_corpus2.py carriers 900
+        $n = (Get-ChildItem carriers | Measure-Object).Count
+        "carriers=$n" | Tee-Object out\carriers.txt
+        Get-ChildItem carriers | Group-Object Extension | ForEach-Object { "ext $($_.Name)=$($_.Count)" } | Tee-Object -FilePath out\carriers.txt -Append
+        if ($n -lt 20) { throw "carrier build produced too few files" }
+
+    - name: Open each carrier, record coverage, catch faults
+      shell: pwsh
+      run: |
+        $log = "out\dph3_log.txt"
+        $cap = [int]('${{ github.event.inputs.cap }}')
+        if ($cap -le 0) { $cap = 300 }
+        function DL { @(Get-ChildItem C:\xdumps -Filter *.dmp -EA SilentlyContinue | ForEach-Object { $_.Name }) }
+        $files = @(Get-ChildItem carriers | Sort-Object Name | Select-Object -First $cap)
+        ("cases={0} start={1}" -f $files.Count, (Get-Date -Format 'HH:mm:ss')) | Tee-Object -FilePath $log
+        $prev = DL
+        $cov = 0; $noparse = 0; $pv = 0; $err = 0; $dumpn = 0
+        $xl = $null
+        for ($i=0; $i -lt $files.Count; $i++) {
+          if ($i % 25 -eq 0) {
+            try { if ($xl) { $xl.Quit() } } catch { }
+            Get-Process EXCEL -EA SilentlyContinue | Stop-Process -Force -EA SilentlyContinue
+            Start-Sleep -Seconds 2
+            $xl = New-Object -ComObject Excel.Application
+            $xl.Visible = $false
+            $xl.DisplayAlerts = $false
+          }
+          $f = $files[$i]
+          Set-Content -Path ($f.FullName + ':Zone.Identifier') -Value "[ZoneTransfer]`r`nZoneId=3" -Encoding ASCII
+          $before = DL
+          $note = ''; $used = 0; $pvc = 0
+          try {
+            $wb = $xl.Workbooks.Open($f.FullName)
+            $pvc = $xl.ProtectedViewWindows.Count
+            $used = [int]$wb.Sheets.Item(1).UsedRange.Cells.Count
+            $wb.Close($false)
+          } catch { $note = $_.Exception.Message.Substring(0,[Math]::Min(90,$_.Exception.Message.Length)) }
+          $after = DL
+          $new = @($after | Where-Object { $prev -notcontains $_ })
+          if ($new.Count) { $prev = $after; $dumpn += $new.Count }
+          if ($note) { $err++ }
+          elseif ($pvc -gt 0) { $pv++ }
+          elseif ($used -ge 1) { $cov++ }
+          else { $noparse++ }
+          ('{0,-34} used={1} pv={2} dumps={3} note={4}' -f $f.Name, $used, $pvc, $new.Count, $note) | Tee-Object -FilePath $log -Append
+          foreach ($dd in $new) {
+            New-Item -ItemType Directory -Force -Path out\dumps | Out-Null
+            Copy-Item ('C:\xdumps\' + $dd) ('out\dumps\' + $dd) -Force -EA SilentlyContinue
+            ('FAULT case={0} dump={1}' -f $f.Name, $dd) | Tee-Object -FilePath $log -Append
+          }
+          Remove-Item 'HKCU:\SOFTWARE\Microsoft\Office\16.0\Excel\Resiliency' -Recurse -Force -EA SilentlyContinue
+        }
+        try { $xl.Quit() } catch { }
+        ("END cases={0} covered={1} noparse={2} protectedview={3} errors={4} dumps={5}" -f $files.Count,$cov,$noparse,$pv,$err,$dumpn) | Tee-Object -FilePath $log -Append
+        if ($cov -lt 1) { throw "ZERO-COVERAGE: no carrier was parsed into cells - reads unusable" }
+
+    - uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: excel-coord-dph3-x64
+        path: |
+          out
+          ver.txt
+        if-no-files-found: ignore
