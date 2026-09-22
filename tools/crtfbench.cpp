@@ -539,6 +539,10 @@ int main(int argc, char **argv)
         if (!hm2) { printf("NOMOD\n"); return 12; }
         typedef int (STDAPICALLTYPE *PFN_E2)(unsigned long, unsigned long, void *, unsigned long,
                                              void *, void **, unsigned long *);
+        // the decode exports carry one more argument than the encode ones: the flattener
+        // callback position that the encoders do not have
+        typedef int (STDAPICALLTYPE *PFN_D2)(unsigned long, unsigned long, void *, unsigned long,
+                                             unsigned long, void *, void **, unsigned long *);
         static const char *kinds[] = { "EssContentHint", "EssReceiptRequest", "EssReceipt",
                                        "EssMLHistory", "EssSecurityLabel", "EssKeyExchPreference",
                                        "EssSignCertificate" };
@@ -553,11 +557,12 @@ int main(int argc, char **argv)
         unsigned long cases = 0, encok = 0, decok = 0, pastE = 0, pastD = 0, fE = 0, fD = 0, maxpast = 0;
         for (unsigned ki = 0; ki < sizeof(kinds) / sizeof(kinds[0]); ki++) {
             char nm[80];
-            PFN_E2 pEnc = nullptr, pDec = nullptr;
+            PFN_E2 pEnc = nullptr;
+            PFN_D2 pDec = nullptr;
             _snprintf(nm, sizeof(nm) - 1, "%sEncodeEx", kinds[ki]);
             pEnc = (PFN_E2)GetProcAddress(hm2, nm);
             _snprintf(nm, sizeof(nm) - 1, "%sDecodeEx", kinds[ki]);
-            pDec = (PFN_E2)GetProcAddress(hm2, nm);
+            pDec = (PFN_D2)GetProcAddress(hm2, nm);
             printf("KIND %u %s enc=%p dec=%p\n", ki, kinds[ki], (void *)pEnc, (void *)pDec); fflush(stdout);
             if (!pEnc || !pDec) continue;
             for (int ni = 0; ni < (int)(sizeof(narc) / sizeof(narc[0])); ni++) {
