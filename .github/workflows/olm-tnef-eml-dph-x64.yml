@@ -1,0 +1,127 @@
+name: olm-tnef-eml-dph-x64
+# OLMAPI32's TNEF property-extraction loop, reached the way receiving a winmail.dat message reaches it:
+# OUTLOOK.EXE /eml  ->  OUTLMIME!ImportTNEF  ->  OLMAPI32 OpenTnefStreamEx/HrInitDecode
+# -> TNEF_ExtractProps -> HrExtractProperties main loop (the same chain a debugger already pinned on
+# 2026-09-03: outlmime+0xBEEA0 -> olmapi32+0x630440 -> 0x631260 -> 0x62B448).
+# In-process drivers cannot reach it: OLMAPI32 exports no TNEF* C API (probed 18 candidate names, all
+# absent) and the OpenTnefStreamEx handle exposes only ImplOpenTnefStream, so the ITnef interface
+# (ExtractProps/Finish/OpenTaggedBody) is not obtainable without the importer.
+# Armed full page heap on OUTLOOK.EXE + WER local dumps; every OUTLOOK process is launched and killed
+# by this job only.
+'on':
+  workflow_dispatch:
+    inputs:
+      cap:
+        description: 'max .eml cases'
+        required: false
+        default: '400'
+      waitsec:
+        description: 'seconds to watch each launch'
+        required: false
+        default: '25'
+jobs:
+  t:
+    runs-on: windows-latest
+    timeout-minutes: 165
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Download ODT
+      shell: pwsh
+      run: |
+        $page = (Invoke-WebRequest -Uri "https://www.microsoft.com/en-us/download/details.aspx?id=49117" -UseBasicParsing).Content
+        if ($page -match 'href="(https://download\.microsoft\.com/download/[^"]+officedeploymenttool[^"]*\.exe)"') {
+          Invoke-WebRequest -Uri $Matches[1] -OutFile odt.exe
+        } else { throw "odt link not found" }
+        Start-Process -Wait -FilePath .\odt.exe -ArgumentList "/extract:odtx /quiet"
+
+    - name: Install Current x64 (Outlook only)
+      shell: pwsh
+      run: |
+        $xml = '<Configuration><Add OfficeClientEdition="64" Channel="Current"><Product ID="O365ProPlusRetail"><Language ID="en-us" /><ExcludeApp ID="Excel" /><ExcludeApp ID="PowerPoint" /><ExcludeApp ID="OneDrive" /><ExcludeApp ID="OneNote" /><ExcludeApp ID="Lync" /><ExcludeApp ID="Access" /><ExcludeApp ID="Groove" /><ExcludeApp ID="Publisher" /><ExcludeApp ID="Teams" /><ExcludeApp ID="Bing" /><ExcludeApp ID="Word" /></Product></Add><Display Level="None" AcceptEULA="TRUE" /><Updates Enabled="FALSE" /></Configuration>'
+        Set-Content -Path cfg.xml -Value $xml
+        Start-Process -Wait -FilePath .\odtx\setup.exe -ArgumentList "/configure","cfg.xml"
+        $o = Get-Item "C:\Program Files\Microsoft Office\root\Office16\OUTLOOK.EXE" -ErrorAction SilentlyContinue
+        if (-not $o) { throw "outlook install failed" }
+        $o.VersionInfo.FileVersion | Tee-Object ver.txt
+        New-Item -Force -Path "HKCU:\Software\Microsoft\Office\16.0\Outlook\Preferences" | Out-Null
+        Set-ItemProperty "HKCU:\Software\Microsoft\Office\16.0\Outlook\Preferences" DisableFirstRunExperience 1 -Type DWord
+        New-Item -Force -Path "HKCU:\Software\Microsoft\Office\16.0\Outlook\Setup" | Out-Null
+        Set-ItemProperty "HKCU:\Software\Microsoft\Office\16.0\Outlook\Setup" "QuickExec-1" 1 -Type DWord
+        Set-ItemProperty "HKCU:\Software\Microsoft\Office\16.0\Outlook\Setup" "DisableLaunchDialog" 1 -Type DWord
+
+    - name: Build corpora
+      shell: pwsh
+      run: |
+        New-Item -ItemType Directory -Force -Path corpus, tnef, out | Out-Null
+        tar -xzf bin\tnefmix.tgz -C tnef
+        python tools\mk_eml_corpus.py tnef\attr.txt corpus
+        (Get-ChildItem corpus -Filter *.eml).Count
+
+    - name: Arm full page heap and prove it behaviourally
+      shell: pwsh
+      run: |
+        $hk = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options"
+        foreach ($exe in @('crtfbench8_x64.exe','OUTLOOK.EXE')) {
+          $k = "$hk\$exe"
+          New-Item -Path $k -Force | Out-Null
+          New-ItemProperty -Path $k -Name GlobalFlag -Value 0x02000000 -PropertyType DWord -Force | Out-Null
+          New-ItemProperty -Path $k -Name PageHeapFlags -Value 0x3 -PropertyType DWord -Force | Out-Null
+        }
+        "OUTLOOK.GlobalFlag=$((Get-Item "$hk\OUTLOOK.EXE").GetValue('GlobalFlag')) PageHeapFlags=$((Get-Item "$hk\OUTLOOK.EXE").GetValue('PageHeapFlags'))" | Out-File out\pageheap.txt
+        Get-Content out\pageheap.txt
+        $s = & .\bin\crtfbench8_x64.exe selftest 0 256 0 120000 2>&1 | Out-String
+        $rc = $LASTEXITCODE -band [int]0xFFFFFFFF
+        $armed = if (('{0:X8}' -f $rc) -eq 'C0000005' -and $s -notmatch 'NOT_DETECTED' -and $s -match 'ABOUT_TO_WRITE_PAST_END') { 'ARMED' } else { 'NOT_ARMED' }
+        "SELFTEST rc=0x$('{0:X8}' -f $rc) verdict=$armed" | Tee-Object out\selftest.txt -Append
+        if ($armed -ne 'ARMED') { throw "instrument blind: aborting" }
+        New-Item -Force -Path "HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting\LocalDumps\OUTLOOK.EXE" | Out-Null
+        $ld = "HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting\LocalDumps\OUTLOOK.EXE"
+        New-ItemProperty -Path $ld -Name DumpFolder -Value "$PWD\out\dumps" -PropertyType ExpandString -Force | Out-Null
+        New-ItemProperty -Path $ld -Name DumpType -Value 2 -PropertyType DWord -Force | Out-Null
+        New-ItemProperty -Path $ld -Name DumpCount -Value 400 -PropertyType DWord -Force | Out-Null
+        New-Item -ItemType Directory -Force -Path out\dumps | Out-Null
+
+    - name: Positive control - the importer must actually load
+      shell: pwsh
+      run: |
+        . ./scripts/import_case.ps1 -File "corpus\Zbenign_plain.eml" -WaitSec 40 -Tag control
+        Get-Content out\ctrl.txt
+        if ((Get-Content out\ctrl.txt -Raw) -notmatch 'mime_loaded=1') { throw "OUTLOOK never loaded OUTLMIME: channel not usable" }
+        if ((Get-Content out\ctrl.txt -raw) -notmatch 'alive=1') { throw "control launch did not survive: dialog-bound or profile-blocked" }
+
+    - name: Sweep every TNEF carrier through the importer
+      shell: pwsh
+      run: |
+        $cap = [int]"${{ inputs.cap }}"; $ws = [int]"${{ inputs.waitsec }}"
+        $files = @(Get-ChildItem corpus -Filter *.eml | Sort-Object Name)
+        "CASES files=$($files.Count) cap=$cap wait=$ws" | Out-File out\head.txt
+        $n = 0; $loaded = 0; $died = 0; $hang = 0
+        foreach ($f in $files) {
+          if ($n -ge $cap) { break }
+          . ./scripts/import_case.ps1 -File $f.FullName -WaitSec $ws -Tag case
+          $t = Get-Content out\last_case.txt -Raw
+          if ($t -match 'mime_loaded=1') { $loaded++ }
+          if ($t -match 'av=1') { $died++; "DEATH $n $($f.Name) :: $($t.Trim())" | Add-Content out\deaths.txt }
+          if ($t -match 'timeout=1') { $hang++ }
+          $n++
+          if (($n % 20) -eq 0) { "PROG $n loaded=$loaded deaths=$died timeouts=$hang $(Get-Date -Format HH:mm:ss)" | Add-Content out\head.txt }
+        }
+        "TOTAL n=$n loaded=$loaded deaths=$died timeouts=$hang dumps=$((Get-ChildItem out\dumps -Filter *.dump -EA SilentlyContinue).Count)" | Add-Content out\head.txt
+        Get-Content out\head.txt
+        if (Test-Path out\deaths.txt) { Get-Content out\deaths.txt | Select-Object -First 20 }
+        $hk = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options"
+        Remove-Item "$hk\OUTLOOK.EXE" -Recurse -Force -EA SilentlyContinue
+        Remove-Item "$hk\crtfbench8_x64.exe" -Recurse -Force -EA SilentlyContinue
+        Remove-Item "HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting\LocalDumps\OUTLOOK.EXE" -Recurse -Force -EA SilentlyContinue
+        "arm+wer removed"
+        if ($died -eq 0 -and $loaded -lt $n) { throw "importer did not load for most cases - coverage void" }
+
+    - name: Upload evidence
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: olm-tnef-eml-dph-x64
+        path: |
+          out
+          ver.txt

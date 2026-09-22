@@ -12,6 +12,10 @@
 
 typedef HRESULT (STDAPICALLTYPE *PFN_WRAP)(IStream *, ULONG, IStream **);
 typedef HRESULT (STDAPICALLTYPE *PFN_OPEN_TNEF)(IStream *, void **, LPCSTR, ULONG, void *, void *, void *);
+typedef HRESULT (STDAPICALLTYPE *PFN_OPEN_TNEF8)(void *, void *, char *, unsigned long, void *, unsigned short, void *, void **);
+typedef HRESULT (STDAPICALLTYPE *PFN_TNEF_CALL)(void *, unsigned long, void *, void **);
+typedef HRESULT (STDAPICALLTYPE *PFN_OPEN_TAGGED_BODY)(void *, void *, unsigned long, IStream **);
+typedef HRESULT (STDAPICALLTYPE *PFN_QI)(void *, const GUID *, void **);
 typedef HRESULT (STDAPICALLTYPE *PFN_GET_TNEF_STM)(void *, IStream **);
 typedef HRESULT (STDAPICALLTYPE *PFN_RTFSYNC)(void *, ULONG, int *);
 typedef HRESULT (STDAPICALLTYPE *PFN_PARSE_ADDR)(ULONG, ULONG, const char *, void *);
@@ -23,7 +27,9 @@ typedef HRESULT (STDAPICALLTYPE *PFN_ALLOCMORE)(ULONG, void *, void **);
 typedef void (STDAPICALLTYPE *PFN_FREEBUF)(void *);
 typedef HRESULT (STDAPICALLTYPE *PFN_MAPIINIT)(void *);
 typedef HRESULT (STDAPICALLTYPE *PFN_MAPIUNINIT)(void);
+typedef int (STDAPICALLTYPE *PFN_DASEX)(unsigned long, const char *, unsigned char *, unsigned long, unsigned long, void *, void *, unsigned long *);
 typedef ULONG (STDAPICALLTYPE *PFN_RELEASE)(void *);
+typedef HRESULT (STDAPICALLTYPE *PFN_OPENPROP)(void *, unsigned long, const void *, unsigned long, unsigned long, void **);
 
 static PFN_WRAP       g_pWrap = nullptr;
 static PFN_WRAP       g_pWrapEx = nullptr;
@@ -136,6 +142,29 @@ static DWORD WINAPI Watchdog(LPVOID arg)
     return 0;
 }
 
+
+static HMODULE g_hVal = nullptr;
+static ULONG g_lo = 0, g_hi = 0;
+static unsigned long g_badrel = 0;
+
+// Release through the object's own vtable slot 2, verifying the target is inside the module's .text
+// first (a mis-picked slot must never become a "fault reading").
+static unsigned long SafeRelease(void *obj, const char *tag, unsigned long step)
+{
+    if (!obj) { printf("STEP %lu %s null\n", step, tag); fflush(stdout); return 0; }
+    void **vt = (void **)*(void ***)obj;
+    void *fn = vt[2];
+    if (!g_hVal) { printf("STEP %lu %s noval\n", step, tag); fflush(stdout); return 0; }
+    if ((uintptr_t)fn < (uintptr_t)g_hVal + g_lo || (uintptr_t)fn > (uintptr_t)g_hVal + g_hi) {
+        g_badrel++;
+        printf("BADREL %lu %s obj=%p fn=%p\n", step, tag, obj, fn); fflush(stdout);
+        return 0;
+    }
+    ULONG rc = ((PFN_RELEASE)fn)(obj);
+    printf("STEP %lu %s released ref=%lu\n", step, tag, rc); fflush(stdout);
+    return 1;
+}
+
 int main(int argc, char **argv)
 {
     if (argc < 2) { printf("usage: crtfbench <blob|-> [flags-hex] [readchunk] [mode]\n"); return 2; }
@@ -205,6 +234,7 @@ int main(int argc, char **argv)
         unsigned long cnt = 0, opened2 = 0, syncs = 0, ups = 0;
         do {
             if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+            if (fd.cFileName[0] == '.' || fd.cFileName[0] == '_') continue;  /* AppleDouble ._x / scratch */
             char full[1200];
             size_t bl = strlen(argv[1]);
             _snprintf(full, sizeof(full) - 1, "%s%s%s", argv[1],
@@ -274,6 +304,7 @@ int main(int argc, char **argv)
         unsigned long maxc = getenv("CRTF_MAX") ? strtoul(getenv("CRTF_MAX"), nullptr, 10) : 0;
         do {
             if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+            if (fd.cFileName[0] == '.' || fd.cFileName[0] == '_') continue;  /* AppleDouble ._x / scratch */
             if (maxc && cnt >= maxc) break;
             char full[1200];
             _snprintf(full, sizeof(full) - 1, "%s%s%s", argv[1],
@@ -362,6 +393,7 @@ int main(int argc, char **argv)
         unsigned long nf = 0;
         do {
             if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+            if (fd.cFileName[0] == '.' || fd.cFileName[0] == '_') continue;  /* AppleDouble ._x / scratch */
             if (nf >= 4096) break;
             strncpy(files[nf], fd.cFileName, 259);
             files[nf][259] = 0;
@@ -425,6 +457,187 @@ int main(int argc, char **argv)
                total, nf, rounds, syncs, ups, rels, bad); fflush(stdout);
         return 0;
     }
+    if (mode == 41) {
+        // OUTLMIME!DecodeAttrSequenceEx with a CALLER-SUPPLIED buffer (flags & 0x8000 == 0 forwards
+        // straight to the inner decoder at 0x18000A618). Ask the API for the size it needs, then give
+        // it exactly that many bytes from the armed heap: any write past the declared capacity trips
+        // the page guard and is attributed to the module + RVA.
+        g_soft = 1;
+        HMODULE hm1 = LoadLibraryExA("OUTLMIME.dll", nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
+        if (!hm1) hm1 = LoadLibraryExA("C:\\Program Files\\Microsoft Office\\root\\Office16\\OUTLMIME.dll",
+                                       nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
+        PFN_DASEX pDas = (PFN_DASEX)GetProcAddress(hm1, "DecodeAttrSequenceEx");
+        printf("OUTLMIME=%p das=%p\n", (void *)hm1, (void *)pDas); fflush(stdout);
+        if (!pDas) { printf("NODAS\n"); return 10; }
+        size_t fsz = 0; BYTE *fb = LoadBlob(argv[1], &fsz);
+        if (!fb) { printf("NOINPUT\n"); return 11; }
+        size_t off = 0; unsigned long n = 0, qok = 0, fok = 0, skips = 0;
+        unsigned long nmax = getenv("CRTF_NMAX") ? strtoul(getenv("CRTF_NMAX"), nullptr, 10) : 200000;
+        while (off + 1 < fsz && n < nmax) {
+            size_t e1 = off; while (e1 < fsz && fb[e1] != '\n') e1++;
+            if (e1 >= fsz) break;
+            long want = strtol((char *)fb + off, nullptr, 10);
+            size_t body = e1 + 1;
+            if (want <= 0 || body + (size_t)want > fsz) break;
+            off = body + want;
+            if (off < fsz && fb[off] == '\n') off++;
+            ULONG need = 0;
+            BOOL ok = 0;
+            __try {
+                ok = pDas(0, nullptr, fb + body, (ULONG)want, 0, nullptr, nullptr, &need);
+            } __except (EXCEPTION_EXECUTE_HANDLER) {
+                printf("FAULTQ rec=%lu len=%ld code=%08x\n", n, want, (unsigned)GetExceptionCode());
+                n++; continue;
+            }
+            printf("QR n=%lu len=%ld q=%u need=%lu gle=%u\n", n, want, (unsigned)ok, need,
+                   (unsigned)GetLastError()); fflush(stdout);
+            if (!ok || !need || need > (64u << 20)) { skips++; n++; continue; }
+            qok++;
+            unsigned long deltas[3] = { 0, 8, 64 };
+            for (int d = 0; d < 3; d++) {
+                ULONG cap = need + deltas[d];
+                BYTE *dst = (BYTE *)malloc(cap);
+                if (!dst) continue;
+                memset(dst, 0xCC, cap);
+                ULONG cb = cap;
+                BOOL ok2 = 0;
+                __try {
+                    ok2 = pDas(0, nullptr, fb + body, (ULONG)want, 0, nullptr, dst, &cb);
+                } __except (EXCEPTION_EXECUTE_HANDLER) {
+                    printf("FAULTR rec=%lu len=%ld need=%lu d=%lu code=%08x\n", n, want, need, deltas[d],
+                           (unsigned)GetExceptionCode());
+                    fflush(stdout);
+                }
+                printf("  FILL n=%lu d=%lu cap=%lu r=%u cb=%lu gle=%u\n", n, deltas[d], cap,
+                       (unsigned)ok2, cb, (unsigned)GetLastError()); fflush(stdout);
+                if (ok2) fok++;
+                free(dst);
+            }
+            if ((n % 25) == 0) printf("PROG %lu qok=%lu fok=%lu skip=%lu rec_len=%ld need=%lu\n",
+                                      n, qok, fok, skips, want, need);
+            n++;
+        }
+        printf("ATTRCASES n=%lu qok=%lu fok=%lu skip=%lu faults=%lu\n", n, qok, fok, skips, g_faults);
+        fflush(stdout);
+        return 0;
+    }
+    if (mode == 25) {
+        // Read-after-free detector. Holds references that were taken from the message BEFORE an
+        // RTFSync rewrite (which runs ScGetWriteChunkProp -> DestroyChunk -> MAPIFreeBuffer on the
+        // cached body chunk) and reads them AFTER the rewrite. Slot indices come from the in-service
+        // build's own CIMessage IMessage vtable: 2=Release, 5=GetProps, 7=OpenProperty.
+        HMODULE hl5 = GetModuleHandleA("OLMAPI32.dll");
+        PFN_RTFSYNC pSync5 = (PFN_RTFSYNC)GetProcAddress(hl5, "RTFSync");
+        PFN_OPENMSGSESS pSess5 = (PFN_OPENMSGSESS)GetProcAddress(hl5, "OpenIMsgSession");
+        PFN_OPENMSGONI pOpen5 = (PFN_OPENMSGONI)GetProcAddress(hl5, "OpenIMsgOnIStg");
+        PFN_ALLOCBUF pAB5 = (PFN_ALLOCBUF)GetProcAddress(hl5, "MAPIAllocateBuffer");
+        PFN_ALLOCMORE pAM5 = (PFN_ALLOCMORE)GetProcAddress(hl5, "MAPIAllocateMore");
+        PFN_FREEBUF pFB5 = (PFN_FREEBUF)GetProcAddress(hl5, "MAPIFreeBuffer");
+        if (!pSync5 || !pSess5 || !pOpen5 || !g_pWrap) { printf("SEQEXPORTS\n"); return 12; }
+        ULONG lo5 = 0, hi5 = 0;
+        {
+            IMAGE_DOS_HEADER *dh = (IMAGE_DOS_HEADER *)hl5;
+            IMAGE_NT_HEADERS *nt = (IMAGE_NT_HEADERS *)((BYTE *)hl5 + dh->e_lfanew);
+            lo5 = (ULONG)nt->OptionalHeader.BaseOfCode; hi5 = lo5 + nt->OptionalHeader.SizeOfCode;
+        }
+        g_hVal = hl5; g_lo = lo5; g_hi = hi5;
+        char pat5[1100];
+        size_t bl5 = strlen(argv[1]);
+        const char *sl5 = (bl5 && argv[1][bl5 - 1] == '\\') ? "" : "\\";
+        _snprintf(pat5, sizeof(pat5) - 1, "%s%s*.msg", argv[1], sl5);
+        WIN32_FIND_DATAA fd;
+        HANDLE hF = FindFirstFileA(pat5, &fd);
+        if (hF == INVALID_HANDLE_VALUE) { printf("NOFILES\n"); return 13; }
+        IMalloc *pMalloc5 = nullptr;
+        CoGetMalloc(MEMCTX_TASK, &pMalloc5);
+        void *pSession5 = nullptr;
+        printf("SESS hr=%08x\n", (unsigned)pSess5((void *)pMalloc5, 0, &pSession5)); fflush(stdout);
+        unsigned long cnt = 0, opened5 = 0, props = 0, wraps = 0, syncs = 0, rfs = 0, bad5 = 0;
+        unsigned long maxc = getenv("CRTF_MAX") ? strtoul(getenv("CRTF_MAX"), nullptr, 10) : 0;
+        char *rb = (char *)malloc(1u << 16);
+        do {
+            if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+            if (fd.cFileName[0] == '.' || fd.cFileName[0] == '_') continue;  /* AppleDouble ._x / scratch */
+            if (maxc && cnt >= maxc) break;
+            char full[1300];
+            _snprintf(full, sizeof(full) - 1, "%s%s%s", argv[1], sl5, fd.cFileName);
+            cnt++;
+            WCHAR wp5[1100];
+            MultiByteToWideChar(CP_ACP, 0, full, -1, wp5, 1090);
+            IStorage *pStg5 = nullptr;
+            HRESULT h5 = StgOpenStorageEx(wp5, STGM_READWRITE | STGM_SHARE_EXCLUSIVE, STGFMT_STORAGE, 0,
+                                          nullptr, nullptr, __uuidof(IStorage), (void **)&pStg5);
+            if (FAILED(h5) || !pStg5) continue;
+            void *pMsg5 = nullptr;
+            h5 = pOpen5(pSession5, (void *)pAB5, (void *)pAM5, (void *)pFB5, pMalloc5, nullptr,
+                        pStg5, nullptr, 0, 0, &pMsg5);
+            if (FAILED(h5) || !pMsg5) { pStg5->Release(); continue; }
+            opened5++;
+            void **vt5 = (void **)*((void ***)pMsg5);
+            PFN_RELEASE rel5 = (PFN_RELEASE)vt5[2];
+            PFN_OPENPROP op5 = (PFN_OPENPROP)vt5[7];
+            if ((uintptr_t)rel5 < (uintptr_t)hl5 + lo5 || (uintptr_t)rel5 > (uintptr_t)hl5 + hi5
+                || (uintptr_t)op5 < (uintptr_t)hl5 + lo5 || (uintptr_t)op5 > (uintptr_t)hl5 + hi5) {
+                bad5++;
+                printf("BAD5 %s rel=0x%llX op=0x%llX\n", fd.cFileName,
+                       (unsigned long long)((uintptr_t)rel5 - (uintptr_t)hl5),
+                       (unsigned long long)((uintptr_t)op5 - (uintptr_t)hl5)); fflush(stdout);
+                pStg5->Release(); continue;
+            }
+            IUnknown *pUnk = nullptr;
+            HRESULT opr = op5(pMsg5, 0x10090102u, &__uuidof(IStream), 0, 11, (void **)&pUnk);
+            IStream *pRaw = nullptr;
+            if (SUCCEEDED(opr) && pUnk) { pRaw = (IStream *)pUnk; props++; }
+            IStream *pWrap = nullptr;
+            ULONG wfl5 = (argc > 2) ? (ULONG)strtoul(argv[2], nullptr, 16) : 4u;
+            HRESULT wrh = pRaw ? g_pWrap(pRaw, wfl5, &pWrap) : (HRESULT)0xE0000001;
+            unsigned long hadRaw = pRaw ? 1u : 0u, hadWrap = 0;
+            if (pRaw && SUCCEEDED(wrh) && pWrap) { wraps++; hadWrap = 1; }
+            ULARGE_INTEGER tot5 = {};
+            if (pWrap) {
+                ULONG got5 = 0;
+                do { got5 = 0; pWrap->Read(rb, 1u << 16, &got5); tot5.QuadPart += got5; } while (got5);
+            }
+            int upd5 = -1;
+            HRESULT hs5 = pSync5(pMsg5, 2, &upd5);
+            if (SUCCEEDED(hs5)) syncs++;
+            if (pWrap) {  // stale reference used AFTER the rewrite
+                LARGE_INTEGER z = {};
+                pWrap->Seek(z, STREAM_SEEK_SET, nullptr);
+                ULONG got5 = 0; rfs++;
+                pWrap->Read(rb, 1u << 16, &got5);
+                tot5.QuadPart += got5;
+            }
+            if (pRaw) { ULONG got5 = 0; rfs++; pRaw->Read(rb, 1u << 16, &got5); }
+            printf("STEP %lu before stale raw read pRaw=%p\n", cnt, (void *)pRaw); fflush(stdout);
+            if (pWrap) SafeRelease(pWrap, "wrap", cnt);
+            if (pRaw) SafeRelease(pRaw, "raw", cnt);
+            pRaw = nullptr; pWrap = nullptr;
+            IUnknown *pUnk2 = nullptr;
+            if (SUCCEEDED(op5(pMsg5, 0x10090102u, &__uuidof(IStream), 0, 11, (void **)&pUnk2))
+                && pUnk2) {
+                IStream *pRaw2 = (IStream *)pUnk2; IStream *pWrap2 = nullptr;
+                if (SUCCEEDED(g_pWrap(pRaw2, wfl5, &pWrap2)) && pWrap2) {
+                    ULONG got5 = 0; pWrap2->Read(rb, 1u << 16, &got5);
+                    SafeRelease(pWrap2, "wrap2", cnt);
+                }
+                SafeRelease(pRaw2, "raw2", cnt);
+            }
+            hs5 = pSync5(pMsg5, 2, &upd5);
+            printf("RAF %lu %s raw=%u wrap=%u opr=%08x wrh=%08x sync=%08x bytes=%lu\n", cnt, fd.cFileName,
+                   hadRaw, hadWrap, (unsigned)opr, (unsigned)wrh, (unsigned)hs5,
+                   (unsigned long)tot5.QuadPart); fflush(stdout);
+            printf("STEP %lu before msg Release\n", cnt); fflush(stdout);
+            rel5(pMsg5);
+            printf("STEP %lu before stg Release\n", cnt); fflush(stdout);
+            pStg5->Release();
+            printf("STEP %lu carrier done\n", cnt); fflush(stdout);
+        } while (FindNextFileA(hF, &fd));
+        FindClose(hF);
+        printf("RAFEND carriers=%lu opened=%lu props=%lu wraps=%lu syncs=%lu stale_reads=%lu bad=%lu badrel=%lu\n",
+               cnt, opened5, props, wraps, syncs, rfs, bad5, g_badrel); fflush(stdout);
+        return 0;
+    }
     size_t cb = 0; BYTE *buf = nullptr;
     if (strcmp(argv[1], "-") != 0) {
         buf = LoadBlob(argv[1], &cb);
@@ -479,6 +692,190 @@ int main(int argc, char **argv)
         }
         printf("ADDRCASES n=%lu ok=%lu err=%lu faults=%lu\nEND addr\n", n, okc, errc, g_faults);
         fflush(stdout);
+        return 0;
+    }
+    if (mode == 11 || mode == 12) {
+        // TNEF (winmail.dat) sweep, all records inside ONE process: OpenTnefStreamEx ->
+        // HrGetOpenTnefStream -> drain the body stream -> release. Cross-record heap reuse plus
+        // per-record attribution.
+        g_soft = 1;
+        HMODULE hl6 = GetModuleHandleA("OLMAPI32.dll");
+        PFN_OPEN_TNEF pOpen6 = (PFN_OPEN_TNEF)GetProcAddress(hl6, "OpenTnefStreamEx");
+        PFN_GET_TNEF_STM pGet6 = (PFN_GET_TNEF_STM)GetProcAddress(hl6, "HrGetOpenTnefStream");
+        printf("tnef open=%p get=%p\n", (void *)pOpen6, (void *)pGet6); fflush(stdout);
+        if (!pOpen6) { printf("NOTNEFEXPORT\n"); return 7; }
+        size_t fsz6 = 0; BYTE *fb6 = LoadBlob(argv[1], &fsz6);
+        if (!fb6) { printf("NOINPUT\n"); return 11; }
+        // OpenTnefStreamEx(TNEF_DECODE) writes into a target message; without one every record
+        // returns 0x80070057. Reuse ONE message across the whole corpus so the property arrays are
+        // also exercised across many successive decodes.
+        void *pMsgT = nullptr; IStorage *pStgT = nullptr; IMalloc *pMlT = nullptr;
+        void *pSessT = nullptr;
+        const char *bm = getenv("CRTF_BASEMSG");
+        PFN_OPENMSGSESS pS6 = (PFN_OPENMSGSESS)GetProcAddress(hl6, "OpenIMsgSession");
+        PFN_OPENMSGONI pO6 = (PFN_OPENMSGONI)GetProcAddress(hl6, "OpenIMsgOnIStg");
+        PFN_ALLOCBUF pA6 = (PFN_ALLOCBUF)GetProcAddress(hl6, "MAPIAllocateBuffer");
+        PFN_ALLOCMORE pAM6 = (PFN_ALLOCMORE)GetProcAddress(hl6, "MAPIAllocateMore");
+        PFN_FREEBUF pFB6 = (PFN_FREEBUF)GetProcAddress(hl6, "MAPIFreeBuffer");
+        if (bm && pS6 && pO6) {
+            CoGetMalloc(MEMCTX_TASK, (IMalloc **)&pMlT);
+            WCHAR wb[1100]; MultiByteToWideChar(CP_ACP, 0, bm, -1, wb, 1090);
+            HRESULT hb = StgOpenStorageEx(wb, STGM_READWRITE | STGM_SHARE_EXCLUSIVE, STGFMT_STORAGE,
+                                          0, nullptr, nullptr, __uuidof(IStorage), (void **)&pStgT);
+            pS6((void *)pMlT, 0, &pSessT);
+            HRESULT hg = pO6(pSessT, (void *)pA6, (void *)pAM6, (void *)pFB6, pMlT, nullptr,
+                             pStgT, nullptr, 0, 0, &pMsgT);
+            printf("TBASEMSG stg=%08x sess=%p msg_hr=%08x msg=%p\n", (unsigned)hb, pSessT,
+                   (unsigned)hg, pMsgT); fflush(stdout);
+        } else printf("TBASEMSG none (set CRTF_BASEMSG)\n");
+        size_t off6 = 0; unsigned long n6 = 0, ok6 = 0, err6 = 0, got6 = 0, drains = 0;
+        unsigned long nmax6 = getenv("CRTF_NMAX") ? strtoul(getenv("CRTF_NMAX"), nullptr, 10) : 200000;
+        char *rec6 = (char *)malloc(64u << 20);
+        ULONG fl6 = (argc > 2) ? (ULONG)strtoul(argv[2], nullptr, 16) : 0u;
+        while (off6 + 1 < fsz6 && n6 < nmax6) {
+            size_t e6 = off6; while (e6 < fsz6 && fb6[e6] != '\n') e6++;
+            if (e6 >= fsz6) break;
+            long want6 = strtol((char *)fb6 + off6, nullptr, 10);
+            size_t body6 = e6 + 1;
+            if (want6 < 0 || body6 + (size_t)want6 > fsz6) break;
+            if ((size_t)want6 > (64u << 20)) break;
+            memcpy(rec6, (char *)fb6 + body6, want6);
+            off6 = body6 + want6;
+            if (off6 < fsz6 && fb6[off6] == '\n') off6++;
+            IStream *ps = nullptr;
+            if (FAILED(CreateStreamOnHGlobal(nullptr, TRUE, &ps)) || !ps) { n6++; continue; }
+            ULONG put6 = 0;
+            ps->Write((void *)rec6, (ULONG)want6, &put6);
+            LARGE_INTEGER z6; z6.QuadPart = 0; ps->Seek(z6, STREAM_SEEK_SET, nullptr);
+            void *hT = nullptr;
+            // 8-arg shape (mapitnef.cxx as used by the 2026-09-03 harness): (null, stream, name,
+            // flags=0 == TNEF_DECODE here, message, key, addressBook=nullptr, &handle)
+            HRESULT h6 = ((PFN_OPEN_TNEF8)pOpen6)(nullptr, ps, (char *)"winmail.dat", fl6,
+                                                  pMsgT, 0x1234, nullptr, &hT);
+            if (SUCCEEDED(h6) && hT) { ok6++; } else { err6++; }
+            if (SUCCEEDED(h6) && hT && pGet6) {
+                IStream *pb = nullptr;
+                HRESULT h7 = pGet6(hT, &pb);
+                if (SUCCEEDED(h7) && pb) {
+                    got6++;
+                    BYTE *db = (BYTE *)malloc(1u << 16); ULONG gg = 0, k = 0;
+                    while (k < 8000 && SUCCEEDED(pb->Read(db, 1u << 16, &gg)) && gg) { drains++; k++; }
+                    free(db);
+                    ((PFN_RELEASE)*(void **)*((void ***)pb))(pb);
+                }
+            }
+            static int dumped = 0;
+            if (mode == 12 && !dumped) {
+                dumped = 1;
+                const char *cands[] = { "TNEFExtractProps", "TNEFFinish", "TNEFAddProps", "TNEFSetProps",
+                    "TNEFOpenTaggedBody", "TNEFClose", "TNEFInit", "TNEFInitMapi", "TNEFOutTnefStream",
+                    "TNEFOpenStream", "TNEFAbort", "TNEFCommit", "TNEFDecodeBuffer", "TNEFGetNextAttr",
+                    "TNEFMapHandle", "HrTNEFExtractProps", "TNEFSetFT", "TNEFGetLastError" };
+                printf("TNEXPORTS:");
+                for (int q = 0; q < 18; q++) {
+                    void *v = GetProcAddress(g_hOlm, cands[q]);
+                    printf(" %s=%s", cands[q], v ? "yes" : "no");
+                }
+                printf("\n"); fflush(stdout);
+            }
+            unsigned long ex4 = 0, fi5 = 0, bod = 0;
+            if (mode == 12 && SUCCEEDED(h6) && hT) {
+                // hT -> obj, whose vtable is ImplOpenTnefStream (the factory). The ITnef interface
+                // comes from QueryInterface on it; IID read out of the module's own data (IID_ITNEF).
+                static const GUID iidTnef = { 0x00020319, 0x0000, 0x0000,
+                    { 0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46 } };
+                void *facT = *(void **)hT;
+                void *objT = nullptr;
+                if (facT) {
+                    PFN_QI pQiT = (PFN_QI) * (void **)*((void ***)facT);
+                    ULONG loQ = 0, hiQ = 0;
+                    IMAGE_DOS_HEADER *dq = (IMAGE_DOS_HEADER *)g_hOlm;
+                    IMAGE_NT_HEADERS *nq = (IMAGE_NT_HEADERS *)((BYTE *)g_hOlm + dq->e_lfanew);
+                    loQ = nq->OptionalHeader.BaseOfCode; hiQ = loQ + nq->OptionalHeader.SizeOfCode;
+                    if ((uintptr_t)pQiT >= (uintptr_t)g_hOlm + loQ && (uintptr_t)pQiT <= (uintptr_t)g_hOlm + hiQ)
+                        pQiT(facT, &iidTnef, &objT);
+                }
+                if (!objT && facT) {
+                    // MAPI multi-interface objects keep the secondary interface pointer in an early
+                    // field; accept a candidate only if its whole slot table lands inside .text.
+                    ULONG loS = 0, hiS = 0;
+                    IMAGE_DOS_HEADER *ds = (IMAGE_DOS_HEADER *)g_hOlm;
+                    IMAGE_NT_HEADERS *ns = (IMAGE_NT_HEADERS *)((BYTE *)g_hOlm + ds->e_lfanew);
+                    loS = ns->OptionalHeader.BaseOfCode; hiS = loS + ns->OptionalHeader.SizeOfCode;
+                    for (int fld = 1; fld <= 6 && !objT; fld++) {
+                        void *cand = *(void **)((char *)facT + 8 * fld);
+                        if (!cand) continue;
+                        void **cvt = (void **)*(uintptr_t *)cand;
+                        int all = 1;
+                        for (int q = 0; q < 10; q++) {
+                            uintptr_t f = (uintptr_t)cvt[q];
+                            if (f < (uintptr_t)g_hOlm + loS || f > (uintptr_t)g_hOlm + hiS) { all = 0; break; }
+                        }
+                        if (all) { objT = cand; printf("TPROBE field=%d vt_rva=0x%llX\n", fld,
+                                    (unsigned long long)((uintptr_t)cvt - (uintptr_t)g_hOlm)); fflush(stdout); }
+                    }
+                }
+                void **vtT = objT ? (void **)*((void ***)objT) : nullptr;
+                ULONG lo6 = 0, hi6 = 0;
+                IMAGE_DOS_HEADER *d6 = (IMAGE_DOS_HEADER *)g_hOlm;
+                IMAGE_NT_HEADERS *n6h = (IMAGE_NT_HEADERS *)((BYTE *)g_hOlm + d6->e_lfanew);
+                lo6 = n6h->OptionalHeader.BaseOfCode; hi6 = lo6 + n6h->OptionalHeader.SizeOfCode;
+                uintptr_t vtR = (uintptr_t)vtT - (uintptr_t)g_hOlm;
+                int good = vtT && vtR < 0x900000;
+                PFN_TNEF_CALL pEx = good ? (PFN_TNEF_CALL)vtT[4] : nullptr;
+                PFN_TNEF_CALL pFin = good ? (PFN_TNEF_CALL)vtT[5] : nullptr;
+                PFN_OPEN_TAGGED_BODY pBody = good ? (PFN_OPEN_TAGGED_BODY)vtT[6] : nullptr;
+                PFN_RELEASE pRelT = good ? (PFN_RELEASE)vtT[2] : nullptr;
+                int inText = pEx && pFin && pRelT
+                    && (uintptr_t)pEx >= (uintptr_t)g_hOlm + lo6 && (uintptr_t)pEx <= (uintptr_t)g_hOlm + hi6
+                    && (uintptr_t)pFin >= (uintptr_t)g_hOlm + lo6 && (uintptr_t)pFin <= (uintptr_t)g_hOlm + hi6
+                    && (uintptr_t)pRelT >= (uintptr_t)g_hOlm + lo6 && (uintptr_t)pRelT <= (uintptr_t)g_hOlm + hi6;
+                printf("TVIEW %lu fac=%p obj=%p vt_rva=0x%llX ex=0x%llX fin=0x%llX body=0x%llX rel=0x%llX ok=%d\n",
+                       n6, facT, objT, (unsigned long long)vtR,
+                       pEx ? (unsigned long long)((uintptr_t)pEx - (uintptr_t)g_hOlm) : 0ull,
+                       pFin ? (unsigned long long)((uintptr_t)pFin - (uintptr_t)g_hOlm) : 0ull,
+                       pBody ? (unsigned long long)((uintptr_t)pBody - (uintptr_t)g_hOlm) : 0ull,
+                       pRelT ? (unsigned long long)((uintptr_t)pRelT - (uintptr_t)g_hOlm) : 0ull, inText);
+                fflush(stdout);
+                if (inText) {
+                    void *prob = nullptr;
+                    HRESULT he = pEx(objT, 0, nullptr, &prob);
+                    ex4++;
+                    void *prob2 = nullptr;
+                    HRESULT hf = pFin(objT, 0, nullptr, &prob2);
+                    fi5++;
+                    IStream *pB = nullptr;
+                    ULONG kk = 0;
+                    HRESULT hb = pBody ? pBody(objT, pMsgT, 0, &pB) : (HRESULT)0xE0000002;
+                    if (SUCCEEDED(hb) && pB) {
+                        bod++;
+                        BYTE *dbb = (BYTE *)malloc(1u << 16); ULONG gg = 0;
+                        while (kk < 4000 && SUCCEEDED(pB->Read(dbb, 1u << 16, &gg)) && gg) kk++;
+                        kk *= (1u << 16);
+                        free(dbb);
+                        PFN_RELEASE pRelB = (PFN_RELEASE) * (void **)*((void ***)pB);
+                        if ((uintptr_t)pRelB >= (uintptr_t)g_hOlm + lo6 && (uintptr_t)pRelB <= (uintptr_t)g_hOlm + hi6)
+                            pRelB(pB);
+                    }
+                    printf("TREC %lu len=%ld open=%08x extract=%08x finish=%08x body=%08x read=%lu vt=0x%llX\n",
+                           n6, want6, (unsigned)h6, (unsigned)he, (unsigned)hf, (unsigned)hb, kk,
+                           (unsigned long long)vtR); fflush(stdout);
+                    pRelT(objT);
+                } else {
+                    printf("TNEFVTBL_BAD %lu vt=%p ex=%p fin=%p rel=%p\n", n6, (void *)vtT,
+                           (void *)pEx, (void *)pFin, (void *)pRelT); fflush(stdout);
+                }
+            }
+            if ((n6 % 50) == 0) printf("TPROG %lu ok=%lu err=%lu got=%lu ex=%lu fin=%lu faults=%lu\n",
+                                       n6, ok6, err6, got6, ex4, fi5, g_faults);
+            if (!(mode == 12 && SUCCEEDED(h6) && hT)) {
+                printf("TREC %lu len=%ld open=%08x\n", n6, want6, (unsigned)h6); fflush(stdout);
+            }
+            ps->Release();
+            n6++;
+        }
+        printf("TNEFCASES n=%lu ok=%lu err=%lu gotstream=%lu drains=%lu faults=%lu\n",
+               n6, ok6, err6, got6, drains, g_faults); fflush(stdout);
         return 0;
     }
     if (mode == 30) {
