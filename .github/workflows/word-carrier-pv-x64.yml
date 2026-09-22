@@ -1,0 +1,146 @@
+name: word-carrier-pv-x64
+# Which Word carriers enter Protected View when opened by double-click (ShellExecute) with
+# Mark-of-the-Web already present. This decides, per carrier, whether a document-open finding can be
+# demonstrated with zero clicks at all: a carrier that has to be brought out of Protected View with
+# "Enable Editing" cannot be used as trigger evidence.
+# The 2026-09-19 attempt (findings/MSRC/M365-Insider/rtf-pv-carrier-20260919/rtf_motw_open.png) never
+# reached Word: the screenshot shows ERROR_BAD_EXE_FORMAT (0x800700C1) from a .NET dialog, so no
+# reading exists for .rtf. This wave runs on a clean x64 install and carries a positive control:
+# .docx with MOTW must come back pv=1, otherwise the method is blind and the job aborts.
+'on':
+  workflow_dispatch:
+    inputs:
+      dummy:
+        description: 'unused'
+        required: false
+        default: ''
+jobs:
+  t:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Download ODT
+      shell: pwsh
+      run: |
+        $urls = @()
+        for ($t = 0; $t -lt 4 -and $urls.Count -eq 0; $t++) {
+          try {
+            $page = (Invoke-WebRequest -Uri "https://www.microsoft.com/en-us/download/details.aspx?id=49117" -UseBasicParsing -TimeoutSec 90).Content
+            foreach ($m in [regex]::Matches($page, 'https://download[.]microsoft[.]com/download/[^ <>"]+officedeploymenttool[^ <>"]+[.]exe')) { $urls += $m.Value }
+          } catch { "fetch attempt $t failed: $($_.Exception.Message)" }
+          if ($urls.Count -eq 0) { Start-Sleep -Seconds (5 * ($t + 1)) }
+        }
+        if ($urls.Count -eq 0) { throw "odt link not found after retries" }
+        $got = $false
+        foreach ($u in $urls) {
+          for ($t = 0; $t -lt 3 -and -not $got; $t++) {
+            try { Invoke-WebRequest -Uri $u -OutFile odt.exe -UseBasicParsing -TimeoutSec 300; if ((Get-Item odt.exe).Length -gt 1MB) { $got = $true } }
+            catch { "dl attempt $t failed: $($_.Exception.Message)"; Start-Sleep -Seconds (5 * ($t + 1)) }
+          }
+          if ($got) { break }
+        }
+        if (-not $got) { throw "odt.exe download failed" }
+        Remove-Item odtx -Recurse -Force -EA SilentlyContinue
+        $x = $false
+        for ($t = 0; $t -lt 3 -and -not $x; $t++) {
+          Start-Process -Wait -FilePath .\odt.exe -ArgumentList "/extract:`"$PWD\odtx`" /quiet"
+          $x = Test-Path odtx\setup.exe
+          if (-not $x) { "extract attempt $t produced no setup.exe"; Start-Sleep -Seconds (5 * ($t + 1)); Remove-Item odtx -Recurse -Force -EA SilentlyContinue }
+        }
+        if (-not $x) { throw "odt extract failed" }
+        "odt_ready"
+
+    - name: Install Current x64 (Word kept, rest excluded)
+      shell: pwsh
+      run: |
+        $xml = '<Configuration><Add OfficeClientEdition="64" Channel="Current"><Product ID="O365ProPlusRetail"><Language ID="en-us" /><ExcludeApp ID="Excel" /><ExcludeApp ID="PowerPoint" /><ExcludeApp ID="OneDrive" /><ExcludeApp ID="OneNote" /><ExcludeApp ID="Lync" /><ExcludeApp ID="Access" /><ExcludeApp ID="Groove" /><ExcludeApp ID="Publisher" /><ExcludeApp ID="Teams" /><ExcludeApp ID="Bing" /><ExcludeApp ID="Outlook" /></Product></Add><Display Level="None" AcceptEULA="TRUE" /><Updates Enabled="FALSE" /></Configuration>'
+        Set-Content -Path cfg.xml -Value $xml
+        Start-Process -Wait -FilePath .\odtx\setup.exe -ArgumentList "/configure","cfg.xml"
+        $w = Get-Item "C:\Program Files\Microsoft Office\root\Office16\WINWORD.EXE" -ErrorAction SilentlyContinue
+        if (-not $w) { throw "word install failed" }
+        "winword v=$($w.VersionInfo.FileVersion)" | Tee-Object ver.txt
+
+    - name: Carrier x Protected View matrix, ShellExecute open with MOTW present
+      shell: pwsh
+      run: |
+        New-Item -ItemType Directory -Force -Path pv, out | Out-Null
+        Add-Type -AssemblyName System.Windows.Forms,System.Drawing
+        $rtf = @'
+        {\rtf1\ansi\ansicpg1252\deff0\nouicompat\deflang1033{\fonttbl{\f0\fnil\fcharset0 Calibri;}}
+        \viewkind4\uc1 PVPROBE_RTF_MARKER_A7Q \par this document carries a unique marker\par }
+        '@
+        Set-Content -Path pv\probe.rtf  -Value $rtf -Encoding ASCII
+        # build the other carriers with Word itself so they are genuine files, then re-mark them
+        $w = New-Object -ComObject Word.Application
+        $w.Visible = $false
+        try { $w.DisplayAlerts = 0 } catch { }
+        $d = $w.Documents.Add()
+        $d.Content.Text = "PVPROBE_DOCX_MARKER_B8R unique marker line"
+        $d.SaveAs2("$PWD\pv\probe.docx", 12)
+        $d.SaveAs2("$PWD\pv\probe.doc",  0)
+        $d.SaveAs2("$PWD\pv\probe.htm",  9)
+        $d.SaveAs2("$PWD\pv\probe.rtf2", 6)
+        $d.Close(0)
+        $w.Quit()
+        [Runtime.InteropServices.Marshal]::ReleaseComObject($w) | Out-Null
+        Copy-Item pv\probe.rtf2 pv\probe_w2rtf.rtf -Force
+        # Word 2003 XML and XML-data are separate carriers; write one by hand
+        Set-Content -Path pv\probe.xml -Value '<?xml version="1.0"?><Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet"><Worksheet ss:Name="S1" xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet"><Table><Row><Cell><Data ss:Type="String">PVPROBE_XML_MARKER_C9T</Data></Cell></Row></Table></Worksheet></Workbook>' -Encoding UTF8
+        Get-Process WINWORD -ErrorAction SilentlyContinue | Where-Object { $_.StartTime -gt (Get-Date).AddMinutes(-5) } | Stop-Process -Force -EA SilentlyContinue
+        Start-Sleep -Seconds 2
+        $rows = @()
+        foreach ($f in (Get-ChildItem pv -File | Sort-Object Name)) {
+          Set-Content -Path $f.FullName -Stream Zone.Identifier -Value "[ZoneTransfer]`r`nZoneId=3" -Encoding ASCII
+          $st = (Get-Item $f.FullName -Stream * | Select-Object -ExpandProperty Stream) -join ','
+          $z  = (Get-Content $f.FullName -Stream Zone.Identifier -Raw) -replace '\r|\n','/'
+          $before = @(Get-Process WINWORD -EA SilentlyContinue).Count
+          Invoke-Item $f.FullName
+          $pv = -1; $docs = -1; $title = '-'; $newproc = -1
+          $dl = (Get-Date).AddSeconds(45)
+          while ((Get-Date) -lt $dl) {
+            Start-Sleep -Milliseconds 900
+            $ps = @(Get-Process WINWORD -EA SilentlyContinue)
+            $newproc = $ps.Count - $before
+            try {
+              $wa = [Runtime.InteropServices.Marshal]::GetActiveObject("Word.Application")
+              $pv = $wa.ProtectedViewWindows.Count
+              $docs = $wa.Documents.Count
+              if ($pv -gt 0) { $title = [string]$wa.ProtectedViewWindows.Item(1).DocumentName }
+              elseif ($docs -gt 0) { $title = [string]$wa.Documents.Item($docs).Name }
+              if ($pv -gt 0 -or $docs -gt 0) { break }
+            } catch { }
+          }
+          Start-Sleep -Seconds 3
+          $bmp = New-Object System.Drawing.Bitmap 1600,900
+          $g = [System.Drawing.Graphics]::FromImage($bmp)
+          $g.CopyFromScreen(0,0,0,0,$bmp.Size)
+          $shot = "out\shot_$($f.Name -replace '[^A-Za-z0-9]','_').png"
+          $bmp.Save($shot)
+          $g.Dispose(); $bmp.Dispose()
+          $rows += ("EXT={0} size={1} streams=[{2}] zone=[{3}] newword={4} pv={5} docs={6} name={7} shot={8}" -f `
+                    $f.Extension, $f.Length, $st, $z, $newproc, $pv, $docs, $title, (Split-Path $shot -Leaf))
+          # close whatever Word has open so the next case starts clean
+          try {
+            $wa = [Runtime.InteropServices.Marshal]::GetActiveObject("Word.Application")
+            for ($z2 = 0; $z2 -lt 6 -and $wa.ProtectedViewWindows.Count -gt 0; $z2++) { $wa.ProtectedViewWindows.Item(1).Close() }
+            for ($z3 = 0; $z3 -lt 6 -and $wa.Documents.Count -gt 0; $z3++) { $wa.Documents.Item(1).Close(0) }
+          } catch { }
+          Start-Sleep -Seconds 2
+        }
+        $rows | Tee-Object out\pv_matrix.txt
+        # close and leave only the processes this job started
+        Get-Process WINWORD -EA SilentlyContinue | Stop-Process -Force -EA SilentlyContinue
+        $m = Get-Content out\pv_matrix.txt -Raw
+        if ($m -notmatch 'EXT=\.docx .* pv=1 ') { throw "POSITIVE CONTROL FAILED: .docx with MOTW did not report pv=1 - the method cannot read Protected View and every other row is unusable" }
+        "control_ok"
+
+    - name: Upload readings
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: word-carrier-pv-x64
+        path: |
+          out
+          ver.txt
