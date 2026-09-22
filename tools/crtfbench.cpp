@@ -522,14 +522,12 @@ int main(int argc, char **argv)
         return 0;
     }
     if (mode == 42) {
-        // OUTLMIME's Ess*EncodeEx / Ess*DecodeEx pair, driven as a self-seeded round trip.
-        // The encoders accept a caller-built flat struct, so every count and length inside it is
-        // chosen here, and the DER they emit is template-valid by construction -- that is what
-        // makes the decoders reachable at all. Both directions follow a query-then-fill
-        // convention: call once with a NULL destination to learn the size the API promises, then
-        // again with a block of exactly that size (plus small deltas). A 0xCC sentinel is
-        // re-scanned after the fill, so any byte that changed past the promised size is a write
-        // beyond what the callee said it would perform, independent of page guards.
+        // OUTLMIME's seven Ess*DecodeEx entry points driven from a DER corpus.
+        // Each export follows the query-then-fill convention, so every record is offered twice:
+        // once with a NULL destination to learn the size the callee itself promises, then once
+        // with a block of exactly that size (plus small deltas), pre-filled with a 0xCC sentinel.
+        // Anything that changes at or past the promised size is a write beyond the callee's own
+        // declaration, which is a stricter reading than the page guard the armed heap also gives.
         g_soft = 1;
         HMODULE hm2 = LoadLibraryExA("OUTLMIME.dll", nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
         if (!hm2)
@@ -537,150 +535,78 @@ int main(int argc, char **argv)
                                  nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
         printf("OUTLMIME=%p\n", (void *)hm2); fflush(stdout);
         if (!hm2) { printf("NOMOD\n"); return 12; }
-        typedef int (STDAPICALLTYPE *PFN_E2)(unsigned long, unsigned long, void *, unsigned long,
-                                             void *, void **, unsigned long *);
-        // the decode exports carry one more argument than the encode ones: the flattener
-        // callback position that the encoders do not have
-        typedef int (STDAPICALLTYPE *PFN_D2)(unsigned long, unsigned long, void *, unsigned long,
-                                             unsigned long, void *, void **, unsigned long *);
         static const char *kinds[] = { "EssContentHint", "EssReceiptRequest", "EssReceipt",
                                        "EssMLHistory", "EssSecurityLabel", "EssKeyExchPreference",
                                        "EssSignCertificate" };
-        static const unsigned long eflags[] = { 0ul, 1ul, 0x80ul, 0x1000ul, 0x8000ul, 0x10000ul, 0x20000ul };
-        static const int narc[] = { 1, 2, 5, 15, 16, 17, 18, 24, 40 };
-        static const int ncat[] = { 0, 1, 3, 16, 17, 64 };
-        static char  s_oid[8192];
-        static WCHAR s_wide[512];
-        static BYTE  s_blob[8192];
-        struct CAT { WCHAR *psz; unsigned long cb; BYTE *pb; };
-        static CAT s_cat[512];
-        unsigned long cases = 0, encok = 0, decok = 0, pastE = 0, pastD = 0, fE = 0, fD = 0, maxpast = 0;
-        for (unsigned ki = 0; ki < sizeof(kinds) / sizeof(kinds[0]); ki++) {
+        const int NK = (int)(sizeof(kinds) / sizeof(kinds[0]));
+        PFN_DASEX pDec[8];
+        for (int k = 0; k < NK; k++) {
             char nm[80];
-            PFN_E2 pEnc = nullptr;
-            PFN_D2 pDec = nullptr;
-            _snprintf(nm, sizeof(nm) - 1, "%sEncodeEx", kinds[ki]);
-            pEnc = (PFN_E2)GetProcAddress(hm2, nm);
-            _snprintf(nm, sizeof(nm) - 1, "%sDecodeEx", kinds[ki]);
-            pDec = (PFN_D2)GetProcAddress(hm2, nm);
-            printf("KIND %u %s enc=%p dec=%p\n", ki, kinds[ki], (void *)pEnc, (void *)pDec); fflush(stdout);
-            if (!pEnc || !pDec) continue;
-            for (int ni = 0; ni < (int)(sizeof(narc) / sizeof(narc[0])); ni++) {
-                for (int ci = 0; ci < (int)(sizeof(ncat) / sizeof(ncat[0])); ci++) {
-                    int na = narc[ni], nc = ncat[ci];
-                    if (na * (64 + 4) > (int)sizeof(s_oid) - 8) continue;
-                    size_t ol = 0;
-                    // arcs widen on purpose: 10 decimal digits each, so the flattened text is
-                    // several times longer than the DER form of the same OID
-                    for (int a = 0; a < na; a++) {
-                        int aw = _snprintf(s_oid + ol, sizeof(s_oid) - ol - 1, "%s%u",
-                                           a ? "." : "", (unsigned)(1000000000u + 7919u * a + ki));
-                        if (aw < 0 || (unsigned)aw >= sizeof(s_oid) - ol - 1) break;
-                        ol += (unsigned)aw;
+            _snprintf(nm, sizeof(nm) - 1, "%sDecodeEx", kinds[k]);
+            pDec[k] = (PFN_DASEX)GetProcAddress(hm2, nm);
+            printf("KIND %d %s dec=%p\n", k, kinds[k], (void *)pDec[k]);
+        }
+        fflush(stdout);
+        size_t fsz = 0; BYTE *fb = LoadBlob(argv[1], &fsz);
+        if (!fb) { printf("NOINPUT\n"); return 11; }
+        unsigned long recs = 0, entered = 0, fills = 0, pastn = 0, faults = 0;
+        unsigned long percnt[8] = { 0 }, perenter[8] = { 0 }, perfault[8] = { 0 }, perpast[8] = { 0 };
+        unsigned long maxpast = 0;
+        static const unsigned long dl[3] = { 0, 1, 64 };
+        size_t off = 0;
+        unsigned long nmax = getenv("CRTF_NMAX") ? strtoul(getenv("CRTF_NMAX"), nullptr, 10) : 200000;
+        while (off + 1 < fsz && recs < nmax) {
+            size_t e1 = off; while (e1 < fsz && fb[e1] != '\n') e1++;
+            if (e1 >= fsz) break;
+            long want = strtol((char *)fb + off, nullptr, 10);
+            size_t body = e1 + 1;
+            if (want <= 0 || body + (size_t)want > fsz) break;
+            off = body + want;
+            if (off < fsz && fb[off] == '\n') off++;
+            recs++;
+            for (int k = 0; k < NK; k++) {
+                if (!pDec[k]) continue;
+                unsigned long need = 0;
+                int q = 0;
+                __try {
+                    q = pDec(k, 0, fb + body, (ULONG)want, 0, nullptr, nullptr, &need);
+                } __except (EXCEPTION_EXECUTE_HANDLER) {
+                    printf("FAULTQ r=%lu k=%d len=%ld code=%08x\n", recs, k, want,
+                           (unsigned)GetExceptionCode()); fflush(stdout);
+                    faults++; perfault[k]++; continue;
+                }
+                if (!q || !need || need > (64u << 20)) continue;
+                entered++; perenter[k]++;
+                for (int di = 0; di < 3; di++) {
+                    unsigned long cap = need + dl[di];
+                    unsigned char *o = (unsigned char *)malloc(cap + 512);
+                    if (!o) continue;
+                    memset(o, 0xCC, cap + 512);
+                    unsigned long cb = cap;
+                    int r = 0;
+                    __try {
+                        r = pDec(k, 0, fb + body, (ULONG)want, 0, nullptr, o, &cb);
+                    } __except (EXCEPTION_EXECUTE_HANDLER) {
+                        printf("FAULTR r=%lu k=%d len=%ld need=%lu d=%lu code=%08x\n", recs, k, want,
+                               need, dl[di], (unsigned)GetExceptionCode()); fflush(stdout);
+                        faults++; perfault[k]++; free(o); continue;
                     }
-                    for (int w = 0; w < 200; w++) s_wide[w] = (WCHAR)(L'A' + (w % 26));
-                    s_wide[200] = 0;
-                    memset(s_blob, 0x5A, sizeof(s_blob));
-                    for (int c = 0; c < nc && c < 512; c++) {
-                        s_cat[c].psz = s_wide; s_cat[c].cb = 64; s_cat[c].pb = s_blob + (c & 8) * 64;
-                    }
-                    for (unsigned fi = 0; fi < (unsigned)(sizeof(eflags) / sizeof(eflags[0])); fi++) {
-                        for (int proto = 0; proto < 3; proto++) {
-                            static unsigned long long stq[64];   // 8-byte aligned struct image
-                            unsigned char *st = (unsigned char *)stq;
-                            memset(st, 0, 512);
-                            *(void **)(st + 0) = s_oid;                       // classification OID
-                            *(unsigned long *)(st + 8) = (proto == 1) ? 0ul : 1ul;
-                            *(unsigned short *)(st + 12) = (unsigned short)(nc ? nc : 1);
-                            *(void **)(st + 16) = s_wide;                       // label display text
-                            *(void **)(st + 24) = (nc && proto) ? (void *)s_cat : nullptr;
-                            *(unsigned long *)(st + 32) = (unsigned long)nc;
-                            *(void **)(st + 40) = s_blob;
-                            *(unsigned long *)(st + 48) = 64;
-                            unsigned long need = 0, cb2 = 0;
-                            void *pv = nullptr;
-                            int r = 0;
-                            cases++;
-                            __try { r = pEnc(0, 0, st, eflags[fi], nullptr, nullptr, &need); }
-                            __except (EXCEPTION_EXECUTE_HANDLER) {
-                                printf("FAULTQ k=%u na=%d nc=%d fl=%lx p=%d r=%u q code=%08x\n",
-                                       ki, na, nc, eflags[fi], proto, 0u, (unsigned)GetExceptionCode());
-                                fflush(stdout); fE++; continue;
-                            }
-                            if (r == 0 || need == 0 || need > (32u << 20)) continue;
-                            static const unsigned long dlE[5] = { 0, 1, 8, 64, 1024 };
-                            for (int ei = 0; ei < 5; ei++) {
-                            unsigned long capE = need + dlE[ei];
-                            unsigned char *d = (unsigned char *)malloc(capE + 512);
-                            if (!d) continue;
-                            memset(d, 0xCC, capE + 512);
-                            int r2 = 0;
-                            cb2 = capE; pv = d;                          // caller-supplied buffer
-                            __try { r2 = pEnc(0, 0, st, eflags[fi], nullptr, &pv, &cb2); }
-                            __except (EXCEPTION_EXECUTE_HANDLER) {
-                                printf("FAULTE k=%u na=%d nc=%d fl=%lx p=%d need=%lu code=%08x\n",
-                                       ki, na, nc, eflags[fi], proto, need, (unsigned)GetExceptionCode());
-                                fflush(stdout); fE++; free(d);
-                                continue;
-                            }
-                            if (r2 == 0) { free(d); continue; }
-                            encok++;
-                            unsigned long epast = 0;
-                            {
-                                unsigned long lim = need + 1024;
-                                for (unsigned long z = need; z < lim; z++) if (d[z] != 0xCC) { epast = lim - z; break; }
-                            }
-                            if (cb2 > 0 && cb2 < (32u << 20)) {
-                                unsigned long nd2 = 0;
-                                int r3 = 0;
-                                __try { r3 = pDec(0, 0, d, cb2, eflags[fi], nullptr, nullptr, &nd2); }
-                                __except (EXCEPTION_EXECUTE_HANDLER) {
-                                    printf("FAULTQD k=%u cb=%lu code=%08x\n", ki, cb2,
-                                           (unsigned)GetExceptionCode()); fflush(stdout); fD++;
-                                }
-                                if (r3 && nd2 && nd2 < (64u << 20)) {
-                                    unsigned long dl[5] = { 0, 1, 8, 64, 1024 };
-                                    for (int di = 0; di < 5; di++) {
-                                        unsigned long cap = nd2 + dl[di];
-                                        unsigned char *o = (unsigned char *)malloc(cap + 512);
-                                        if (!o) continue;
-                                        memset(o, 0xCC, cap + 512);
-                                        unsigned long ob = cap;
-                                        int r4 = 0;
-                                        void *pv2 = (void *)o;
-                                        __try { r4 = pDec(0, 0, d, cb2, eflags[fi], nullptr, &pv2, &ob); }
-                                        __except (EXCEPTION_EXECUTE_HANDLER) {
-                                            printf("FAULTR k=%u na=%d nc=%d fl=%lx p=%d nd=%lu d=%lu code=%08x\n",
-                                                   ki, na, nc, eflags[fi], proto, nd2, dl[di],
-                                                   (unsigned)GetExceptionCode());
-                                            fflush(stdout); fD++;
-                                        }
-                                        if (r4) decok++;
-                                        unsigned long dp = 0;
-                                        for (unsigned long z = nd2; z < cap + 512; z++)
-                                            if (o[z] != 0xCC) { dp = cap + 512 - z; break; }
-                                        if (dp) { pastD++; if (dp > maxpast) maxpast = dp; }
-                                        printf("D k=%u na=%d nc=%d fl=%lx p=%d cbl=%lu need=%lu cap=%lu r=%u ob=%lu past=%lu\n",
-                                               ki, na, nc, eflags[fi], proto, cb2, nd2, cap,
-                                               (unsigned)r4, ob, dp);
-                                        fflush(stdout);
-                                        free(o);
-                                    }
-                                }
-                            }
-                            if (epast) { pastE++; if (epast > maxpast) maxpast = epast; }
-                            printf("E k=%u na=%d nc=%d fl=%lx p=%d ei=%lu r=%u need=%lu cap=%lu cb=%lu past=%lu\n",
-                                   ki, na, nc, eflags[fi], proto, dlE[ei], r2, need, capE, cb2, epast);
-                            fflush(stdout);
-                            free(d);
-                            }
-                        }
-                    }
+                    fills++;
+                    unsigned long past = 0;
+                    for (unsigned long z = need; z < cap + 512; z++)
+                        if (o[z] != 0xCC) { past = cap + 512 - z; break; }
+                    if (past) { pastn++; perpast[k]++; if (past > maxpast) maxpast = past; }
+                    printf("D r=%lu k=%d len=%ld need=%lu d=%lu rc=%d cb=%lu past=%lu\n",
+                           recs, k, want, need, dl[di], r, cb, past); fflush(stdout);
+                    free(o);
                 }
             }
         }
-        printf("ESS42 cases=%lu encok=%lu decok=%lu past_enc=%lu past_dec=%lu fault_enc=%lu fault_dec=%lu maxpast=%lu\n",
-               cases, encok, decok, pastE, pastD, fE, fD, maxpast);
+        for (int k = 0; k < NK; k++)
+            printf("PERKIND %d %s recs=%lu entered=%lu faults=%lu past=%lu\n", k, kinds[k],
+                   percnt[k], perenter[k], perfault[k], perpast[k]);
+        printf("ESS42 recs=%lu entered=%lu fills=%lu past=%lu faults=%lu maxpast=%lu\n",
+               recs, entered, fills, pastn, faults, maxpast);
         fflush(stdout);
         return 0;
     }

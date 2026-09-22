@@ -94,25 +94,35 @@ jobs:
         if ($armed -ne 'ARMED') { throw "instrument blind: aborting" }
         $global:LASTEXITCODE = 0
 
-    - name: Wave - Ess round trip, measured size plus sentinel
+    - name: Build ESS DER corpus
+      shell: pwsh
+      run: |
+        python tools\mk_ess_corpus.py esscorpus
+        $f = Get-Item esscorpus\ess.txt
+        "corpus bytes=$($f.Length)" | Tee-Object -Append ver.txt
+        if ($f.Length -lt 10000) { throw "corpus too small to be usable" }
+
+    - name: Wave - Ess decoders at the size each one promises
       shell: pwsh
       run: |
         $sw = [Diagnostics.Stopwatch]::StartNew()
-        $o = & .\bin\crtfbench42_x64.exe - 0 256 42 300000 2>&1 | Out-String
+        $o = & .\bin\crtfbench42_x64.exe esscorpus\ess.txt 0 256 42 300000 2>&1 | Out-String
         $rc = $LASTEXITCODE -band [int]0xFFFFFFFF
         $sw.Stop()
         $o | Set-Content out\ess42.log
         $global:LASTEXITCODE = 0
-        $sum = (@($o -split "\r?\n" | Where-Object { $_ -match 'ESS42|KIND ' }) -join "`n")
-        $sum | Out-File out\ess42_summary.txt
-        Get-Content out\ess42_summary.txt | Select-Object -First 30
-        "WAVE rc=0x$('{0:X8}' -f $rc) s=$([int]$sw.Elapsed.TotalSeconds) lines=$((@($o -split "\r?\n")).Count) av=$(@($o -split "\r?\n" | Where-Object { $_ -match 'FAULT' }).Count)" | Tee-Object -Append out\head.txt
-        $endLine = (@($o -split "\r?\n" | Where-Object { $_ -match 'ESS42 cases=' }) -join '')
-        if ($endLine -notmatch 'encok=[1-9]') { throw "ZERO-COVERAGE: no encoder accepted a caller struct - nothing was measured" }
-        if ($endLine -notmatch 'decok=[1-9]') { throw "ZERO-COVERAGE: no decoder fill pass returned - the callbacks were never entered" }
-        if ($endLine -notmatch 'fault_enc=0 fault_dec=0') { (@($o -split "\r?\n" | Where-Object { $_ -match 'FAULT' })) | Out-File out\avfull.txt; throw "MEMORY FAULT observed in the Ess round trip - see avfull.txt" }
-        ($o -split "\r?\n" | Where-Object { $_ -match 'past=[1-9]' }) | Out-File out\past.txt
-        if ((Get-Item out\past.txt).Length -gt 3) { throw "WRITE PAST THE CALLEE'S OWN PROMISED SIZE - see past.txt" }
+        (@($o -split "\r?\n" | Where-Object { $_ -match 'ESS42|KIND |PERKIND' }) -join "`n") | Out-File out\ess42_summary.txt
+        Get-Content out\ess42_summary.txt
+        "WAVE rc=0x$('{0:X8}' -f $rc) s=$([int]$sw.Elapsed.TotalSeconds) lines=$((@($o -split "\r?\n")).Count)" | Tee-Object -Append out\head.txt
+        $endLine = (@($o -split "\r?\n" | Where-Object { $_ -match 'ESS42 recs=' }) -join '')
+        if (-not $endLine) { throw "NO SUMMARY LINE: the wave did not finish (rc=0x$('{0:X8}' -f $rc)) - readings incomplete" }
+        if ($endLine -notmatch 'entered=[1-9]') { throw "ZERO-COVERAGE: no record entered any decoder - nothing was measured" }
+        if ($endLine -notmatch 'fills=[1-9]') { throw "ZERO-COVERAGE: no fill pass ran - the promised-size test never executed" }
+        $kinds = @($o -split "\r?\n" | Where-Object { $_ -match 'PERKIND' -and $_ -match 'entered=[1-9]' }).Count
+        "kinds_with_coverage=$kinds" | Tee-Object -Append out\head.txt
+        if ($kinds -lt 1) { throw "ZERO-COVERAGE: no kind was entered at all" }
+        if ($endLine -notmatch 'faults=0') { (@($o -split "\r?\n" | Where-Object { $_ -match 'FAULT' })) | Out-File out\avfull.txt; throw "MEMORY FAULT observed in the Ess decoders - see avfull.txt" }
+        if ($endLine -notmatch 'past=0') { (@($o -split "\r?\n" | Where-Object { $_ -match 'past=[1-9]' })) | Out-File out\past.txt; throw "WRITE PAST THE CALLEE'S OWN PROMISED SIZE - see past.txt" }
         "coverage ok, no faults, no past-write" | Tee-Object -Append out\head.txt
 
     - name: Clean up the IFEO key
