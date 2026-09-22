@@ -1,0 +1,145 @@
+name: mip-pdf-load-x64
+# Does Outlook actually load the vendored Foxit PDF parser that ships inside Office16, and does a
+# PDF whose /Encrypt dictionary declares an oversized key length make it fault?
+#
+# Office ships Office16\mip_pdf_sdk.dll = MIP File SDK "pdf_only" build 1.13.140, whose strings
+# show a Foxit/PDFium-lineage parser (CPDF_StandardCryptoHandler, CPDF_SyntaxParser, fpdfapi).
+# The current public build of the same component (1.18.148) contains a check that Office's does not:
+#   "key length is too long, key length is N, max length is 32" emitted from
+#   CPDF_StandardCryptoHandler::Init (src\file\pdf\pdf_object_model\core\src\fpdfapi\fpdf_parser_encrypt.cpp),
+# guarding  memcpy(this+8, Src, *(DWORD*)(this+40))  where the fallback memset(this+8, 0, 0x20)
+# shows that field is 32 bytes wide.
+# This wave attaches a /Length ladder of PDFs to messages, opens them through Outlook, records
+# whether the module gets mapped at all, and captures any crash with WER local dumps.
+'on':
+  workflow_dispatch:
+    inputs:
+      dummy:
+        description: 'unused'
+        required: false
+        default: ''
+jobs:
+  t:
+    runs-on: windows-latest
+    timeout-minutes: 70
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Download ODT
+      shell: pwsh
+      run: |
+        $urls = @()
+        for ($t = 0; $t -lt 4 -and $urls.Count -eq 0; $t++) {
+          try {
+            $page = (Invoke-WebRequest -Uri "https://www.microsoft.com/en-us/download/details.aspx?id=49117" -UseBasicParsing -TimeoutSec 90).Content
+            foreach ($m in [regex]::Matches($page, 'https://download[.]microsoft[.]com/download/[^ <>"]+officedeploymenttool[^ <>"]+[.]exe')) { $urls += $m.Value }
+          } catch { "fetch attempt $t failed: $($_.Exception.Message)" }
+          if ($urls.Count -eq 0) { Start-Sleep -Seconds (5 * ($t + 1)) }
+        }
+        if ($urls.Count -eq 0) { throw "odt link not found after retries" }
+        $got = $false
+        foreach ($u in $urls) {
+          for ($t = 0; $t -lt 3 -and -not $got; $t++) {
+            try { Invoke-WebRequest -Uri $u -OutFile odt.exe -UseBasicParsing -TimeoutSec 300; if ((Get-Item odt.exe).Length -gt 1MB) { $got = $true } }
+            catch { "dl attempt $t failed: $($_.Exception.Message)"; Start-Sleep -Seconds (5 * ($t + 1)) }
+          }
+          if ($got) { break }
+        }
+        if (-not $got) { throw "odt.exe download failed" }
+        Remove-Item odtx -Recurse -Force -EA SilentlyContinue
+        $x = $false
+        for ($t = 0; $t -lt 3 -and -not $x; $t++) {
+          Start-Process -Wait -FilePath .\odt.exe -ArgumentList "/extract:`"$PWD\odtx`" /quiet"
+          $x = Test-Path odtx\setup.exe
+          if (-not $x) { "extract attempt $t produced no setup.exe"; Start-Sleep -Seconds (5 * ($t + 1)); Remove-Item odtx -Recurse -Force -EA SilentlyContinue }
+        }
+        if (-not $x) { throw "odt extract failed" }
+        "odt_ready"
+
+    - name: Install Current x64 (Outlook only)
+      shell: pwsh
+      run: |
+        $xml = '<Configuration><Add OfficeClientEdition="64" Channel="Current"><Product ID="O365ProPlusRetail"><Language ID="en-us" /><ExcludeApp ID="Excel" /><ExcludeApp ID="PowerPoint" /><ExcludeApp ID="OneDrive" /><ExcludeApp ID="OneNote" /><ExcludeApp ID="Lync" /><ExcludeApp ID="Access" /><ExcludeApp ID="Groove" /><ExcludeApp ID="Publisher" /><ExcludeApp ID="Teams" /><ExcludeApp ID="Bing" /><ExcludeApp ID="Word" /></Product></Add><Display Level="None" AcceptEULA="TRUE" /><Updates Enabled="FALSE" /></Configuration>'
+        Set-Content -Path cfg.xml -Value $xml
+        Start-Process -Wait -FilePath .\odtx\setup.exe -ArgumentList "/configure","cfg.xml"
+        $o = Get-Item "C:\Program Files\Microsoft Office\root\Office16\OUTLOOK.EXE" -EA SilentlyContinue
+        if (-not $o) { throw "outlook install failed" }
+        $m = Get-Item "C:\Program Files\Microsoft Office\root\Office16\mip_pdf_sdk.dll" -EA SilentlyContinue
+        if ($m) { "mip_pdf_sdk present len=$($m.Length) v=$($m.VersionInfo.FileVersion)" } else { "mip_pdf_sdk ABSENT from installed build" }
+        ($m | Out-String) | Tee-Object ver.txt
+        "mip=$($m.VersionInfo.FileVersion)" | Tee-Object -Append ver.txt
+
+    - name: Build the /Encrypt Length ladder and wrap each PDF in a saved .msg
+      shell: pwsh
+      run: |
+        New-Item -ItemType Directory -Force -Path pdfs, msgs, out, dumps | Out-Null
+        python tools\mk_pdf_encrypt.py pdfs
+        (Get-ChildItem pdfs -Filter *.pdf | Measure-Object).Count | ForEach-Object { "pdfs=$_" }
+        $rows = @()
+        try {
+          $ol = New-Object -ComObject Outlook.Application
+          foreach ($p in (Get-ChildItem pdfs -Filter *.pdf | Sort-Object Name)) {
+            $mi = $ol.CreateItem(0)
+            $mi.To = "probe@example.invalid"
+            $mi.Subject = "MIPDF_" + $p.BaseName
+            $mi.Body = "carrier for " + $p.Name
+            [void]$mi.Attachments.Add($p.FullName)
+            $dst = Join-Path "$PWD\msgs" ($p.BaseName + ".msg")
+            $mi.SaveAs($dst, 3)
+            $ok = Test-Path $dst
+            $rows += ("BUILD msg=%s src=%s size=%d ok=%s" -f (Split-Path $dst -Leaf), $p.Name, (Get-Item $dst -EA SilentlyContinue).Length, $ok)
+          }
+          $ol.Quit()
+        } catch {
+          $rows += ("COM_FAILED: " + $_.Exception.Message)
+        }
+        $rows | Tee-Object out\build.txt
+        if ((Get-ChildItem msgs -Filter *.msg -EA SilentlyContinue).Count -lt 1) { throw "NO CARRIERS: could not build any .msg, the load test cannot run" }
+
+    - name: Open each carrier in Outlook and record whether the module maps / whether it faults
+      shell: pwsh
+      run: |
+        $exe = "C:\Program Files\Microsoft Office\root\Office16\OUTLOOK.EXE"
+        $k = "HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting\LocalDumps"
+        New-Item -Path $k -Force -EA SilentlyContinue | Out-Null
+        New-ItemProperty -Path $k -Name DumpFolder -Value "$PWD\dumps" -PropertyType ExpandString -Force -EA SilentlyContinue | Out-Null
+        New-ItemProperty -Path $k -Name DumpType -Value 2 -PropertyType DWord -Force -EA SilentlyContinue | Out-Null
+        $rows = @()
+        foreach ($f in (Get-ChildItem msgs -Filter *.msg | Sort-Object Name)) {
+          Set-Content -Path $f.FullName -Stream Zone.Identifier -Value "[ZoneTransfer]`r`nZoneId=3" -Encoding ASCII
+          $before = @(Get-Process OUTLOOK -EA SilentlyContinue).Id
+          $p = Start-Process -FilePath $exe -ArgumentList @('/f', ('"' + $f.FullName + '"')) -PassThru
+          $loaded = 0; $pidseen = @(); $deadline = (Get-Date).AddSeconds(70); $exit = '-'
+          while ((Get-Date) -lt $deadline) {
+            Start-Sleep -Milliseconds 800
+            foreach ($q in @(Get-Process OUTLOOK -EA SilentlyContinue)) {
+              if ($before -contains $q.Id) { continue }
+              $pidseen += $q.Id
+              try { foreach ($mm in $q.Modules) { if ($mm.ModuleName -match 'mip_pdf_sdk') { $loaded = 1 } } } catch { }
+            }
+            if ($loaded -eq 1) { break }
+            if (-not (Get-Process -Id $p.Id -EA SilentlyContinue)) { break }
+          }
+          if (-not (Get-Process -Id $p.Id -EA SilentlyContinue)) {
+            try { $exit = '0x{0:X8}' -f ($p.ExitCode -band [int]0xFFFFFFFF) } catch { $exit = '?' }
+          } else { $exit = 'alive' }
+          $dn = @(Get-ChildItem dumps -Filter *.dmp -EA SilentlyContinue).Count
+          $rows += ("CASE msg=%s mip_loaded=%d newoutlook=%d exit=%s dumps=%d" -f $f.Name, $loaded, (@($pidseen | Select-Object -Unique)).Count, $exit, $dn)
+          $rows | Set-Content out\load.txt
+          Get-Process OUTLOOK -EA SilentlyContinue | Where-Object { $_.Id -notin $before } | Stop-Process -Force -EA SilentlyContinue
+          Start-Sleep -Seconds 2
+        }
+        Get-Content out\load.txt
+        $all = Get-Content out\load.txt -Raw
+        if ($all -notmatch 'mip_loaded=1') { "NOTE: the module was not mapped by any carrier in this wave - that is a reading about the trigger, not about the parser" }
+        if ($all -match 'exit=0xC0000005|exit=0xC0000374|exit=0xC0000409') { throw "FAULT observed opening a carrier - see dumps" }
+
+    - name: Upload readings
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: mip-pdf-load-x64
+        path: |
+          out
+          ver.txt
+          pdfs
