@@ -1,0 +1,174 @@
+name: olm-dense-x64
+# Dense count/length corpora through drivers already proven to reach the parser, on a native x64 Office
+# build under a behaviourally-gated full page heap. Two increments over the earlier waves: the executed code
+# chunk is the x64 one (the ARM64 test machine runs the ARM64 chunk of the same ARM64X binaries, so readings
+# taken there do not describe what x64 users execute), and the page heap covers every heap in the process,
+# including the pooled MAPI buffers that a tail guard on the CRT slots cannot see.
+# Stage A: mode 11 (OpenTnefStreamEx decode into a real message) over the dense corpus.
+# Stage B: mode 41 (attribute extraction) over the dense corpus.
+# Stage C: mode 11 over the single-axis corpus at full width. Each stage prints its own coverage counters and
+# the job fails if a control run decodes or extracts nothing, so a zero-fault reading cannot be mistaken for
+# a run that never parsed.
+jobs:
+  t:
+    runs-on: windows-latest
+    timeout-minutes: 170
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Download ODT
+      shell: pwsh
+      run: |
+        # Hardened: the page scrape and the self-extractor each failed transiently on 2026-09-22
+        # (blank extractor output, exit 1) after succeeding minutes earlier, so both now retry and
+        # the step asserts the extracted setup.exe before handing off to the install step.
+        $urls = @()
+        for ($t = 0; $t -lt 4 -and $urls.Count -eq 0; $t++) {
+          try {
+            $page = (Invoke-WebRequest -Uri "https://www.microsoft.com/en-us/download/details.aspx?id=49117" -UseBasicParsing -TimeoutSec 90).Content
+            foreach ($m in [regex]::Matches($page, 'https://download[.]microsoft[.]com/download/[^ <>"]+officedeploymenttool[^ <>"]+[.]exe')) { $urls += $m.Value }
+          } catch { "fetch attempt $t failed: $($_.Exception.Message)" }
+          if ($urls.Count -eq 0) { Start-Sleep -Seconds (5 * ($t + 1)) }
+        }
+        if ($urls.Count -eq 0) { throw "odt link not found after retries" }
+        "odt urls=$($urls.Count) first=$($urls[0])"
+        $got = $false
+        foreach ($u in $urls) {
+          for ($t = 0; $t -lt 3 -and -not $got; $t++) {
+            try { Invoke-WebRequest -Uri $u -OutFile odt.exe -UseBasicParsing -TimeoutSec 300; if ((Get-Item odt.exe).Length -gt 1MB) { $got = $true } }
+            catch { "dl attempt $t failed: $($_.Exception.Message)"; Start-Sleep -Seconds (5 * ($t + 1)) }
+          }
+          if ($got) { break }
+        }
+        if (-not $got) { throw "odt.exe download failed" }
+        Remove-Item odtx -Recurse -Force -EA SilentlyContinue
+        $x = $false
+        for ($t = 0; $t -lt 3 -and -not $x; $t++) {
+          Start-Process -Wait -FilePath .\odt.exe -ArgumentList "/extract:`"$PWD\odtx`" /quiet"
+          $x = Test-Path odtx\setup.exe
+          if (-not $x) { "extract attempt $t produced no setup.exe"; Start-Sleep -Seconds (5 * ($t + 1)); Remove-Item odtx -Recurse -Force -EA SilentlyContinue }
+        }
+        if (-not $x) { throw "odt extract failed: odtx\setup.exe missing" }
+        "odt_ready"
+
+    - name: Install Current x64 (Outlook kept, rest excluded)
+      shell: pwsh
+      run: |
+        $xml = '<Configuration><Add OfficeClientEdition="64" Channel="Current"><Product ID="O365ProPlusRetail"><Language ID="en-us" /><ExcludeApp ID="Excel" /><ExcludeApp ID="PowerPoint" /><ExcludeApp ID="OneDrive" /><ExcludeApp ID="OneNote" /><ExcludeApp ID="Lync" /><ExcludeApp ID="Access" /><ExcludeApp ID="Groove" /><ExcludeApp ID="Publisher" /><ExcludeApp ID="Teams" /><ExcludeApp ID="Bing" /><ExcludeApp ID="Word" /></Product></Add><Display Level="None" AcceptEULA="TRUE" /><Updates Enabled="FALSE" /></Configuration>'
+        Set-Content -Path cfg.xml -Value $xml
+        Start-Process -Wait -FilePath .\odtx\setup.exe -ArgumentList "/configure","cfg.xml"
+        $o = Get-Item "C:\Program Files\Microsoft Office\root\Office16\OUTLOOK.EXE" -ErrorAction SilentlyContinue
+        if (-not $o) { throw "outlook install failed" }
+        $olm = Get-Item "C:\Program Files\Microsoft Office\root\Office16\OLMAPI32.DLL"
+        "olmapi32 len=$($olm.Length) v=$($olm.VersionInfo.FileVersion)" | Tee-Object ver.txt
+
+    - name: Stage corpora
+      shell: pwsh
+      run: |
+        New-Item -ItemType Directory -Force -Path corpus, out | Out-Null
+        tar -xzf bin\tnefmix.tgz -C corpus
+        Get-ChildItem corpus -Recurse -Force -Filter '._*' | Remove-Item -Force -ErrorAction SilentlyContinue
+        python tools\mk_tnef_dense.py corpus\dense.txt
+        Copy-Item bin\base_valid.msg corpus\base.msg -Force
+        "dense=" + (Get-Item corpus\dense.txt).Length + " attr=" + (Get-Item corpus\attr.txt).Length
+
+    - name: Arm full page heap and gate it behaviourally
+      shell: pwsh
+      run: |
+        $exe = ".\bin\crtfbench65_x64.exe"
+        $k = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\crtfbench65_x64.exe"
+        New-Item -Path $k -Force | Out-Null
+        New-ItemProperty -Path $k -Name GlobalFlag -Value 0x02000000 -PropertyType DWord -Force | Out-Null
+        New-ItemProperty -Path $k -Name PageHeapFlags -Value 0x3 -PropertyType DWord -Force | Out-Null
+        "GlobalFlag=$((Get-Item $k).GetValue('GlobalFlag')) PageHeapFlags=$((Get-Item $k).GetValue('PageHeapFlags'))" | Out-File out\pageheap.txt
+        Get-Content out\pageheap.txt
+        $s = & $exe selftest 0 256 0 120000 2>&1 | Out-String
+        $rc = $LASTEXITCODE -band [int]0xFFFFFFFF
+        $armed = if (('{0:X8}' -f $rc) -eq 'C0000005' -and $s -notmatch 'NOT_DETECTED' -and $s -match 'ABOUT_TO_WRITE_PAST_END') { 'ARMED' } else { 'NOT_ARMED' }
+        "SELFTEST rc=0x$('{0:X8}' -f $rc) verdict=$armed log=$(($s.Trim() -replace '\r?\n',' | '))" | Out-File out\selftest.txt
+        Get-Content out\selftest.txt
+        if ($armed -ne 'ARMED') { throw "instrument blind: aborting" }
+        exit 0
+
+    - name: Controls that the drivers really parse
+      shell: pwsh
+      run: |
+        $env:CRTF_BASEMSG = "$PWD\corpus\base.msg"
+        $env:CRTF_NMAX = '60'
+        $det = 'out\controls.txt'
+        'driver|rc|summary' | Set-Content $det
+        $a = & .\bin\crtfbench65_x64.exe corpus\attr.txt 2 256 11 300000 2>&1 | Out-String
+        $ra = $LASTEXITCODE -band [int]0xFFFFFFFF
+        "mode11 rc=0x$('{0:X8}' -f $ra) $(($a -split "`n" | Where-Object { $_ -match 'TNEFCASES' }) -join '')" | Tee-Object -FilePath $det -Append
+        ($a -split "`n" | Where-Object { $_ -match '!!!AV|!!!EXC' }) -join ' | ' | Out-File $det -Append
+        if ($a -notmatch 'ok=[1-9]') { $a | Out-File out\ctrl11_full.txt; throw "mode 11 control decoded nothing" }
+        if ($a -match '!!!AV|!!!EXC') { $a | Out-File out\ctrl11_full.txt; throw "mode 11 control faulted" }
+        $b = & .\bin\crtfbench65_x64.exe corpus\attr.txt 2 256 41 300000 2>&1 | Out-String
+        $rb = $LASTEXITCODE -band [int]0xFFFFFFFF
+        "mode41 rc=0x$('{0:X8}' -f $rb) $(($b -split "`n" | Where-Object { $_ -match 'ATTRCASES' }) -join '')" | Tee-Object -FilePath $det -Append
+        ($b -split "`n" | Where-Object { $_ -match '!!!AV|!!!EXC' }) -join ' | ' | Out-File $det -Append
+        if ($b -notmatch 'qok=[1-9]') { $b | Out-File out\ctrl41_full.txt; throw "mode 41 control extracted nothing" }
+        Remove-Item Env:CRTF_NMAX
+        exit 0
+
+    - name: Stage A - dense corpus through mode 11
+      shell: pwsh
+      run: |
+        $passes = [int]"${{ inputs.passes }}"
+        $det = 'out\stageA.txt'
+        'pass|rc|summary' | Set-Content $det
+        for ($p = 1; $p -le $passes; $p++) {
+          Copy-Item bin\base_valid.msg corpus\base.msg -Force
+          $env:CRTF_BASEMSG = "$PWD\corpus\base.msg"
+          $log = "out\dense11_pass$p.log"
+          $o = & .\bin\crtfbench65_x64.exe corpus\dense.txt 2 256 11 900000 2>&1 | Out-String
+          $rc = $LASTEXITCODE -band [int]0xFFFFFFFF
+          $o | Out-File $log
+          $sum = ($o -split "`n" | Where-Object { $_ -match 'TNEFCASES|!!!AV|!!!EXC|HOOKSTAT' }) -join ' | '
+          "$p|0x$('{0:X8}' -f $rc)|$sum" | Out-File $det -Append
+          "pass $p rc=0x$('{0:X8}' -f $rc) $sum"
+        }
+        Remove-Item Env:CRTF_BASEMSG
+        exit 0
+
+    - name: Stage B - dense corpus through mode 41
+      shell: pwsh
+      run: |
+        $passes = [int]"${{ inputs.passes }}"
+        $det = 'out\stageB.txt'
+        'pass|rc|summary' | Set-Content $det
+        for ($p = 1; $p -le $passes; $p++) {
+          Copy-Item bin\base_valid.msg corpus\base.msg -Force
+          $env:CRTF_BASEMSG = "$PWD\corpus\base.msg"
+          $log = "out\dense41_pass$p.log"
+          $o = & .\bin\crtfbench65_x64.exe corpus\dense.txt 2 256 41 900000 2>&1 | Out-String
+          $rc = $LASTEXITCODE -band [int]0xFFFFFFFF
+          $o | Out-File $log
+          $sum = ($o -split "`n" | Where-Object { $_ -match 'ATTRCASES|!!!AV|!!!EXC|HOOKSTAT' }) -join ' | '
+          "$p|0x$('{0:X8}' -f $rc)|$sum" | Out-File $det -Append
+          "pass $p rc=0x$('{0:X8}' -f $rc) $sum"
+        }
+        Remove-Item Env:CRTF_BASEMSG
+        exit 0
+
+    - name: Stage C - single-axis corpus through mode 11 at full width
+      shell: pwsh
+      run: |
+        $det = 'out\stageC.txt'
+        Copy-Item bin\base_valid.msg corpus\base.msg -Force
+        $env:CRTF_BASEMSG = "$PWD\corpus\base.msg"
+        $o = & .\bin\crtfbench65_x64.exe corpus\attr.txt 2 256 11 900000 2>&1 | Out-String
+        $rc = $LASTEXITCODE -band [int]0xFFFFFFFF
+        $o | Out-File out\attr11_full.log
+        $sum = ($o -split "`n" | Where-Object { $_ -match 'TNEFCASES|!!!AV|!!!EXC|HOOKSTAT' }) -join ' | '
+        "rc=0x$('{0:X8}' -f $rc) $sum" | Out-File $det -Append
+        "rc=0x$('{0:X8}' -f $rc) $sum"
+        Remove-Item Env:CRTF_BASEMSG
+        exit 0
+
+    - name: Upload evidence
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: olm-dense-x64
+        path: out/
