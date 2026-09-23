@@ -39,9 +39,10 @@ jobs:
           Copy-Item $c.FullName C:\pptorder\dbg\cdb.exe
           Get-ChildItem $c.DirectoryName -Filter *.dll | Copy-Item -Destination C:\pptorder\dbg\ -Force
           $p = Start-Process -FilePath C:\pptorder\dbg\cdb.exe -ArgumentList '-logo','C:\pptorder\out\cdb_order.log','-cf','C:\pptorder\cdb_cmd.txt','C:\Program Files\Microsoft Office\root\Office16\POWERPNT.EXE','C:\pptorder\timing_sample2.pptx' -PassThru -WindowStyle Hidden
-          Start-Sleep -Seconds 100
-          (Get-Process POWERPNT -ErrorAction SilentlyContinue).MainWindowTitle | Out-File C:\pptorder\out\title.txt
-          Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 200
+          (Get-Process POWERPNT -ErrorAction SilentlyContinue).MainWindowTitle | Out-File C:\pptorder\out\title100.txt
+          (Get-Process POWERPNT -ErrorAction SilentlyContinue).MainWindowTitle | Out-File C:\pptorder\out\title300.txt
+Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
           Start-Sleep -Seconds 3
           Get-Content C:\pptorder\out\cdb_order.log | Out-File C:\pptorder\out\cdb_order_copy.txt
       - name: Collect
