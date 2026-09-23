@@ -1,4 +1,2 @@
-bu ppcore!?FValidateSlideTiming@@YA_NAEAVSlideBase@@_N@Z ".printf \"VAL ret=%p\\n\\", @x30; g"
-bu ppcore!?DesyncData@SlideTimingInfoXmlReader@FileIO@PPT@@SAXAEAVMetroReadParams@23@AEBVSlideTimingInfo@Pml@@AEBV?$TMap@KPEAUMSOSP@@@Ofc@@PEBV?$TMap@IV?$TWeakPtr@VConnectorDrawingElement@Dr@@@Ofc@@@23@@Z ".printf \"DES ret=%p\\n\\", @x30; g"
-bu ppcore!?ConstructContent@PPTSlideBaseReader@@MEAAXAEAVPersistentStorage@@AEBURecordHeader@@AEBVPPReadBuffer@@@Z ".printf \"CC ret=%p\\n\\", @x30; g"
+sxe -c ".reload ppcore.dll; bm ppcore!?FValidateSlideTiming*; bm ppcore!?DesyncData@SlideTimingInfoXmlReader*; bm ppcore!?ConstructContent@PPTSlideBaseReader*; g" ld:ppcore.dll
 g
