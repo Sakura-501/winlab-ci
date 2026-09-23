@@ -1,4 +1,5 @@
 $ErrorActionPreference='Continue'
+$env:_NT_SYMBOL_PATH=''
 New-Item -ItemType Directory -Force -Path C:\pptorder\out | Out-Null
 Copy-Item tools\pptorder\cdb_cmd.txt C:\pptorder\cdb_cmd.txt -Force
 Copy-Item carriers\timing_sample2.pptx C:\pptorder\timing_sample2.pptx -Force
@@ -11,17 +12,20 @@ if (-not $c) { throw "cdb not found" }
 New-Item -ItemType Directory -Force -Path C:\pptorder\dbg | Out-Null
 Copy-Item $c.FullName C:\pptorder\dbg\cdb.exe
 Get-ChildItem $c.DirectoryName -Filter *.dll | Copy-Item -Destination C:\pptorder\dbg\ -Force
-# 1) 空实例先起
-Start-Process -FilePath 'C:\Program Files\Microsoft Office\root\Office16\POWERPNT.EXE' -WindowStyle Hidden
+Start-Process -FilePath 'C:\Program Files\Microsoft Office\root\Office16\POWERPNT.EXE'
 Start-Sleep -Seconds 50
 $pp = Get-Process POWERPNT -ErrorAction SilentlyContinue | Select-Object -First 1
 if (-not $pp) { throw "no powerpoint" }
-# 2) cdb attach（ppcore 已加载，普通 bp 立即解析）
 $p = Start-Process -FilePath C:\pptorder\dbg\cdb.exe -ArgumentList '-p',$pp.Id,'-logo','C:\pptorder\out\cdb_order.log','-cf','C:\pptorder\cdb_cmd.txt' -PassThru -WindowStyle Hidden
-Start-Sleep -Seconds 25
-# 3) COM 连接运行实例（New-Object 连已运行实例）并开样本
-$app = New-Object -ComObject PowerPoint.Application
-$app.Presentations.Open('C:\pptorder\timing_sample2.pptx', $true, $false, $false)
-Start-Sleep -Seconds 90
+Start-Sleep -Seconds 20
+$shell = New-Object -ComObject WScript.Shell
+[void]$shell.AppActivate('PowerPoint')
+Start-Sleep -Seconds 2
+$shell.SendKeys('^o')
+Start-Sleep -Seconds 3
+$shell.SendKeys('C:\pptorder\timing_sample2.pptx')
+Start-Sleep -Seconds 2
+$shell.SendKeys('~')
+Start-Sleep -Seconds 120
 (Get-Process POWERPNT -ErrorAction SilentlyContinue).MainWindowTitle | Out-File C:\pptorder\out\title.txt
 Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
