@@ -82,9 +82,11 @@ jobs:
       run: |
         New-Item -ItemType Directory -Force -Path dense, out | Out-Null
         python tools\mk_ics_dense.py dense
+        python tools\mk_mime_dense.py mmd
         $n = @(Get-ChildItem dense -File).Count
-        "files=$n"
-        if ($n -lt 1000) { throw "corpus too small" }
+        $m = @(Get-ChildItem mmd -File).Count
+        "ical_files=$n mime_files=$m"
+        if ($n -lt 1000 -or $m -lt 1000) { throw "corpus too small" }
 
     - name: Arm full page heap and gate it behaviourally
       shell: pwsh
@@ -109,6 +111,7 @@ jobs:
         'sweep|rc|lines|cases|odd|note' | Set-Content $det
         $runs = @(
           @{ tag = 'm9_parser';  a = @('9', 'dense', '1', '1') },
+          @{ tag = 'm9_mime';    a = @('9', 'mmd', '1', '1') },
           @{ tag = 'm14_slot4'; a = @('14', 'dense', '4') },
           @{ tag = 'm14_slot5'; a = @('14', 'dense', '5') },
           @{ tag = 'm14_slot3'; a = @('14', 'dense', '3') }
