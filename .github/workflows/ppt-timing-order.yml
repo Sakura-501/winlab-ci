@@ -46,6 +46,7 @@ jobs:
             $title = (Get-Process POWERPNT -ErrorAction SilentlyContinue).MainWindowTitle
             if ($title -and $title -notmatch 'Opening') { break }
           }
+          $title | Out-File C:\pptorder\out\title.txt
           Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
           Start-Sleep -Seconds 3
           Get-Content C:\pptorder\out\cdb_order.log | Out-File C:\pptorder\out\cdb_order_copy.txt
