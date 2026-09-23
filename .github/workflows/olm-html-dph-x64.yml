@@ -98,6 +98,9 @@ jobs:
         $armed = if ($hex -eq 'C0000005' -and $s -notmatch 'NOT_DETECTED' -and $s -match 'ABOUT_TO_WRITE_PAST_END') { 'ARMED' } else { 'NOT_ARMED' }
         "SELFTEST rc=0x$hex verdict=$armed log=$(($s.Trim() -replace '\r?\n',' | '))" | Tee-Object out\selftest.txt
         if ($armed -ne 'ARMED') { throw "instrument blind: aborting" }
+        # the selftest run leaves $LASTEXITCODE at the expected fault code; without an explicit
+        # exit 0 GitHub marks this step failed and every sweep stage is skipped.
+        exit 0
 
     - name: Control that the converters really run
       shell: pwsh
