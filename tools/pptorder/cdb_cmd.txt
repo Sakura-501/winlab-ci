@@ -1,3 +1,3 @@
 .sympath srv*C:\sym
-sxe -c ".reload ppcore.dll; x ppcore!?FValidateSlideTiming*; bm ppcore!?FValidateSlideTiming*; bm ppcore!?DesyncData@SlideTimingInfoXmlReader*; bm ppcore!?ConstructContent@PPTSlideBaseReader*; g" ld:ppcore.dll
+sxe -c ".reload /f ppcore.dll; x ppcore!?FValidateSlideTiming*; bm ppcore!?FValidateSlideTiming*; bm ppcore!?DesyncData@SlideTimingInfoXmlReader*; bm ppcore!?ConstructContent@PPTSlideBaseReader*; g" ld:ppcore.dll
 g
