@@ -1,3 +1,4 @@
-.sympath srv*C:\sym
-sxe -c ".reload /f ppcore.dll; x ppcore!?FValidateSlideTiming*; bm ppcore!?FValidateSlideTiming*; bm ppcore!?DesyncData@SlideTimingInfoXmlReader*; bm ppcore!?ConstructContent@PPTSlideBaseReader*; g" ld:ppcore.dll
+bu ppcore+0x788e8 ".printf \"VAL_TIMING ret=%p\\n\\", @x30; g"
+bu ppcore+0x9f3e8 ".printf \"DES_TIMING ret=%p\\n\\", @x30; g"
+bu ppcore+0x5a878 ".printf \"CC_CONSTRUCT ret=%p\\n\\", @x30; g"
 g
