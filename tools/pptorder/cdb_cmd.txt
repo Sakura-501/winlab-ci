@@ -1,4 +1,4 @@
-bu ppcore+0x788e8 ".printf \"VAL_TIMING ret=%p\\n\\", @x30; g"
-bu ppcore+0x9f3e8 ".printf \"DES_TIMING ret=%p\\n\\", @x30; g"
-bu ppcore+0x5a878 ".printf \"CC_CONSTRUCT ret=%p\\n\\", @x30; g"
+bu ppcore+0x788e8 "k 3; g"
+bu ppcore+0x9f3e8 "k 3; g"
+bu ppcore+0x5a878 "k 3; g"
 g
