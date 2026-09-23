@@ -1,0 +1,136 @@
+name: mim-dense-x64
+# Dense iCalendar / vCalendar / vCard corpus through Office's MIME converter (MIMEDIR.DLL) in-process, on a
+# native x64 build under a behaviourally-gated full page heap. The probe creates a fresh converter object per
+# file and drives the parser channel plus the three iCal slots (StatIcalStream / ImportFromIcalStream /
+# IcalStreamToMessage), printing one return-code line per case, so a fault is attributable to a single file
+# and a zero-fault reading can be checked against the number of cases that actually reported.
+# Axes swept one quantity at a time with everything else well-formed: property value length, fold width
+# (73/74/75/76/127/128/129), attendee count, comma-separated multi-value length, RRULE COUNT, escape-run
+# length, base64 payload length, parameter value length, VALARM count, vCalendar item count, vCard lengths.
+'on':
+  workflow_dispatch:
+    inputs:
+      passes:
+        description: 'reserved (one pass per sweep today)'
+        required: false
+        default: '1'
+jobs:
+  t:
+    runs-on: windows-latest
+    timeout-minutes: 170
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Download ODT
+      shell: pwsh
+      run: |
+        # Hardened: the page scrape and the self-extractor each failed transiently on 2026-09-22
+        # (blank extractor output, exit 1) after succeeding minutes earlier, so both now retry and
+        # the step asserts the extracted setup.exe before handing off to the install step.
+        $urls = @()
+        for ($t = 0; $t -lt 4 -and $urls.Count -eq 0; $t++) {
+          try {
+            $page = (Invoke-WebRequest -Uri "https://www.microsoft.com/en-us/download/details.aspx?id=49117" -UseBasicParsing -TimeoutSec 90).Content
+            foreach ($m in [regex]::Matches($page, 'https://download[.]microsoft[.]com/download/[^ <>"]+officedeploymenttool[^ <>"]+[.]exe')) { $urls += $m.Value }
+          } catch { "fetch attempt $t failed: $($_.Exception.Message)" }
+          if ($urls.Count -eq 0) { Start-Sleep -Seconds (5 * ($t + 1)) }
+        }
+        if ($urls.Count -eq 0) { throw "odt link not found after retries" }
+        "odt urls=$($urls.Count) first=$($urls[0])"
+        $got = $false
+        foreach ($u in $urls) {
+          for ($t = 0; $t -lt 3 -and -not $got; $t++) {
+            try { Invoke-WebRequest -Uri $u -OutFile odt.exe -UseBasicParsing -TimeoutSec 300; if ((Get-Item odt.exe).Length -gt 1MB) { $got = $true } }
+            catch { "dl attempt $t failed: $($_.Exception.Message)"; Start-Sleep -Seconds (5 * ($t + 1)) }
+          }
+          if ($got) { break }
+        }
+        if (-not $got) { throw "odt.exe download failed" }
+        Remove-Item odtx -Recurse -Force -EA SilentlyContinue
+        $x = $false
+        for ($t = 0; $t -lt 3 -and -not $x; $t++) {
+          Start-Process -Wait -FilePath .\odt.exe -ArgumentList "/extract:`"$PWD\odtx`" /quiet"
+          $x = Test-Path odtx\setup.exe
+          if (-not $x) { "extract attempt $t produced no setup.exe"; Start-Sleep -Seconds (5 * ($t + 1)); Remove-Item odtx -Recurse -Force -EA SilentlyContinue }
+        }
+        if (-not $x) { throw "odt extract failed: odtx\setup.exe missing" }
+        "odt_ready"
+
+    - name: Install Current x64 (Outlook kept, rest excluded)
+      shell: pwsh
+      run: |
+        $xml = '<Configuration><Add OfficeClientEdition="64" Channel="Current"><Product ID="O365ProPlusRetail"><Language ID="en-us" /><ExcludeApp ID="Excel" /><ExcludeApp ID="PowerPoint" /><ExcludeApp ID="OneDrive" /><ExcludeApp ID="OneNote" /><ExcludeApp ID="Lync" /><ExcludeApp ID="Access" /><ExcludeApp ID="Groove" /><ExcludeApp ID="Publisher" /><ExcludeApp ID="Teams" /><ExcludeApp ID="Bing" /><ExcludeApp ID="Word" /></Product></Add><Display Level="None" AcceptEULA="TRUE" /><Updates Enabled="FALSE" /></Configuration>'
+        Set-Content -Path cfg.xml -Value $xml
+        Start-Process -Wait -FilePath .\odtx\setup.exe -ArgumentList "/configure","cfg.xml"
+        $o = Get-Item "C:\Program Files\Microsoft Office\root\Office16\OUTLOOK.EXE" -ErrorAction SilentlyContinue
+        if (-not $o) { throw "outlook install failed" }
+        $olm = Get-Item "C:\Program Files\Microsoft Office\root\Office16\OLMAPI32.DLL"
+        "olmapi32 len=$($olm.Length) v=$($olm.VersionInfo.FileVersion)" | Tee-Object ver.txt
+    - name: Build the MIMEDIR probe from source (x64)
+      shell: cmd
+      run: |
+        if not exist bin mkdir bin
+        "C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath > vsp.txt
+        set /p VS=<vsp.txt
+        call "%VS%\Common7\Tools\VsDevCmd.bat" -arch=amd64 -host_arch=amd64
+        cl /nologo /O2 /W3 /EHsc /D_CRT_SECURE_NO_WARNINGS /Fobin\ /Febin\mmv_x64.exe tools\mimedir_probe.cpp ole32.lib shlwapi.lib psapi.lib advapi32.lib uuid.lib
+        if errorlevel 1 exit /b 1
+        dir bin\mmv_x64.exe
+
+    - name: Stage the dense iCal corpus
+      shell: pwsh
+      run: |
+        New-Item -ItemType Directory -Force -Path dense, out | Out-Null
+        python tools\mk_ics_dense.py dense
+        $n = @(Get-ChildItem dense -File).Count
+        "files=$n"
+        if ($n -lt 1000) { throw "corpus too small" }
+
+    - name: Arm full page heap and gate it behaviourally
+      shell: pwsh
+      run: |
+        $k = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\mmv_x64.exe"
+        New-Item -Path $k -Force | Out-Null
+        New-ItemProperty -Path $k -Name GlobalFlag -Value 0x02000000 -PropertyType DWord -Force | Out-Null
+        "GlobalFlag=$((Get-Item $k).GetValue('GlobalFlag'))" | Out-File out\pageheap.txt
+        Get-Content out\pageheap.txt
+        $s = & .\bin\mmv_x64.exe 12 2>&1 | Out-String
+        $rc = $LASTEXITCODE -band [int]0xFFFFFFFF
+        $armed = if (('{0:X8}' -f $rc) -eq 'C0000005' -and $s -notmatch 'NOT_DETECTED' -and $s -match 'selftest alloc=') { 'ARMED' } else { 'NOT_ARMED' }
+        "SELFTEST rc=0x$('{0:X8}' -f $rc) verdict=$armed log=$(($s.Trim() -replace '\r?\n',' | '))" | Out-File out\selftest.txt
+        Get-Content out\selftest.txt
+        if ($armed -ne 'ARMED') { throw "instrument blind: aborting" }
+        exit 0
+
+    - name: Sweep - parser channel and the two iCal import slots
+      shell: pwsh
+      run: |
+        $det = 'out\sweeps.txt'
+        'sweep|rc|lines|cases|odd|note' | Set-Content $det
+        $runs = @(
+          @{ tag = 'm9_parser';  a = @('9', 'dense', '1', '1') },
+          @{ tag = 'm14_slot4'; a = @('14', 'dense', '4') },
+          @{ tag = 'm14_slot5'; a = @('14', 'dense', '5') },
+          @{ tag = 'm14_slot3'; a = @('14', 'dense', '3') }
+        )
+        foreach ($r in $runs) {
+          $o = & .\bin\mmv_x64.exe @($r.a) 2>&1 | Out-String
+          $rc = $LASTEXITCODE -band [int]0xFFFFFFFF
+          $o | Out-File ("out\" + $r.tag + ".txt")
+          $lines = $o -split "\r?\n"
+          $cases = @($lines | Where-Object { $_ -match 'rc=0x|RESULT' })
+          $odd = @($lines | Where-Object { $_ -match 'AV code|EXC|c0000005|selftest alloc' })
+          ("{0}|0x{1}|{2}|{3}|{4}|page heap armed" -f $r.tag, ('{0:X8}' -f $rc), $lines.Count, $cases.Count, $odd.Count) | Out-File $det -Append
+          ("{0}: rc=0x{1} lines={2} cases={3} odd={4}" -f $r.tag, ('{0:X8}' -f $rc), $lines.Count, $cases.Count, $odd.Count)
+          if ($odd.Count) { ($odd | Select-Object -First 6) -join ' ;; ' | Out-File $det -Append }
+          if ($cases.Count -lt 100) { throw ("{0}: only {1} cases reported - the sweep did not walk the corpus" -f $r.tag, $cases.Count) }
+        }
+        Remove-Item "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\mmv_x64.exe" -Recurse -Force -EA SilentlyContinue
+        exit 0
+
+    - name: Upload evidence
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: mim-dense-x64
+        path: out/
