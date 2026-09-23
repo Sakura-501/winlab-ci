@@ -1,0 +1,157 @@
+name: olm-tnefdeep-dph-x64
+# Deep ITnef stages (TNEF_OpenTaggedBody / TNEF_ExtractProps / TNEF_Finish) driven in-process on a native-x64
+# Office build under a behaviourally-gated full page heap. On the ARM64 test machine the ARM64X modules execute
+# their ARM64 chunk, so the x64 named dump does not apply there; the runner is the environment where the x64
+# code and the x64 slot table agree. mode 59 prints the live ITnef vtable, mode 58 walks a TNEF corpus through
+# the three deep slots per record and counts body streams opened, bytes drained, property sets extracted and
+# finishes that succeeded, so a "no fault" reading can be told apart from a run that never reached the stage.
+'on':
+  workflow_dispatch:
+    inputs:
+      passes:
+        description: 'how many full-corpus sequence passes'
+        required: false
+        default: '3'
+jobs:
+  t:
+    runs-on: windows-latest
+    timeout-minutes: 170
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Download ODT
+      shell: pwsh
+      run: |
+        # Hardened: the page scrape and the self-extractor each failed transiently on 2026-09-22
+        # (blank extractor output, exit 1) after succeeding minutes earlier, so both now retry and
+        # the step asserts the extracted setup.exe before handing off to the install step.
+        $urls = @()
+        for ($t = 0; $t -lt 4 -and $urls.Count -eq 0; $t++) {
+          try {
+            $page = (Invoke-WebRequest -Uri "https://www.microsoft.com/en-us/download/details.aspx?id=49117" -UseBasicParsing -TimeoutSec 90).Content
+            foreach ($m in [regex]::Matches($page, 'https://download[.]microsoft[.]com/download/[^ <>"]+officedeploymenttool[^ <>"]+[.]exe')) { $urls += $m.Value }
+          } catch { "fetch attempt $t failed: $($_.Exception.Message)" }
+          if ($urls.Count -eq 0) { Start-Sleep -Seconds (5 * ($t + 1)) }
+        }
+        if ($urls.Count -eq 0) { throw "odt link not found after retries" }
+        "odt urls=$($urls.Count) first=$($urls[0])"
+        $got = $false
+        foreach ($u in $urls) {
+          for ($t = 0; $t -lt 3 -and -not $got; $t++) {
+            try { Invoke-WebRequest -Uri $u -OutFile odt.exe -UseBasicParsing -TimeoutSec 300; if ((Get-Item odt.exe).Length -gt 1MB) { $got = $true } }
+            catch { "dl attempt $t failed: $($_.Exception.Message)"; Start-Sleep -Seconds (5 * ($t + 1)) }
+          }
+          if ($got) { break }
+        }
+        if (-not $got) { throw "odt.exe download failed" }
+        Remove-Item odtx -Recurse -Force -EA SilentlyContinue
+        $x = $false
+        for ($t = 0; $t -lt 3 -and -not $x; $t++) {
+          Start-Process -Wait -FilePath .\odt.exe -ArgumentList "/extract:`"$PWD\odtx`" /quiet"
+          $x = Test-Path odtx\setup.exe
+          if (-not $x) { "extract attempt $t produced no setup.exe"; Start-Sleep -Seconds (5 * ($t + 1)); Remove-Item odtx -Recurse -Force -EA SilentlyContinue }
+        }
+        if (-not $x) { throw "odt extract failed: odtx\setup.exe missing" }
+        "odt_ready"
+
+    - name: Install Current x64 (Outlook kept, rest excluded)
+      shell: pwsh
+      run: |
+        $xml = '<Configuration><Add OfficeClientEdition="64" Channel="Current"><Product ID="O365ProPlusRetail"><Language ID="en-us" /><ExcludeApp ID="Excel" /><ExcludeApp ID="PowerPoint" /><ExcludeApp ID="OneDrive" /><ExcludeApp ID="OneNote" /><ExcludeApp ID="Lync" /><ExcludeApp ID="Access" /><ExcludeApp ID="Groove" /><ExcludeApp ID="Publisher" /><ExcludeApp ID="Teams" /><ExcludeApp ID="Bing" /><ExcludeApp ID="Word" /></Product></Add><Display Level="None" AcceptEULA="TRUE" /><Updates Enabled="FALSE" /></Configuration>'
+        Set-Content -Path cfg.xml -Value $xml
+        Start-Process -Wait -FilePath .\odtx\setup.exe -ArgumentList "/configure","cfg.xml"
+        $o = Get-Item "C:\Program Files\Microsoft Office\root\Office16\OUTLOOK.EXE" -ErrorAction SilentlyContinue
+        if (-not $o) { throw "outlook install failed" }
+        $olm = Get-Item "C:\Program Files\Microsoft Office\root\Office16\OLMAPI32.DLL"
+        "olmapi32 len=$($olm.Length) v=$($olm.VersionInfo.FileVersion)" | Tee-Object ver.txt
+    - name: Stage corpora
+      shell: pwsh
+      run: |
+        New-Item -ItemType Directory -Force -Path corpus, out | Out-Null
+        tar -xzf bin\tnefmix.tgz -C corpus
+        Get-ChildItem corpus -Recurse -Force -Filter '._*' | Remove-Item -Force -ErrorAction SilentlyContinue
+        python tools\mk_tnef_dense.py corpus\dense.txt
+        Copy-Item bin\base_valid.msg corpus\base.msg -Force
+        "dense=" + (Get-Item corpus\dense.txt).Length + " attr=" + (Get-Item corpus\attr.txt).Length
+
+    - name: Arm full page heap and gate it behaviourally
+      shell: pwsh
+      run: |
+        $k = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\crtfbench61_x64.exe"
+        New-Item -Path $k -Force | Out-Null
+        New-ItemProperty -Path $k -Name GlobalFlag -Value 0x02000000 -PropertyType DWord -Force | Out-Null
+        New-ItemProperty -Path $k -Name PageHeapFlags -Value 0x3 -PropertyType DWord -Force | Out-Null
+        "GlobalFlag=$((Get-Item $k).GetValue('GlobalFlag')) PageHeapFlags=$((Get-Item $k).GetValue('PageHeapFlags'))" | Out-File out\pageheap.txt
+        Get-Content out\pageheap.txt
+        $s = & .\bin\crtfbench61_x64.exe selftest 0 256 0 120000 2>&1 | Out-String
+        $rc = $LASTEXITCODE -band [int]0xFFFFFFFF
+        $armed = if (('{0:X8}' -f $rc) -eq 'C0000005' -and $s -notmatch 'NOT_DETECTED' -and $s -match 'ABOUT_TO_WRITE_PAST_END') { 'ARMED' } else { 'NOT_ARMED' }
+        "SELFTEST rc=0x$('{0:X8}' -f $rc) verdict=$armed log=$(($s.Trim() -replace '\r?\n',' | '))" | Out-File out\selftest.txt
+        Get-Content out\selftest.txt
+        if ($armed -ne 'ARMED') { throw "instrument blind: aborting" }
+
+    - name: Identify the live ITnef vtable
+      shell: pwsh
+      run: |
+        $v = & .\bin\crtfbench61_x64.exe - 2 256 59 120000 2>&1 | Out-String
+        $v | Out-File out\vtable.txt
+        ($v.Trim() -replace '\r?\n', "`n")
+        if ($v -notmatch 'T9SLOT  6 rva=') { throw "no vtable slots printed" }
+
+    - name: Positive control for the deep stages
+      shell: pwsh
+      run: |
+        $env:CRTF_BASEMSG = "$PWD\corpus\base.msg"
+        $env:CRTF_NMAX = '40'
+        $p = & .\bin\crtfbench61_x64.exe corpus\attr.txt 2 256 58 300000 2>&1 | Out-String
+        $rc = $LASTEXITCODE -band [int]0xFFFFFFFF
+        "PCTRL rc=0x$('{0:X8}' -f $rc) $(($p.Trim() -replace '\r?\n',' | '))" | Out-File out\pctrl.txt
+        Get-Content out\pctrl.txt
+        if ($p -match '!!!AV|!!!EXC') { "fault during the positive control - recorded below and the job fails" ; $p | Out-File out\pctrl_full.txt; throw "positive control faulted" }
+        if ($p -notmatch 'ok=[1-9]') { $p | Out-File out\pctrl_full.txt; throw "positive control decoded nothing (ok=0) - the corpus or the flags are wrong" }
+        Remove-Item Env:CRTF_NMAX
+
+    - name: Stage A - dense count corpus through the deep slots
+      shell: pwsh
+      run: |
+        $passes = [int]"${{ inputs.passes }}"
+        $det = 'out\stageA.txt'
+        'pass|rc|summary|note' | Set-Content $det
+        for ($p = 1; $p -le $passes; $p++) {
+          $env:CRTF_BASEMSG = "$PWD\corpus\base.msg"
+          Copy-Item bin\base_valid.msg corpus\base.msg -Force
+          $log = "out\deep_dense_pass$p.log"
+          $o = & .\bin\crtfbench61_x64.exe corpus\dense.txt 2 256 58 900000 2>&1 | Out-String
+          $rc = $LASTEXITCODE -band [int]0xFFFFFFFF
+          $o | Out-File $log
+          $sum = ($o -split "`n" | Where-Object { $_ -match 'T8CASES|T8BODYERR|T8EXTRERR|!!!AV|!!!EXC|HOOKSTAT' }) -join ' | '
+          "$p|0x$('{0:X8}' -f $rc)|$sum|page heap armed" | Out-File $det -Append
+          "pass $p rc=0x$('{0:X8}' -f $rc) $sum"
+        }
+        Remove-Item Env:CRTF_BASEMSG
+
+    - name: Stage B - single-axis disagreement corpus through the deep slots
+      shell: pwsh
+      run: |
+        $passes = [int]"${{ inputs.passes }}"
+        $det = 'out\stageB.txt'
+        'pass|rc|summary|note' | Set-Content $det
+        for ($p = 1; $p -le $passes; $p++) {
+          $env:CRTF_BASEMSG = "$PWD\corpus\base.msg"
+          Copy-Item bin\base_valid.msg corpus\base.msg -Force
+          $log = "out\deep_attr_pass$p.log"
+          $o = & .\bin\crtfbench61_x64.exe corpus\attr.txt 2 256 58 900000 2>&1 | Out-String
+          $rc = $LASTEXITCODE -band [int]0xFFFFFFFF
+          $o | Out-File $log
+          $sum = ($o -split "`n" | Where-Object { $_ -match 'T8CASES|T8BODYERR|T8EXTRERR|!!!AV|!!!EXC|HOOKSTAT' }) -join ' | '
+          "$p|0x$('{0:X8}' -f $rc)|$sum|page heap armed" | Out-File $det -Append
+          "pass $p rc=0x$('{0:X8}' -f $rc) $sum"
+        }
+        Remove-Item Env:CRTF_BASEMSG
+
+    - name: Upload evidence
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: tnefdeep-dph-x64
+        path: out/
