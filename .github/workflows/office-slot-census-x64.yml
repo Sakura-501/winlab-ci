@@ -78,7 +78,8 @@ jobs:
         $vc = (Get-ChildItem 'C:\Program Files\Microsoft Visual Studio' -Recurse -Filter 'VsDevCmd.bat' -ErrorAction SilentlyContinue | Select-Object -First 1).FullName
         $cmd = '"' + $vc + '" -arch=x64 && cl /nologo /O2 /W3 /std:c17 /Tc bin\guardbench.c /Fe:bin\gbx.exe /Fo:build\ /link ole32.lib oleaut32.lib advapi32.lib user32.lib'
         cmd /c $cmd
-        if (-not (Test-Path bin\gbx.exe)) { throw 'harness build failed' }    - name: Rank allocator slots across the Office modules
+        if (-not (Test-Path bin\gbx.exe)) { throw 'harness build failed' }
+    - name: Rank allocator slots across the Office modules
       run: |
         $env:PATH = 'C:\Program Files\Microsoft Office\root\Office16;' + $env:PATH
         $mods = @('mso.dll','wwlib.dll','OSERVER.DLL','oart.dll','GFX.DLL','ONFILTER.DLL',
