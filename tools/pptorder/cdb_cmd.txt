@@ -1,4 +1,4 @@
-bu ppcore+0x788e8 "k 3; g"
-bu ppcore+0x780b0 "k 3; g"
-bu ppcore+0x1f74cc "k 3; g"
+bp ppcore+0x788e8 "k 3; g"
+bp ppcore+0x780b0 "k 3; g"
+bp ppcore+0x5a878 "k 3; g"
 g
