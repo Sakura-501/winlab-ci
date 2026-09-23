@@ -24,36 +24,47 @@ jobs:
     runs-on: windows-latest
     steps:
     - name: Download ODT
+      shell: pwsh
       run: |
-        $ProgressPreference='SilentlyContinue'
-        $urls = @(
-          'https://download.microsoft.com/download/14/5/b/145b1cb9-d708-4e2e-8f1a-a0c66b3e651c/officedeploymenttool_18827-20262.exe',
-          'https://download.microsoft.com/download/2/7/A/27AF1BE6-DD20-4CB4-B154-EBAB8A7D4A7E/officedeploymenttool_13127-20612.exe'
-        )
-        foreach ($u in $urls) {
-          try { Invoke-WebRequest -Uri $u -OutFile odt.exe -ErrorAction Stop; break } catch { "odt fetch failed: $($_.Exception.Message)" }
+        $urls = @()
+        for ($t = 0; $t -lt 4 -and $urls.Count -eq 0; $t++) {
+          try {
+            $page = (Invoke-WebRequest -Uri "https://www.microsoft.com/en-us/download/details.aspx?id=49117" -UseBasicParsing -TimeoutSec 90).Content
+            foreach ($m in [regex]::Matches($page, 'https://download[.]microsoft[.]com/download/[^ <>"]+officedeploymenttool[^ <>"]+[.]exe')) { $urls += $m.Value }
+          } catch { "fetch attempt $t failed: $($_.Exception.Message)" }
+          if ($urls.Count -eq 0) { Start-Sleep -Seconds (5 * ($t + 1)) }
         }
-        if (-not (Test-Path odt.exe)) { throw 'no ODT available' }
-        Start-Process -FilePath .\odt.exe -ArgumentList '/quiet','/norestart' -Wait
+        if ($urls.Count -eq 0) { throw "odt link not found after retries" }
+        $got = $false
+        foreach ($u in $urls) {
+          for ($t = 0; $t -lt 3 -and -not $got; $t++) {
+            try { Invoke-WebRequest -Uri $u -OutFile odt.exe -UseBasicParsing -TimeoutSec 300; if ((Get-Item odt.exe).Length -gt 1MB) { $got = $true } }
+            catch { "dl attempt $t failed: $($_.Exception.Message)"; Start-Sleep -Seconds (5 * ($t + 1)) }
+          }
+          if ($got) { break }
+        }
+        if (-not $got) { throw "odt.exe download failed" }
+        Remove-Item odtx -Recurse -Force -EA SilentlyContinue
+        $x = $false
+        for ($t = 0; $t -lt 3 -and -not $x; $t++) {
+          Start-Process -Wait -FilePath .\odt.exe -ArgumentList "/extract:`"$PWD\odtx`" /quiet"
+          $x = Test-Path odtx\setup.exe
+          if (-not $x) { "extract attempt $t produced no setup.exe"; Start-Sleep -Seconds (5 * ($t + 1)) }
+        }
+        if (-not $x) { throw "odt extract failed" }
+
     - name: Install Current x64 (Outlook kept, rest excluded)
+      shell: pwsh
       run: |
-        New-Item -ItemType Directory -Force -Path cfg | Out-Null
-        $xml = @'
-        <Configuration>
-          <Add OfficeClientEdition="64" Channel="Current">
-            <Product ID="O365ProPlusRetail"><Language ID="en-us" /></Product>
-          </Add>
-          <ExcludeApp ID="Access" /><ExcludeApp ID="Lync" /><ExcludeApp ID="OneDrive" />
-          <ExcludeApp ID="Groove" /><ExcludeApp ID="Publisher" /><ExcludeApp ID="SharePointDesigner" />
-          <ExcludeApp ID="Teams" /><ExcludeApp ID="FormParser" /><ExcludeApp ID="Bing" /><ExcludeApp ID="CoPilot" />
-          <Display Level="None" AcceptEULA="TRUE" />
-        </Configuration>
-        '@
-        $xml | Out-File cfg\c.xml -Encoding ascii
-        $setup = (Get-ChildItem 'C:\Program Files*' -Recurse -Filter 'setup.exe' -ErrorAction SilentlyContinue | Where-Object { $_.FullName -match 'Office' } | Select-Object -First 1).FullName
-        "setup=$setup"
-        Start-Process -FilePath $setup -ArgumentList '/configure','cfg\c.xml' -Wait
-        Get-Item 'C:\Program Files\Microsoft Office\root\Office16\OLMAPI32.DLL' | Select-Object Name, Length, @{n='ver';e={$_.VersionInfo.FileVersion}} | Format-Table | Out-String
+        $xml = '<Configuration><Add OfficeClientEdition="64" Channel="Current"><Product ID="O365ProPlusRetail"><Language ID="en-us" /><ExcludeApp ID="Excel" /><ExcludeApp ID="PowerPoint" /><ExcludeApp ID="OneDrive" /><ExcludeApp ID="OneNote" /><ExcludeApp ID="Lync" /><ExcludeApp ID="Access" /><ExcludeApp ID="Groove" /><ExcludeApp ID="Publisher" /><ExcludeApp ID="Teams" /><ExcludeApp ID="Bing" /><ExcludeApp ID="Word" /></Product></Add><Display Level="None" AcceptEULA="TRUE" /><Updates Enabled="FALSE" /></Configuration>'
+        Set-Content -Path cfg.xml -Value $xml
+        Start-Process -Wait -FilePath .\odtx\setup.exe -ArgumentList "/configure","cfg.xml"
+        if (-not (Test-Path "C:\Program Files\Microsoft Office\root\Office16\OUTLOOK.EXE")) { throw "outlook install failed" }
+        $olm = Get-Item "C:\Program Files\Microsoft Office\root\Office16\OLMAPI32.DLL"
+        "olmapi32 len=$($olm.Length) v=$($olm.VersionInfo.FileVersion)" | Tee-Object ver.txt
+        $ol = Get-Item "C:\Program Files\Microsoft Office\root\Office16\OUTLMIME.DLL"
+        "outlmime len=$($ol.Length) v=$($ol.VersionInfo.FileVersion)" | Tee-Object -Append ver.txt
+
     - name: Materialize harness and corpus generator
       run: |
         New-Item -ItemType Directory -Force -Path bin, build, corpus, out, tools | Out-Null
