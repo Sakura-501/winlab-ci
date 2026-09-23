@@ -1,0 +1,4 @@
+bm ppcore!FValidateSlideTiming* ".printf \"VAL ret=%p\n\", @x30; g"
+bm ppcore!DesyncData@SlideTimingInfoXmlReader* ".printf \"DES ret=%p\n\", @x30; g"
+bm ppcore!ConstructContent@PPTSlideBaseReader* ".printf \"CC ret=%p\n\", @x30; g"
+g
