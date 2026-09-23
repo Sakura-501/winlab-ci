@@ -1,4 +1,4 @@
-bm ppcore!?FValidateSlideTiming* ".printf \"VAL ret=%p\n\", @x30; g"
-bm ppcore!?DesyncData@SlideTimingInfoXmlReader* ".printf \"DES ret=%p\n\", @x30; g"
-bm ppcore!?ConstructContent@PPTSlideBaseReader* ".printf \"CC ret=%p\n\", @x30; g"
+bu ppcore!?FValidateSlideTiming@@YA_NAEAVSlideBase@@_N@Z ".printf \"VAL ret=%p\\n\\", @x30; g"
+bu ppcore!?DesyncData@SlideTimingInfoXmlReader@FileIO@PPT@@SAXAEAVMetroReadParams@23@AEBVSlideTimingInfo@Pml@@AEBV?$TMap@KPEAUMSOSP@@@Ofc@@PEBV?$TMap@IV?$TWeakPtr@VConnectorDrawingElement@Dr@@@Ofc@@@23@@Z ".printf \"DES ret=%p\\n\\", @x30; g"
+bu ppcore!?ConstructContent@PPTSlideBaseReader@@MEAAXAEAVPersistentStorage@@AEBURecordHeader@@AEBVPPReadBuffer@@@Z ".printf \"CC ret=%p\\n\\", @x30; g"
 g
