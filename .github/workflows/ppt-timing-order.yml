@@ -29,7 +29,13 @@ jobs:
           New-Item -ItemType Directory -Force -Path C:\pptorder\out | Out-Null
           Copy-Item tools\pptorder\cdb_cmd.txt C:\pptorder\cdb_cmd.txt -Force
           Copy-Item carriers\timing_sample2.pptx C:\pptorder\timing_sample2.pptx -Force
-          $c = Get-ChildItem 'C:\Program Files\WindowsApps' -Directory -Filter 'Microsoft.WinDbg*' | ForEach-Object { Get-ChildItem $_.FullName -Recurse -Filter cdb.exe | Where-Object {$_.DirectoryName -match 'amd64'} } | Select-Object -First 1
+          $c = Get-ChildItem 'C:\Program Files\WindowsApps' -Directory -Filter 'Microsoft.WinDbg*' -ErrorAction SilentlyContinue | ForEach-Object { Get-ChildItem $_.FullName -Recurse -Filter cdb.exe -ErrorAction SilentlyContinue | Where-Object {$_.DirectoryName -match 'amd64'} } | Select-Object -First 1
+          if (-not $c) {
+            Get-ChildItem 'C:\Program Files\WindowsApps' -Directory -ErrorAction SilentlyContinue | Select-Object -First 20 -ExpandProperty Name | Out-File C:\pptorder\wa_dirs.txt
+            winget install Microsoft.WinDbg --accept-source-agreements --accept-package-agreements --disable-interactivity
+            $c = Get-ChildItem 'C:\Program Files\WindowsApps' -Directory -Filter 'Microsoft.WinDbg*' -ErrorAction SilentlyContinue | ForEach-Object { Get-ChildItem $_.FullName -Recurse -Filter cdb.exe -ErrorAction SilentlyContinue | Where-Object {$_.DirectoryName -match 'amd64|arm64'} } | Select-Object -First 1
+          }
+          if (-not $c) { Get-Content C:\pptorder\wa_dirs.txt -ErrorAction SilentlyContinue; throw "cdb not found after install" }
           New-Item -ItemType Directory -Force -Path C:\pptorder\dbg | Out-Null
           Copy-Item $c.FullName C:\pptorder\dbg\cdb.exe
           Get-ChildItem $c.DirectoryName -Filter *.dll | Copy-Item -Destination C:\pptorder\dbg\ -Force
