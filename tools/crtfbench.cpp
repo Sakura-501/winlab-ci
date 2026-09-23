@@ -1136,6 +1136,95 @@ int main(int argc, char **argv)
         fflush(stdout);
         return 0;
     }
+    if (mode == 60) {
+        // Identify an ITnef vtable slot by behaviour instead of by name, so the deep stages can be
+        // driven on a machine whose executed code chunk differs from the named dump (the ARM64 host runs
+        // the ARM64 chunk). One slot per process (CRTF_SLOT=k) because a wrong shape can fault: the probe
+        // is wrapped in __try/__except so the answer is a printed line, not a dead run.
+        // Shape tried is TNEF_OpenTaggedBody(ITnef*, LPMESSAGE, ULONG tag, LPSTREAM**).
+        int slotK = getenv("CRTF_SLOT") ? atoi(getenv("CRTF_SLOT")) : 6;
+        g_soft = 1;
+        PFN_OPEN_TNEF8 pOpA = (PFN_OPEN_TNEF8)GetProcAddress(g_hOlm, "OpenTnefStreamEx");
+        PFN_OPENMSGSESS pSA = (PFN_OPENMSGSESS)GetProcAddress(g_hOlm, "OpenIMsgSession");
+        PFN_OPENMSGONI pOA = (PFN_OPENMSGONI)GetProcAddress(g_hOlm, "OpenIMsgOnIStg");
+        PFN_ALLOCBUF pAA = (PFN_ALLOCBUF)GetProcAddress(g_hOlm, "MAPIAllocateBuffer");
+        PFN_ALLOCMORE pAMA = (PFN_ALLOCMORE)GetProcAddress(g_hOlm, "MAPIAllocateMore");
+        PFN_FREEBUF pFBA = (PFN_FREEBUF)GetProcAddress(g_hOlm, "MAPIFreeBuffer");
+        const char *bmA = getenv("CRTF_BASEMSG");
+        void *pMsgA = nullptr, *pSessA = nullptr, *pStgA = nullptr; IMalloc *pMlA = nullptr;
+        if (bmA && pSA && pOA) {
+            CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+            CoGetMalloc(MEMCTX_TASK, (IMalloc **)&pMlA);
+            WCHAR wa[1100]; MultiByteToWideChar(CP_ACP, 0, bmA, -1, wa, 1090);
+            StgOpenStorageEx(wa, STGM_READWRITE | STGM_SHARE_EXCLUSIVE, STGFMT_STORAGE, 0,
+                             nullptr, nullptr, __uuidof(IStorage), (void **)&pStgA);
+            pSA((void *)pMlA, 0, &pSessA);
+            pOA(pSessA, (void *)pAA, (void *)pAMA, (void *)pFBA, pMlA, nullptr, pStgA, nullptr, 0, 0, &pMsgA);
+        }
+        if (!pMsgA) { printf("S60NO_MSG\n"); return 12; }
+        size_t fszA = 0; BYTE *fbA = LoadBlob(argv[1], &fszA);
+        if (!fbA) { printf("NOINPUT\n"); return 11; }
+        typedef HRESULT(STDMETHODCALLTYPE *PFN_ANY)(void *, void *, ULONG, void **);
+        const ULONG tryTags[] = { 6u, 19u, 16u, 18u, 1u };
+        size_t offA = 0; unsigned long nA = 0, okA = 0, hitsA = 0;
+        unsigned long nmaxA = getenv("CRTF_NMAX") ? strtoul(getenv("CRTF_NMAX"), nullptr, 10) : 30;
+        char *recA = (char *)malloc(8u << 20);
+        ULONG flA = (argc > 2) ? (ULONG)strtoul(argv[2], nullptr, 16) : 2u;
+        while (offA + 1 < fszA && nA < nmaxA) {
+            size_t eA = offA; while (eA < fszA && fbA[eA] != '\n') eA++;
+            if (eA >= fszA) break;
+            long wantA = strtol((char *)fbA + offA, nullptr, 10);
+            size_t bA = eA + 1;
+            if (wantA < 0 || bA + (size_t)wantA > fszA || (size_t)wantA > (8u << 20)) break;
+            memcpy(recA, (char *)fbA + bA, wantA);
+            offA = bA + wantA;
+            if (offA < fszA && fbA[offA] == '\n') offA++;
+            nA++;
+            IStream *psA = nullptr;
+            if (FAILED(CreateStreamOnHGlobal(nullptr, TRUE, &psA)) || !psA) continue;
+            ULONG putA = 0; psA->Write(recA, (ULONG)wantA, &putA);
+            LARGE_INTEGER zA; zA.QuadPart = 0; psA->Seek(zA, STREAM_SEEK_SET, nullptr);
+            void *hTA = nullptr;
+            if (FAILED(pOpA(nullptr, psA, (char *)"winmail.dat", flA, pMsgA, 0x1234, nullptr, &hTA)) || !hTA) continue;
+            okA++;
+            void **slots = *(void ***)hTA;
+            PFN_ANY pAny = (PFN_ANY)slots[slotK];
+            for (unsigned q = 0; q < sizeof(tryTags) / sizeof(tryTags[0]); q++) {
+                void *pb = nullptr;
+                HRESULT hr = 0x8000FFFF;
+                __try {
+                    hr = pAny(hTA, pMsgA, tryTags[q], &pb);
+                } __except (GetExceptionCode() == EXCEPTION_ACCESS_VIOLATION ||
+                            GetExceptionCode() == (DWORD)0xC0000409 ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH) {
+                    printf("S60 k=%d rec=%lu tag=%u FAULT\n", slotK, nA, tryTags[q]); fflush(stdout);
+                    pb = nullptr; hr = 0xDEAD0000;
+                }
+                int looksObj = 0; unsigned long got = 0;
+                if (SUCCEEDED(hr) && pb) {
+                    void **vt2 = *(void ***)pb;
+                    MEMORY_BASIC_INFORMATION mb;
+                    if (VirtualQuery(vt2, &mb, sizeof(mb)) && (mb.Protect & (PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE)))
+                        looksObj = 1;
+                    if (looksObj) {   // drain it: only a real stream yields data
+                        BYTE *db = (BYTE *)malloc(4096); ULONG gg = 0; int k = 0;
+                        __try {
+                            while (k < 400 && SUCCEEDED(((IStream *)pb)->Read(db, 4096, &gg)) && gg) { got += gg; k++; }
+                        } __except (EXCEPTION_EXECUTE_HANDLER) { printf("S60 k=%d READ_FAULT\n", slotK); }
+                        free(db);
+                    }
+                }
+                if (SUCCEEDED(hr) && (looksObj || got)) hitsA++;
+                printf("S60 k=%d rec=%lu tag=%u hr=%08x out=%p obj=%d bytes=%lu\n",
+                       slotK, nA, tryTags[q], (unsigned)hr, pb, looksObj, got); fflush(stdout);
+            }
+            // LPTHNEF is an opaque handle, not an interface pointer: releasing through its first
+            // qword jumps wherever the handle's first field happens to point. Leak it in the probe.
+            ((PFN_RELEASE)*(void **)*((void ***)psA))(psA);
+            if (okA >= 6) break;
+        }
+        printf("S60SUM k=%d recs=%lu decoded=%lu hits=%lu\n", slotK, nA, okA, hitsA); fflush(stdout);
+        return 0;
+    }
     if (mode == 59) {
         // Identify the ITnef vtable exactly, without trusting a build-to-build slot order:
         // HrGetOpenTnefStream(LPITNEF*) is a factory whose body is `*a1 = operator new(16); (**a1) =

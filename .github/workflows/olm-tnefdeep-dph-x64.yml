@@ -77,39 +77,43 @@ jobs:
     - name: Arm full page heap and gate it behaviourally
       shell: pwsh
       run: |
-        $k = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\crtfbench61_x64.exe"
+        $k = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\crtfbench63_x64.exe"
         New-Item -Path $k -Force | Out-Null
         New-ItemProperty -Path $k -Name GlobalFlag -Value 0x02000000 -PropertyType DWord -Force | Out-Null
         New-ItemProperty -Path $k -Name PageHeapFlags -Value 0x3 -PropertyType DWord -Force | Out-Null
         "GlobalFlag=$((Get-Item $k).GetValue('GlobalFlag')) PageHeapFlags=$((Get-Item $k).GetValue('PageHeapFlags'))" | Out-File out\pageheap.txt
         Get-Content out\pageheap.txt
-        $s = & .\bin\crtfbench61_x64.exe selftest 0 256 0 120000 2>&1 | Out-String
+        $s = & .\bin\crtfbench63_x64.exe selftest 0 256 0 120000 2>&1 | Out-String
         $rc = $LASTEXITCODE -band [int]0xFFFFFFFF
         $armed = if (('{0:X8}' -f $rc) -eq 'C0000005' -and $s -notmatch 'NOT_DETECTED' -and $s -match 'ABOUT_TO_WRITE_PAST_END') { 'ARMED' } else { 'NOT_ARMED' }
         "SELFTEST rc=0x$('{0:X8}' -f $rc) verdict=$armed log=$(($s.Trim() -replace '\r?\n',' | '))" | Out-File out\selftest.txt
         Get-Content out\selftest.txt
         if ($armed -ne 'ARMED') { throw "instrument blind: aborting" }
+        # pwsh hands the step its exit code from the last native command, and the control above exits 0xC0000005
+        exit 0
 
     - name: Identify the live ITnef vtable
       shell: pwsh
       run: |
-        $v = & .\bin\crtfbench61_x64.exe - 2 256 59 120000 2>&1 | Out-String
+        $v = & .\bin\crtfbench63_x64.exe - 2 256 59 120000 2>&1 | Out-String
         $v | Out-File out\vtable.txt
         ($v.Trim() -replace '\r?\n', "`n")
         if ($v -notmatch 'T9SLOT  6 rva=') { throw "no vtable slots printed" }
+        exit 0
 
     - name: Positive control for the deep stages
       shell: pwsh
       run: |
         $env:CRTF_BASEMSG = "$PWD\corpus\base.msg"
         $env:CRTF_NMAX = '40'
-        $p = & .\bin\crtfbench61_x64.exe corpus\attr.txt 2 256 58 300000 2>&1 | Out-String
+        $p = & .\bin\crtfbench63_x64.exe corpus\attr.txt 2 256 58 300000 2>&1 | Out-String
         $rc = $LASTEXITCODE -band [int]0xFFFFFFFF
         "PCTRL rc=0x$('{0:X8}' -f $rc) $(($p.Trim() -replace '\r?\n',' | '))" | Out-File out\pctrl.txt
         Get-Content out\pctrl.txt
         if ($p -match '!!!AV|!!!EXC') { "fault during the positive control - recorded below and the job fails" ; $p | Out-File out\pctrl_full.txt; throw "positive control faulted" }
         if ($p -notmatch 'ok=[1-9]') { $p | Out-File out\pctrl_full.txt; throw "positive control decoded nothing (ok=0) - the corpus or the flags are wrong" }
         Remove-Item Env:CRTF_NMAX
+        exit 0
 
     - name: Stage A - dense count corpus through the deep slots
       shell: pwsh
@@ -121,7 +125,7 @@ jobs:
           $env:CRTF_BASEMSG = "$PWD\corpus\base.msg"
           Copy-Item bin\base_valid.msg corpus\base.msg -Force
           $log = "out\deep_dense_pass$p.log"
-          $o = & .\bin\crtfbench61_x64.exe corpus\dense.txt 2 256 58 900000 2>&1 | Out-String
+          $o = & .\bin\crtfbench63_x64.exe corpus\dense.txt 2 256 58 900000 2>&1 | Out-String
           $rc = $LASTEXITCODE -band [int]0xFFFFFFFF
           $o | Out-File $log
           $sum = ($o -split "`n" | Where-Object { $_ -match 'T8CASES|T8BODYERR|T8EXTRERR|!!!AV|!!!EXC|HOOKSTAT' }) -join ' | '
@@ -129,6 +133,7 @@ jobs:
           "pass $p rc=0x$('{0:X8}' -f $rc) $sum"
         }
         Remove-Item Env:CRTF_BASEMSG
+        exit 0
 
     - name: Stage B - single-axis disagreement corpus through the deep slots
       shell: pwsh
@@ -140,7 +145,7 @@ jobs:
           $env:CRTF_BASEMSG = "$PWD\corpus\base.msg"
           Copy-Item bin\base_valid.msg corpus\base.msg -Force
           $log = "out\deep_attr_pass$p.log"
-          $o = & .\bin\crtfbench61_x64.exe corpus\attr.txt 2 256 58 900000 2>&1 | Out-String
+          $o = & .\bin\crtfbench63_x64.exe corpus\attr.txt 2 256 58 900000 2>&1 | Out-String
           $rc = $LASTEXITCODE -band [int]0xFFFFFFFF
           $o | Out-File $log
           $sum = ($o -split "`n" | Where-Object { $_ -match 'T8CASES|T8BODYERR|T8EXTRERR|!!!AV|!!!EXC|HOOKSTAT' }) -join ' | '
@@ -148,6 +153,7 @@ jobs:
           "pass $p rc=0x$('{0:X8}' -f $rc) $sum"
         }
         Remove-Item Env:CRTF_BASEMSG
+        exit 0
 
     - name: Upload evidence
       if: always()
