@@ -145,22 +145,16 @@ jobs:
       shell: pwsh
       run: |
         New-Item -ItemType Directory -Force -Path out | Out-Null
-        $ver = (Get-Item "C:\Program Files\Microsoft Office\root\Office16\OLMAPI32.dll").VersionInfo
-        "BUILD FileVersion=$($ver.FileVersion) ProductVersion=$($ver.ProductVersion)" | Tee-Object out\scan_head.txt
-        foreach ($m in "OLMAPI32.dll", "OUTLMIME.dll", "Olk.dll", "OUTLOOK.EXE") {
-          $p = "C:\Program Files\Microsoft Office\root\Office16\$m"
-          if (-not (Test-Path $p)) { "SKIP $m absent" | Tee-Object -Append out\scan_head.txt; continue }
+        $root = "C:\Program Files\Microsoft Office\root\Office16"
+        foreach ($m in "OLMAPI32.dll", "OUTLMIME.dll", "Olk.dll", "OUTLOOK.EXE", "WINWORD.EXE", "mso.dll") {
+          $p = Join-Path $root $m
+          if (-not (Test-Path $p)) { "SKIP $m absent" | Tee-Object -Append out\bytescan.txt; continue }
           $vi = (Get-Item $p).VersionInfo
-          "MODULE $m version=$($vi.FileVersion)" | Tee-Object -Append out\scan_head.txt
-          $o = & .\bin\crtfbench45_x64.exe x $m 0 47 240000 2>&1 | Out-String
-          ($o -split "\r?\n" | Where-Object { $_ -match "code\[|free_iat|HIT|PDFSCAN|NOMOD|module=" }) | Set-Content "out\scan_$m.txt"
-          Get-Content "out\scan_$m.txt" | Select-Object -Last 4
+          "### MODULE $m version=$($vi.FileVersion) size=$((Get-Item $p).Length)" | Tee-Object -Append out\bytescan.txt
+          python tools\dfree_bytescan.py "$p" 2>&1 | Tee-Object -Append out\bytescan.txt |
+            Select-String -Pattern "^file=|^KEEP|DFREE-SCAN|Traceback" | ForEach-Object { $_.Line }
         }
-        # the two sites found by decompilation in the 20144 build; their helper is a deallocator
-        foreach ($f in Get-ChildItem out\scan_*.txt) {
-          $n = (Select-String -Path $f.FullName -Pattern "rva=0x5A1036").Count + (Select-String -Path $f.FullName -Pattern "rva=0x5A1387").Count
-          "$($f.Name) known_site_hits=$n"
-        }
+        "KEEPS_TOTAL=" + @(Select-String -Path out\bytescan.txt -Pattern "^KEEP").Count | Tee-Object -Append out\bytescan.txt
     - name: Clean up the IFEO key
       if: always()
       shell: pwsh
