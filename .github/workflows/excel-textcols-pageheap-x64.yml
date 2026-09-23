@@ -61,7 +61,8 @@ jobs:
     - name: Build carriers
       shell: pwsh
       run: |
-        python tools\mk_textcols_corpus.py corpus
+        python tools\mk_textcols_corpus.py corpus corpus
+        "carriers_in_corpus=" + (@(Get-ChildItem corpus -EA SilentlyContinue).Count)
         (Get-ChildItem corpus | Measure-Object).Count
 
     - name: Positive control - page heap must be loaded in EXCEL
@@ -95,6 +96,9 @@ jobs:
         function DumpList { @(Get-ChildItem C:\dumps -EA SilentlyContinue | ForEach-Object { $_.Name }) }
         $files = @(Get-ChildItem corpus | Where-Object { $_.Name -notlike 'ctrl_*' } | Sort-Object Name | Select-Object -First $cap)
         "cases=$($files.Count)" | Tee-Object -FilePath $log
+        # A sweep that opens nothing must never read as "no faults": the generator wrote to a
+        # different directory than the loop globbed once, and the job was green with cases=0.
+        if ($files.Count -lt 100) { throw "corpus not materialized in corpus\ (cases=$($files.Count))" }
         $bad = @()
         foreach ($f in $files) {
           $before = DumpList
