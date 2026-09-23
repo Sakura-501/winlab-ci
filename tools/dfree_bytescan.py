@@ -166,6 +166,7 @@ class PE:
             return "no-capstone", ""
         arg = ["rcx", "rdx", "r8", "r9"][arg_index]
         tainted = {arg}
+        slots = {}                        # (base reg, disp) -> holds the tagged pointer
         REG, MEM = capstone.x86.X86_OP_REG, capstone.x86.X86_OP_MEM
         md = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_64)
         md.detail = True
@@ -185,7 +186,16 @@ class PE:
                         else:
                             tainted.discard(dn)
                     elif ops[1].type == MEM:
-                        tainted.discard(dn)          # value read out of memory
+                        # MSVC keeps a parameter in an rbp/rsp-relative local and reloads it later.
+                        # Treating every reload as "unknown" loses true positives - that is how the
+                        # in-service 20430.20092 copy of FreeFileDescW stopped matching while the
+                        # 20144 copy still did. Track the spill slot instead.
+                        base = ins.reg_name(ops[1].mem.base) if ops[1].mem.base else ""
+                        key = (base, ops[1].mem.disp)
+                        if key in slots:
+                            tainted.add(dn)
+                        else:
+                            tainted.discard(dn)      # value read out of memory: not the argument
                 elif m == "xchg" and len(ops) == 2 and ops[0].type == REG and ops[1].type == REG:
                     a, b = ins.reg_name(ops[0].reg), ins.reg_name(ops[1].reg)
                     if (a in tainted) != (b in tainted):
@@ -203,6 +213,13 @@ class PE:
                     tainted.discard(dn)
                 elif m in ("push",) and ops[0].type == REG:
                     pass
+                if m == "mov" and ops[0].type == MEM and len(ops) > 1 and ops[1].type == REG:
+                    base = ins.reg_name(ops[0].mem.base) if ops[0].mem.base else ""
+                    key = (base, ops[0].mem.disp)
+                    if ins.reg_name(ops[1].reg) in tainted:
+                        slots[key] = True
+                    else:
+                        slots.pop(key, None)         # the local now holds something else
                 if ops[0].type == MEM and ins.reg_name(ops[0].mem.base) == "rip" and m in ("call", "jmp"):
                     tgt = ins.address + ins.size + ops[0].mem.disp
                     if self.slot_kind(tgt) == "free" and "rcx" in tainted:
