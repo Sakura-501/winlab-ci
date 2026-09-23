@@ -37,33 +37,48 @@ def csv_body(ncols_first, ncols_row, rows=3, delim=',', quote=False):
 
 
 def dif_body(ncols_first, ncols_row, rows=3):
-    # DIF: table of TP/VR pairs; every field is its own record
-    out = ['TABLE', 'X', '1', 'Y', '1', 'V']
-    def block(n, tag):
-        rec = ['' if i == 0 else cell(i) for i in range(n)]
-        out.append('T%d' % n)
-        out.extend(rec)
-    block(ncols_first, 'head')
-    for _ in range(rows):
-        block(ncols_row, 'row')
-    out.append('E')
+    # DIF per the published grammar: TABLE, the virtual/column tuple headers, then data as
+    # "<count>\n<value>\n<type>\n..." tuples, terminated by E.  Excel refused the earlier
+    # SYLK-flavoured file (28/28 .dif opened=0 in run 35919455035).
+    maxc = max(ncols_first, ncols_row)
+    out = ['TABLE', '1,V,%d' % maxc, 'N', '1,C,%d' % maxc, 'R%dC%d' % (rows + 1, maxc), '0,0',
+           '%d,%d' % (maxc, maxc), 'R,D', '0,0']
+
+    def tuplin(vals):
+        out.append(str(len(vals)))
+        for v in vals:
+            out.append('"%s"' % v)
+            out.append('1')
+
+    tuplin(['c%d' % i for i in range(ncols_first)])
+    for k in range(rows):
+        tuplin(['r%dc%d' % (k, i) for i in range(ncols_row)])
     out.append('E')
     return '\r\n'.join(out) + '\r\n'
 
 
 def slk_body(ncols_first, ncols_row, rows=3):
-    # SYLK: ID;P;E first, then C records. E record formulas carry no leading '='; strings are
-    # double-quoted (a syntax error here makes Excel reject the file, which would read as a false 0).
-    out = ['ID;P', 'O;E', 'P1;P;N4;C;W8']
-    def row(r, n):
-        rec = ['C;X1;K%d' % r]
+    # Shape copied from a file Excel itself writes for FileFormat:=2 (out.slk on the VM):
+    #   ID;PWXL;N;E / P;PGeneral / F;... / B;Y<rows>;X<cols>;D0 0 <r-1> <c-1>
+    #   C;Y<row>;X1;K"..."   then, for the rest of that row,   C;X<n>;K"..."
+    #   E
+    # 28/28 .slk carriers reported opened=0 in run 35919455035 because my earlier records
+    # carried no Y and repeated X1, so Excel refused the file before the parser ever ran.
+    maxc = max(ncols_first, ncols_row)
+    nrow = rows + 1
+    out = ['ID;PWXL;N;E', 'P;PGeneral', 'F;P0;DG0G8;M285',
+           'B;Y%d;X%d;D0 0 %d %d' % (nrow, maxc, nrow - 1, maxc - 1)]
+
+    def emit(r, n):
         for i in range(n):
-            rec.append('C;X%d;K"%s"' % (i + 1, cell(i)))
-        return '\r\n'.join(rec)     # one SYLK record per line
-    out.append(row(1, ncols_first))
+            if i == 0:
+                out.append('C;Y%d;X1;K"c%d"' % (r, i))
+            else:
+                out.append('C;X%d;K"c%d"' % (i + 1, i))
+
+    emit(1, ncols_first)
     for k in range(rows):
-        out.append(row(2 + k, ncols_row))
-    out.append('W;N')
+        emit(2 + k, ncols_row)
     out.append('E')
     return '\r\n'.join(out) + '\r\n'
 
