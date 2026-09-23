@@ -14,9 +14,11 @@ Get-ChildItem $c.DirectoryName -Filter *.dll | Copy-Item -Destination C:\pptorde
 Start-Process -FilePath 'C:\Program Files\Microsoft Office\root\Office16\POWERPNT.EXE' -WindowStyle Hidden
 Start-Sleep -Seconds 45
 $pp = Get-Process POWERPNT -ErrorAction SilentlyContinue | Select-Object -First 1
+if (-not $pp) { throw "no powerpoint" }
 $p = Start-Process -FilePath C:\pptorder\dbg\cdb.exe -ArgumentList '-p',$pp.Id,'-logo','C:\pptorder\out\cdb_order.log','-cf','C:\pptorder\cdb_cmd.txt' -PassThru -WindowStyle Hidden
-Start-Sleep -Seconds 30
-$job = Start-Process -FilePath powers.exe -ArgumentList '-Command','New-Object -ComObject PowerPoint.Application | Out-Null; $app=[Runtime.InteropServices.Marshal]::GetActiveObject(\"PowerPoint.Application\"); $app.Presentations.Open(\"C:\pptorder\timing_sample2.pptx\",$true,$false,$false) | Out-Null' -PassThru -WindowStyle Hidden
+Start-Sleep -Seconds 20
+$app = New-Object -ComObject PowerPoint.Application
+$app.Presentations.Open('C:\pptorder\timing_sample2.pptx', $true, $false, $false)
 Start-Sleep -Seconds 60
-Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
 (Get-Process POWERPNT -ErrorAction SilentlyContinue).MainWindowTitle | Out-File C:\pptorder\out\title.txt
+Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
