@@ -9,6 +9,13 @@ name: olm-dense-x64
 # Stage C: mode 11 over the single-axis corpus at full width. Each stage prints its own coverage counters and
 # the job fails if a control run decodes or extracts nothing, so a zero-fault reading cannot be mistaken for
 # a run that never parsed.
+'on':
+  workflow_dispatch:
+    inputs:
+      passes:
+        description: 'how many full-corpus passes per stage'
+        required: false
+        default: '2'
 jobs:
   t:
     runs-on: windows-latest
