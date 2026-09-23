@@ -155,6 +155,30 @@ jobs:
             Select-String -Pattern "^file=|^KEEP|DFREE-SCAN|Traceback" | ForEach-Object { $_.Line }
         }
         "KEEPS_TOTAL=" + @(Select-String -Path out\bytescan.txt -Pattern "^KEEP").Count | Tee-Object -Append out\bytescan.txt
+    - name: Dump the kept sites - callers, helper body, referenced strings
+      if: always()
+      shell: pwsh
+      run: |
+        New-Item -ItemType Directory -Force -Path out | Out-Null
+        python -m pip install --quiet capstone 2>&1 | Select-Object -Last 1
+        $root = "C:\Program Files\Microsoft Office\root\Office16"
+        $jobs = @{
+          "OUTLOOK.EXE" = @(@("69798C","697DD6","697B80","5B724"),)
+          "OLMAPI32.dll" = @(@("5A426C","5A43A0","5A4366","5A34B8"), @("5A4554","5A46DB","5A46B7","5A3548"))
+        }
+        foreach ($m in $jobs.Keys) {
+          $p = Join-Path $root $m
+          if (-not (Test-Path $p)) { continue }
+          foreach ($j in $jobs[$m]) {
+            $fn = $j[0]; $fe = $j[1]; $site = $j[2]; $helper = $j[3]
+            "--- $m site 0x$site in fn 0x$fn..0x$fe helper 0x$helper" | Tee-Object -Append out\adjudicate.txt
+            python tools\xrefs_x64.py "$p" $fn 2>&1 | Tee-Object -Append out\adjudicate.txt | Select-Object -First 12
+            $he = "{0:X}" + ""
+            python tools\dis_rva.py "$p" $fn $fe 2>&1 | Select-String -Pattern "call|A:|W:" | Select-Object -First 22 | Tee-Object -Append out\adjudicate.txt
+            "  ---- helper ----" | Tee-Object -Append out\adjudicate.txt
+            python tools\dis_rva.py "$p" $helper ("{0:X8}" -f ([Convert]::ToInt64($helper,16) + 0x140)) 2>&1 | Select-String -Pattern "call|ret|mov rcx|test" | Select-Object -First 22 | Tee-Object -Append out\adjudicate.txt
+          }
+        }
     - name: Clean up the IFEO key
       if: always()
       shell: pwsh
