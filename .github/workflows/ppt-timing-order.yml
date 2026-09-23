@@ -1,0 +1,58 @@
+name: ppt-timing-order
+on:
+  workflow_dispatch:
+jobs:
+  probe:
+    runs-on: windows-latest
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download ODT
+        shell: pwsh
+        run: |
+          $page = (Invoke-WebRequest -Uri "https://www.microsoft.com/en-us/download/details.aspx?id=49117" -UseBasicParsing).Content
+          if ($page -match 'href="(https://download\.microsoft\.com/download/[^"]+officedeploymenttool[^"]*\.exe)"') {
+            Invoke-WebRequest -Uri $Matches[1] -OutFile odt.exe
+          } else { throw "odt link not found" }
+          Start-Process -Wait -FilePath .\odt.exe -ArgumentList "/extract:odtx /quiet"
+      - name: Install CurrentPreview x64 Office (with PowerPoint)
+        shell: pwsh
+        run: |
+          $xml = '<Configuration><Add OfficeClientEdition="64" Channel="http://officecdn.microsoft.com/pr/5440fd1f-7ecb-4221-8110-145efaa6372f"><Product ID="O365ProPlusRetail"><Language ID="en-us" /><ExcludeApp ID="Excel" /><ExcludeApp ID="Outlook" /><ExcludeApp ID="OneDrive" /><ExcludeApp ID="OneNote" /><ExcludeApp ID="Lync" /><ExcludeApp ID="Bing" /></Product></Add><Display Level="None" AcceptEULA="TRUE" /><Updates Enabled="FALSE" /></Configuration>'
+          Set-Content -Path cfg.xml -Value $xml
+          Start-Process -Wait -FilePath .\odtx\setup.exe -ArgumentList "/configure","cfg.xml"
+          (Get-Item "C:\Program Files\Microsoft Office\root\Office16\POWERPNT.EXE").VersionInfo.FileVersion | Out-File ver.txt
+          (Get-Item "C:\Program Files\Microsoft Office\root\Office16\ppcore.dll").Length | Out-File ppsize.txt
+      - name: Run timing order probe
+        shell: powershell
+        run: |
+          New-Item -ItemType Directory -Force -Path C:\pptorder\out | Out-Null
+          Copy-Item tools\pptorder\cdb_cmd.txt C:\pptorder\cdb_cmd.txt -Force
+          Copy-Item carriers\timing_sample2.pptx C:\pptorder\timing_sample2.pptx -Force
+          $c = Get-ChildItem 'C:\Program Files\WindowsApps' -Directory -Filter 'Microsoft.WinDbg*' | ForEach-Object { Get-ChildItem $_.FullName -Recurse -Filter cdb.exe | Where-Object {$_.DirectoryName -match 'amd64'} } | Select-Object -First 1
+          New-Item -ItemType Directory -Force -Path C:\pptorder\dbg | Out-Null
+          Copy-Item $c.FullName C:\pptorder\dbg\cdb.exe
+          Get-ChildItem $c.DirectoryName -Filter *.dll | Copy-Item -Destination C:\pptorder\dbg\ -Force
+          $p = Start-Process -FilePath C:\pptorder\dbg\cdb.exe -ArgumentList '-logo','C:\pptorder\out\cdb_order.log','-cf','C:\pptorder\cdb_cmd.txt','C:\Program Files\Microsoft Office\root\Office16\POWERPNT.EXE','C:\pptorder\timing_sample2.pptx' -PassThru -WindowStyle Hidden
+          Start-Sleep -Seconds 100
+          Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 3
+          Get-Content C:\pptorder\out\cdb_order.log | Out-File C:\pptorder\out\cdb_order_copy.txt
+      - name: Show
+        if: always()
+        shell: pwsh
+        run: |
+          Get-Content C:\pptorder\out\cdb_order_copy.txt -ErrorAction SilentlyContinue | Select-String -Pattern 'VAL ret|DES ret|CC ret|lm m ppcore|ppcore' | Select-Object -First 40
+      - name: Collect
+        if: always()
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path ${{ github.workspace }}\out | Out-Null
+          Copy-Item C:\pptorder\out\* -Destination ${{ github.workspace }}\out -Force -ErrorAction SilentlyContinue
+          Copy-Item ver.txt,ppsize.txt -Destination ${{ github.workspace }}\out -Force -ErrorAction SilentlyContinue
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ppt-timing-order-out
+          path: out\
