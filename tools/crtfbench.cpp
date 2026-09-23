@@ -654,6 +654,434 @@ int main(int argc, char **argv)
         fflush(stdout);
         return 0;
     }
+    if (mode == 47) {
+        // Binary-level scan for "release helper, then free the same register".
+        // x64 form of the shape found in HrConvertFileDescToUnicode's failure pad:
+        //     48 8B Dx            mov     rdx, rX        ; helper's 2nd arg = the block
+        //     <0..6 bytes>        (the count argument set-up)
+        //     E8 ....             call    helper         ; the helper frees the block itself
+        //     48 8B Cx            mov     rcx, rX        ; SAME register, unmodified
+        //     FF 15 ....          call    cs:__imp_free  ; second release of that block
+        // Matching on bytes rather than decompiled text keeps working across builds and is not
+        // affected by the calls the decompiler renders as MEMORY[0].
+        const char *modname = argv[2] && argv[2][0] ? argv[2] : "OLMAPI32.dll";
+        HMODULE hm = GetModuleHandleA(modname);
+        if (!hm) hm = LoadLibraryExA(modname, nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
+        printf("module=%s hmod=%p\n", modname, (void *)hm); fflush(stdout);
+        if (!hm) { printf("NOMOD\n"); return 12; }
+        IMAGE_DOS_HEADER *dh = (IMAGE_DOS_HEADER *)hm;
+        IMAGE_NT_HEADERS64 *nt = (IMAGE_NT_HEADERS64 *)((char *)hm + dh->e_lfanew);
+        IMAGE_SECTION_HEADER *sh = IMAGE_FIRST_SECTION(nt);
+        struct SECT { unsigned char *p; unsigned long sz; unsigned long rva; };
+        static SECT secs[12]; int nsec = 0;
+        for (unsigned i = 0; i < nt->FileHeader.NumberOfSections && nsec < 12; i++)
+            if ((sh[i].Characteristics & IMAGE_SCN_MEM_EXECUTE) && !(sh[i].Characteristics & IMAGE_SCN_MEM_WRITE)) {
+                secs[nsec].p = (unsigned char *)hm + sh[i].VirtualAddress;
+                secs[nsec].sz = sh[i].Misc.VirtualSize;
+                secs[nsec].rva = sh[i].VirtualAddress;
+                printf("code[%d] rva=0x%lX size=0x%lX\n", nsec, sh[i].VirtualAddress, sh[i].Misc.VirtualSize);
+                nsec++;
+            }
+        if (!nsec) { printf("NOCODE\n"); return 13; }
+        unsigned char *code = nullptr; unsigned long codeSz = 0;   // set per section below
+        // the IAT slot the second call must go through: resolve "free" from the import directory
+        unsigned long long freeSlot = 0;
+        IMAGE_DATA_DIRECTORY *dd = &nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
+        if (dd->Size) {
+            for (IMAGE_IMPORT_DESCRIPTOR *imp = (IMAGE_IMPORT_DESCRIPTOR *)((char *)hm + dd->VirtualAddress);
+                 imp->Name; imp++) {
+                const char *dn = (const char *)hm + imp->Name;
+                BOOL api = _stricmp(dn, "api-ms-win-crt-heap-l1-1-0.dll") == 0 ||
+                           _stricmp(dn, "ucrtbase.dll") == 0 || _stricmp(dn, "msvcrt.dll") == 0 ||
+                           _stricmp(dn, "VCRUNTIME140.dll") == 0;
+                if (!api) continue;
+                if (!imp->FirstThunk) continue;
+                IMAGE_THUNK_DATA64 *ft = (IMAGE_THUNK_DATA64 *)((char *)hm + imp->FirstThunk);
+                IMAGE_THUNK_DATA64 *it = imp->OriginalFirstThunk
+                    ? (IMAGE_THUNK_DATA64 *)((char *)hm + imp->OriginalFirstThunk) : nullptr;
+                for (unsigned j = 0; ft[j].u1.AddressOfData; j++) {
+                    const char *nm = nullptr;
+                    if (it && !(it[j].u1.Ordinal & IMAGE_ORDINAL_FLAG64))
+                        nm = (const char *)hm + it[j].u1.AddressOfData + 2;
+                    if (nm && strcmp(nm, "free") == 0) freeSlot = (unsigned long long)&ft[j].u1.AddressOfData;
+                }
+            }
+        }
+        printf("free_iat_slot=0x%llX (rva 0x%llX)\n", freeSlot, hm ? freeSlot - (unsigned long long)hm : 0);
+        unsigned long hits = 0, scanned = 0;
+        for (int si = 0; si < nsec; si++) {
+        code = secs[si].p; codeSz = secs[si].sz;
+        for (unsigned long o = 0; o + 16 <= codeSz; o++, scanned++) {
+            if (code[o] != 0x48 || code[o + 1] != 0x8B || (code[o + 2] & 0xF0) != 0xD0) continue;
+            int n = code[o + 2] & 0x0F;                       // rX passed as the helper's 2nd arg
+            for (int k = 0; k <= 6; k++) {
+                unsigned long p = o + 3 + k;
+                if (p + 11 > codeSz) break;
+                if (code[p] != 0xE8) continue;                 // call helper
+                if (!(code[p + 5] == 0x48 && code[p + 6] == 0x8B && code[p + 7] == (0xC0 | n))) continue;
+                if (code[p + 8] != 0xFF || code[p + 9] != 0x15) continue;
+                long long rip = (long long)(code + p + 14);
+                unsigned tgt = *(unsigned *)(code + p + 10);
+                unsigned long long slot = (unsigned long long)(rip + (int)tgt);
+                if (freeSlot && slot != freeSlot) continue;
+                long long rel = (int)*(unsigned *)(code + p + 1);
+                unsigned long helperRva = (unsigned long)((code + p + 5 + rel) - (unsigned char *)hm);
+                hits++;
+                printf("HIT rva=0x%lX helper_rva=0x%lX reg=r%s pad_at_rva=0x%lX bytes=%02X %02X %02X %02X %02X\n",
+                       o + (unsigned long)((unsigned char *)code - (unsigned char *)hm), helperRva,
+                       n == 3 ? "bx" : n == 4 ? "sp" : n == 5 ? "bp" : n == 6 ? "si" : n == 7 ? "di" :
+                       n == 0 ? "rax" : n == 1 ? "rcx" : n == 2 ? "rdx" : "r8?",
+                       o + 5 + (unsigned long)((unsigned char *)code - (unsigned char *)hm),
+                       code[o], code[o + 1], code[o + 2], code[p], code[p + 7]);
+                fflush(stdout);
+                o = p + 7; break;
+            }
+        }
+        }
+        printf("PDFSCAN mod=%s scanned=%lu hits=%lu\n", modname, scanned, hits);
+        fflush(stdout);
+        return 0;
+    }
+    if (mode == 46) {
+        // Block-reuse probe. OLMAPI32's descriptor converters release through the UCRT heap
+        // (api-ms-win-crt-heap-l1-1-0 malloc/free), which is the same heap this /MD host
+        // allocates from, and that allocator does not police a second free of a live chunk.
+        // So the question is not "did it fault" but "can two owners end up holding one block":
+        // leave a free chunk of the array's size, optionally run the call that is supposed to
+        // free it twice, then take two allocations of that size and see whether they collide.
+        // CRTF_CALL=0 is the control arm (no call), CRTF_CALL=1 the measured arm.
+        g_soft = 0;
+        HMODULE ho = GetModuleHandleA("OLMAPI32.dll");
+        if (!ho) ho = LoadLibraryExA("OLMAPI32.dll", nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
+        typedef unsigned long (STDAPICALLTYPE *PFN_SENDMAIL)(void *, unsigned long long, void *,
+                                                             unsigned long, unsigned long);
+        PFN_SENDMAIL pSend = (PFN_SENDMAIL)GetProcAddress(ho, "MAPISendMail");
+        if (!pSend) { printf("NOSEND\n"); return 12; }
+        int cs = getenv("CRTF_CASE") ? atoi(getenv("CRTF_CASE")) : 1;
+        int doCall = getenv("CRTF_CALL") ? atoi(getenv("CRTF_CALL")) : 1;
+        static unsigned char msg[96];
+        static unsigned char fdarea[160];
+        memset(msg, 0, sizeof(msg)); memset(fdarea, 0, sizeof(fdarea));
+        *(unsigned long *)(msg + 0x00) = 65001;              // CP_UTF8 selector
+        *(unsigned long *)(msg + 0x50) = 1;                  // nFileCount
+        *(void **)(msg + 0x58) = fdarea;                     // lpFiles
+        static char badn[] = "\xED\xA0\x80";
+        static char badp[] = "\xC0\x80";
+        static char goodn[] = "note.txt";
+        static char goodp[] = "C:\\tmp\\a.txt";
+        if (cs == 1) { *(char **)(fdarea + 0x10) = badp; }
+        else if (cs == 2) { *(char **)(fdarea + 0x18) = badn; }
+        else if (cs == 3) { *(char **)(fdarea + 0x10) = badp; *(char **)(fdarea + 0x18) = badn; }
+        else { *(char **)(fdarea + 0x10) = goodp; *(char **)(fdarea + 0x18) = goodn; }
+        size_t sz = 40;                                      // one MapiFileDesc slot
+        void *a = malloc(sz); void *b = malloc(sz);
+        printf("PRE  case=%d call=%d a=%p b=%p same=%d\n", cs, doCall, a, b, a == b);
+        free(a); free(b);
+        a = malloc(sz); free(a);                             // leave a sz-byte chunk on the list
+        if (doCall) {
+            printf("CALL MAPISendMail case=%d\n", cs); fflush(stdout);
+            __try {
+                unsigned long hr = pSend(nullptr, 0, msg, 0xC, 0);
+                printf("CALL returned hr=%08x\n", (unsigned)hr);
+            } __except (EXCEPTION_EXECUTE_HANDLER) {
+                printf("EXC code=%08x\n", (unsigned)GetExceptionCode());
+            }
+            fflush(stdout);
+        }
+        void *x = malloc(sz); void *y = malloc(sz);
+        printf("POST x=%p y=%p same=%d\n", x, y, x == y);
+        if (x && y && x == y) {
+            memset(x, 0x41, sz);
+            unsigned char *q = (unsigned char *)y;
+            printf("ALIAS two owners of one block: x[0]=%02X y[0]=%02X same=%d\n",
+                   (unsigned)((unsigned char *)x)[0], (unsigned)q[0], 1);
+        }
+        fflush(stdout);
+        return 0;
+    }
+    if (mode == 45) {
+        // OLMAPI32's MAPISendMail -> HrConvertMessageToUnicode -> HrConvertFileDescToUnicode:
+        // the descriptor converter's failure landing pad calls FreeFileDescW(count, p) and then
+        // free(p), while FreeFileDescW already released p itself (it frees each element's two
+        // strings and then the array). One case per process so a fault cannot mask the others.
+        // Field offsets come from the module's own instructions: MapiMessage is 96 bytes with
+        // ulReserved+0, five strings at +8..+28, flFlags+30, lpOriginator+38, nRecipCount+40,
+        // lpRecips+48, nFileCount+50, lpFiles+58; MapiFileDesc is 40 bytes with
+        // lpszPathName+10 and lpszFileName+18 (the W twin uses the same offsets).
+        g_soft = 0;
+        HMODULE ho = GetModuleHandleA("OLMAPI32.dll");
+        if (!ho) ho = LoadLibraryExA("OLMAPI32.dll", nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
+        typedef unsigned long (STDAPICALLTYPE *PFN_SENDMAIL)(void *, unsigned long long, void *,
+                                                             unsigned long, unsigned long);
+        PFN_SENDMAIL pSend = (PFN_SENDMAIL)GetProcAddress(ho, "MAPISendMail");
+        printf("send=%p\n", (void *)pSend); fflush(stdout);
+        if (!pSend) { printf("NOSEND\n"); return 12; }
+        int cs = getenv("CRTF_CASE") ? atoi(getenv("CRTF_CASE")) : 1;
+        static unsigned char msg[96];
+        static unsigned char fd[40], fd2[40];
+        static char badn[] = "\xED\xA0\x80";        // UTF-8 encoding of a lone surrogate half
+        static char badp[] = "\xC0\x80";            // overlong NUL, also untranslatable
+        static char goodn[] = "note.txt";
+        static char goodp[] = "C:\\tmp";
+        memset(msg, 0, sizeof(msg));
+        memset(fd, 0, sizeof(fd)); memset(fd2, 0, sizeof(fd2));
+        *(unsigned long *)(msg + 0x00) = 65001;     // ulReserved == 65001 selects CP_UTF8
+        *(unsigned long *)(msg + 0x40) = 0;         // nRecipCount
+        unsigned long long nf = (cs == 3) ? 2 : 1;
+        *(unsigned long *)(msg + 0x50) = (unsigned long)nf;
+        *(void **)(msg + 0x58) = fd;
+        if (cs == 1) { *(char **)(fd + 0x18) = badn; }                 // file name fails
+        else if (cs == 2) { *(char **)(fd + 0x18) = goodn; *(char **)(fd + 0x10) = goodp;
+                            *(char **)(msg + 0x28) = badn; }           // message field fails first
+        else if (cs == 3) { *(char **)(fd + 0x18) = goodn; *(void **)(msg + 0x58) = fd;
+                            *(char **)(fd2 + 0x10) = badp; *(void **)(fd + 0x20) = nullptr;
+                            // second descriptor is fd+40: place the bad path there
+                            *(char **)(fd + 40 - 40 + 0x10) = goodp; }
+        else if (cs == 4) { *(char **)(fd + 0x10) = badp; }             // path name fails
+        else if (cs == 5) { *(char **)(fd + 0x18) = goodn; *(char **)(fd + 0x10) = goodp; } // all valid
+        // HrConvertStringToWideChar's other negative return is its own malloc(2*cch) failing,
+        // which lands the caller on the same cleanup pad; CRTF_PRESSURE reserves (but does not
+        // commit) most of the address space so that allocation is the one that fails.
+        char *held = nullptr;
+        if (getenv("CRTF_PRESSURE")) {
+            size_t gb = (size_t)strtoul(getenv("CRTF_PRESSURE"), nullptr, 10);
+            held = (char *)VirtualAlloc(nullptr, gb << 30, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+            printf("PRESSURE gb=%lu held=%p\n", (unsigned long)gb, (void *)held);
+            if (held) memset(held, 1, 4096);
+            fflush(stdout);
+        }
+        printf("CASE %d calling MAPISendMail(lhSession=0, ulUIParam=0, flFlags=0xC)\n", cs);
+        fflush(stdout);
+        unsigned long hr = 0;
+        __try {
+            hr = pSend(nullptr, 0, msg, 0xC, 0);
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            printf("EXC code=%08x\n", (unsigned)GetExceptionCode()); fflush(stdout);
+            return 20;
+        }
+        printf("CASE %d returned hr=%08x\n", cs, (unsigned)hr);
+        fflush(stdout);
+        return 0;
+    }
+    if (mode == 43) {
+        // OUTLMIME's Ess*DecodeEx driven through a decode-parameter struct that hands the callee
+        // OUR allocator. Every block the callee requests is placed so that its last byte is the
+        // last committed byte of a region followed by an uncommitted page: a write one past the
+        // size the callee itself asked for faults immediately, with the faulting address.
+        // The same table makes a release of an unknown or already-released block visible at the
+        // allocator boundary (double free / invalid free), which the heap's own metadata checks
+        // only notice later and only if they run at all.
+        g_soft = 1;
+        AddVectoredExceptionHandler(1, VehReport);
+        HMODULE hm3 = LoadLibraryExA("OUTLMIME.dll", nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
+        if (!hm3)
+            hm3 = LoadLibraryExA("C:\\Program Files\\Microsoft Office\\root\\Office16\\OUTLMIME.dll",
+                                 nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
+        printf("OUTLMIME=%p\n", (void *)hm3); fflush(stdout);
+        if (!hm3) { printf("NOMOD\n"); return 12; }
+        static const char *kd[] = { "EssContentHint", "EssReceiptRequest", "EssReceipt",
+                                    "EssMLHistory", "EssSecurityLabel", "EssKeyExchPreference",
+                                    "EssSignCertificate" };
+        const int NKD = 7;
+        PFN_DASEX pD3[8];
+        for (int k = 0; k < NKD; k++) {
+            char nm[80];
+            _snprintf(nm, sizeof(nm) - 1, "%sDecodeEx", kd[k]);
+            pD3[k] = (PFN_DASEX)GetProcAddress(hm3, nm);
+            printf("K %d %s dec=%p\n", k, kd[k], (void *)pD3[k]);
+        }
+
+        struct GK { void *p; void *base; unsigned long n; int live; };  // live: 1=callee, 2=harness
+        static GK gk[4096];
+        static int gkn = 0;
+        static long nalloc = 0, nfree = 0, nbad = 0, ndbl = 0, nmaxcb = 0, ngrow = 0,
+                      nhf = 0, nover = 0;
+        typedef void *(STDAPICALLTYPE *PA)(size_t);
+        typedef void (STDAPICALLTYPE *PF)(void *);
+        PA A3 = +[](size_t cb) -> void * {
+            unsigned long n = (unsigned long)(cb ? cb : 1);
+            InterlockedIncrement(&nalloc);
+            if ((long)n > nmaxcb) nmaxcb = (long)n;
+            unsigned long pay = (n + 0xFFFul) & ~0xFFFul;
+            unsigned char *base = (unsigned char *)VirtualAlloc(nullptr, pay + 0x1000, MEM_RESERVE, PAGE_NOACCESS);
+            if (!base) { InterlockedIncrement(&ngrow); return (unsigned char *)malloc(n); }
+            if (!VirtualAlloc(base, pay, MEM_COMMIT, PAGE_READWRITE)) {
+                VirtualFree(base, 0, MEM_RELEASE);
+                InterlockedIncrement(&ngrow);
+                return (unsigned char *)malloc(n);
+            }
+            unsigned char *p = base + pay - n;          // block ends flush at the guard page
+            int s = gkn;
+            if (s < 4096) { gkn++; } else { s = 4095; InterlockedIncrement(&ngrow); }
+            gk[s].p = p; gk[s].base = base; gk[s].n = n; gk[s].live = 1;
+            return p;
+        };
+        // A destination block for the fill pass: same flush-to-guard-page placement, but owned by
+        // the harness, so the callee writing past the capacity we handed it faults at the guard.
+        typedef void *(STDAPICALLTYPE *PH)(unsigned long);
+        PH H3 = +[](unsigned long n0) -> void * {
+            unsigned long n = n0 ? n0 : 1;
+            unsigned long pay = (n + 0xFFFul) & ~0xFFFul;
+            unsigned char *base = (unsigned char *)VirtualAlloc(nullptr, pay + 0x1000, MEM_RESERVE, PAGE_NOACCESS);
+            if (!base || !VirtualAlloc(base, pay, MEM_COMMIT, PAGE_READWRITE)) {
+                if (base) VirtualFree(base, 0, MEM_RELEASE);
+                InterlockedIncrement(&ngrow);
+                return (unsigned char *)malloc(n);
+            }
+            unsigned char *p = base + pay - n;
+            int st = gkn;
+            if (st < 4096) { gkn++; } else { st = 4095; InterlockedIncrement(&ngrow); }
+            gk[st].p = p; gk[st].base = base; gk[st].n = n; gk[st].live = 2;
+            return p;
+        };
+        PF F3 = +[](void *pv) {
+            InterlockedIncrement(&nfree);
+            int hit = -1;
+            for (int i = 0; i < gkn; i++) if (gk[i].live && gk[i].p == pv) { hit = i; break; }
+            if (hit < 0) {
+                InterlockedIncrement(&nbad);
+                printf("BADFREE p=%p n=%lu\n", pv, (unsigned long)nbad); fflush(stdout);
+                return;
+            }
+            if (gk[hit].live == 2) {
+                InterlockedIncrement(&nhf);   // the callee released a block whose owner is the caller
+                printf("CALLEEFREECALLER p=%p n=%lu\n", pv, (unsigned long)nhf); fflush(stdout);
+            }
+            gk[hit].live = 0;
+            unsigned char *base = (unsigned char *)gk[hit].base;
+            unsigned long pay = (gk[hit].n + 0xFFFul) & ~0xFFFul;
+            VirtualFree(base, 0, MEM_RELEASE);
+        };
+        // Release every live block directly: the detector must only ever fire for a release the
+        // callee itself performs, so the harness never goes through F3.
+        auto Sweep = +[]() -> unsigned long {
+            unsigned long got = 0;
+            for (int i = 0; i < gkn; i++) {
+                if (!gk[i].live) continue;
+                gk[i].live = 0;
+                VirtualFree((unsigned char *)gk[i].base, 0, MEM_RELEASE);
+                got++;
+            }
+            gkn = 0;        // every block of this record is gone; the table refills from slot 0
+            return got;
+        };
+        struct MY_PARA { unsigned long cbSize; PA pfnAlloc; PF pfnFree; };
+        static MY_PARA par3; par3.cbSize = (unsigned long)sizeof(MY_PARA); par3.pfnAlloc = A3; par3.pfnFree = F3;
+
+        size_t fsz3 = 0; BYTE *fb3 = LoadBlob(argv[1], &fsz3);
+        if (!fb3) { printf("NOINPUT\n"); return 11; }
+        static const BYTE kGood[] = { 0x30,0x0B,0x06,0x09,0x2B,0x06,0x01,0x04,0x01,0x82,0x37,0x2E,0x01 };
+
+        // calibration: which argument convention does the shipping caller use, and which one lets
+        // a record get as far as the flattener at all. Nothing downstream is a reading until a
+        // convention shows a non-zero allocation count (the callee actually ran).
+        if (getenv("CRTF_CALIB")) {
+            for (int k = 0; k < NKD; k++) {
+                if (!pD3[k]) continue;
+                for (int cv = 0; cv < 6; cv++) {
+                    void *pv = nullptr; unsigned long nd = 0; int r = 0;
+                    unsigned long fl = (cv & 1) ? 0x8000u : 0u;
+                    void *pa = (cv & 2) ? (void *)&par3 : nullptr;
+                    unsigned long bf = 256;
+                    void *pre = A3(bf);
+                    pv = pre;
+                    if (cv & 4) { pv = nullptr; }
+                    __try {
+                        r = pD3[k](k, 0, (unsigned char *)kGood, sizeof(kGood), fl, pa, &pv, &nd);
+                    } __except (EXCEPTION_EXECUTE_HANDLER) {
+                        r = -1;
+                        printf("CAL k=%d cv=%d code=%08x\n", k, cv, (unsigned)GetExceptionCode());
+                        continue;
+                    }
+                    printf("CAL k=%d cv=%d fl=%X para=%d pre=%d rc=%d nd=%lu pv=%p nal=%ld nblk=%lu gle=%08x\n",
+                           k, cv, fl, (cv & 2) ? 1 : 0, (cv & 4) ? 0 : 1, r, nd, pv, nalloc,
+                           Sweep(), (unsigned)GetLastError());
+                    fflush(stdout);
+                }
+            }
+            printf("CALIB nal=%ld nmaxcb=%ld nfree=%ld nbad=%ld\n", nalloc, nmaxcb, nfree, nbad);
+            fflush(stdout);
+            return 0;
+        }
+
+        unsigned long recs3 = 0, ok3 = 0, flt3 = 0, maxal = 0;
+        unsigned long perok[8] = { 0 }, perf[8] = { 0 }, perfill[8] = { 0 }, perfault[8] = { 0 }, nfill = 0;
+        unsigned long nmax3 = getenv("CRTF_NMAX") ? strtoul(getenv("CRTF_NMAX"), nullptr, 10) : 200000;
+        static const unsigned long dl[3] = { 0, 1, 64 };
+        size_t off3 = 0;
+        while (off3 + 1 < fsz3 && recs3 < nmax3) {
+            size_t e1 = off3; while (e1 < fsz3 && fb3[e1] != '\n') e1++;
+            if (e1 >= fsz3) break;
+            long want = strtol((char *)fb3 + off3, nullptr, 10);
+            size_t body = e1 + 1;
+            if (want <= 0 || body + (size_t)want > fsz3) break;
+            off3 = body + want;
+            if (off3 < fsz3 && fb3[off3] == '\n') off3++;
+            recs3++;
+            for (int k = 0; k < NKD; k++) {
+                if (!pD3[k]) continue;
+                // pass 1: ask the callee what size it needs (0x8000 = the query shape the
+                // in-module caller uses); nothing is written to a destination yet.
+                void *qpv = nullptr; unsigned long qn = 0; int rq = 0;
+                long before = nalloc, badb = nbad;
+                __try {
+                    rq = pD3[k](k, 0, fb3 + body, (ULONG)want, 0x8000, (void *)&par3, &qpv, &qn);
+                } __except (EXCEPTION_EXECUTE_HANDLER) {
+                    flt3++; perf[k]++;
+                    printf("!!!QFAULT r=%lu k=%d len=%ld code=%08x\n", recs3, k, want,
+                           (unsigned)GetExceptionCode()); fflush(stdout);
+                    Sweep(); continue;
+                }
+                if (nbad > badb) ndbl += (unsigned long)(nbad - badb);
+                if (nalloc - before > maxal) maxal = (unsigned long)(nalloc - before);
+                if (!rq || !qn || qn > (64u << 20)) { Sweep(); continue; }
+                ok3++; perok[k]++;
+                unsigned long need = qn;
+                // pass 2: hand it OUR buffer of exactly that size (and two deliberate deltas) as
+                // both the destination and the declared capacity, with the last byte of the block
+                // sitting against an uncommitted page.
+                for (int di = 0; di < 3; di++) {
+                    unsigned long cap = need + dl[di];
+                    unsigned char *buf = (unsigned char *)H3(cap);
+                    if (!buf) continue;
+                    memset(buf, 0xCC, cap);
+                    void *pv = buf; unsigned long cb = cap; int r2 = 0;
+                    long bad2 = nbad;
+                    __try {
+                        r2 = pD3[k](k, 0, fb3 + body, (ULONG)want, 0, (void *)&par3, &pv, &cb);
+                    } __except (EXCEPTION_EXECUTE_HANDLER) {
+                        flt3++; perfault[k]++;
+                        printf("!!!RFault r=%lu k=%d len=%ld need=%lu cap=%lu code=%08x\n", recs3, k,
+                               want, need, cap, (unsigned)GetExceptionCode()); fflush(stdout);
+                        continue;   // Sweep() at the end of the record releases the block
+                    }
+                    if (nbad > bad2) ndbl += (unsigned long)(nbad - bad2);
+                    perfill[k]++; nfill++;
+                    unsigned long past = 0;
+                    if (r2) {                       // did it write anything at or past the promised size?
+                        for (unsigned long z = need; z < cap; z++) if (buf[z] != 0xCC) { past = cap - z; break; }
+                    }
+                    if (past) { nover++; printf("PASTW r=%lu k=%d len=%ld need=%lu cap=%lu d=%lu rc=%d cb=%lu past=%lu\n",
+                                                 recs3, k, want, need, cap, dl[di], r2, cb, past); fflush(stdout); }
+                    if ((recs3 % 251) == 0 && di == 0)
+                        printf("FILL r=%lu k=%d len=%ld need=%lu d=%lu rc=%d cb=%lu gle=%08x\n",
+                               recs3, k, want, need, dl[di], r2, cb, (unsigned)GetLastError());
+                }
+                Sweep();
+            }
+            if ((recs3 & 255) == 0) {
+                printf("P r=%lu ok=%lu flt=%lu nal=%ld nbad=%ld nhf=%ld past=%lu\n",
+                       recs3, ok3, flt3, nalloc, nbad, nhf, nover); fflush(stdout);
+            }
+        }
+        for (int k = 0; k < NKD; k++)
+            printf("PERK %d %s qok=%lu fills=%lu qfault=%lu rfault=%lu\n", k, kd[k],
+                   perok[k], perfill[k], perf[k], perfault[k]);
+        printf("ESS43 recs=%lu qok=%lu fills=%lu qfault2=%lu past=%lu allocs=%ld maxallocs=%lu maxreq=%ld frees=%ld badfree=%ld cfcreator=%ld ownbad=%ld fallback=%ld\n",
+               recs3, ok3, nfill, flt3, nover, nalloc, maxal, nmaxcb, nfree, nbad, nhf, ndbl, ngrow);
+        fflush(stdout);
+        return 0;
+    }
     if (mode == 25) {
         // Read-after-free detector. Holds references that were taken from the message BEFORE an
         // RTFSync rewrite (which runs ScGetWriteChunkProp -> DestroyChunk -> MAPIFreeBuffer on the
