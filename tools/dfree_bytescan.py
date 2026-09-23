@@ -147,21 +147,69 @@ class PE:
         dll, nm = n
         return "free" if any(h in nm for h in FREE_HINTS) else "%s!%s" % (dll, nm)
 
-    def helper_releases(self, rva):
-        """Does the function containing rva make an indirect call to a free-family import?"""
+    def helper_frees_arg(self, rva, arg_index=1):
+        """Does the function release a pointer derived from its parameter at arg_index?
+
+        x64 passes the first four integer arguments in rcx, rdx, r8, r9. `wstring::assign(this,
+        src, len)` frees the string's previous buffer (reached through `this`), which is not a
+        release of `src`, so an "any free anywhere inside" test passes on correct code - that is
+        how a protocolhandler site looked like a double free. Propagate register-to-register
+        copies from the chosen argument only; a memory load clears the tag, so a pointer that
+        came out of a field never counts as the argument.
+        """
         f = self.fn_of(rva)
         if not f:
-            return "no-fn", None
-        body = self.read(f[0], f[1] - f[0])
-        names = set()
-        for j in range(len(body) - 6):
-            if body[j] == 0xFF and body[j + 1] == 0x15:
-                d = struct.unpack_from("<i", body, j + 2)[0]
-                tgt = f[0] + j + 6 + d
-                k = self.slot_kind(tgt)
-                if k == "free":
-                    names.add(self.imports.get(tgt, ("?", "?"))[1])
-        return ("YES" if names else "no"), (",".join(sorted(names)) if names else "")
+            return "no-fn", ""
+        try:
+            import capstone
+        except Exception:
+            return "no-capstone", ""
+        arg = ["rcx", "rdx", "r8", "r9"][arg_index]
+        tainted = {arg}
+        REG, MEM = capstone.x86.X86_OP_REG, capstone.x86.X86_OP_MEM
+        md = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_64)
+        md.detail = True
+        freed = []
+        for ins in md.disasm(self.read(f[0], f[1] - f[0]), f[0]):
+            try:
+                m = ins.mnemonic
+                ops = list(ins.operands)
+                if not ops:
+                    continue
+                d0 = ops[0].reg if ops[0].type == REG else None
+                dn = ins.reg_name(d0) if d0 else ""
+                if m == "mov" and len(ops) == 2 and ops[0].type == REG:
+                    if ops[1].type == REG:
+                        if ins.reg_name(ops[1].reg) in tainted:
+                            tainted.add(dn)
+                        else:
+                            tainted.discard(dn)
+                    elif ops[1].type == MEM:
+                        tainted.discard(dn)          # value read out of memory
+                elif m == "xchg" and len(ops) == 2 and ops[0].type == REG and ops[1].type == REG:
+                    a, b = ins.reg_name(ops[0].reg), ins.reg_name(ops[1].reg)
+                    if (a in tainted) != (b in tainted):
+                        tainted ^= {a, b}
+                elif m == "lea" and ops[0].type == REG and len(ops) > 1 and ops[1].type == MEM:
+                    parts = {ins.reg_name(ops[1].mem.base)} if ops[1].mem.base else set()
+                    ix = getattr(ops[1].mem, "index", 0)
+                    if ix:
+                        parts.add(ins.reg_name(ix))
+                    if parts & tainted:
+                        tainted.add(dn)              # interior pointer, still frees the block
+                    else:
+                        tainted.discard(dn)
+                elif ops[0].type == REG and m in ("add", "sub", "and", "or", "xor", "neg", "not"):
+                    tainted.discard(dn)
+                elif m in ("push",) and ops[0].type == REG:
+                    pass
+                if ops[0].type == MEM and ins.reg_name(ops[0].mem.base) == "rip" and m in ("call", "jmp"):
+                    tgt = ins.address + ins.size + ops[0].mem.disp
+                    if self.slot_kind(tgt) == "free" and "rcx" in tainted:
+                        freed.append("%06X" % ins.address)
+            except Exception:
+                continue
+        return ("YES" if freed else "no"), ",".join(freed[:4])
 
 
 def main():
@@ -181,7 +229,14 @@ def main():
         i = 0
         while i + 19 < L:
             scanned += 1
-            if blk[i] != 0x48 or blk[i + 1] != 0x8B or blk[i + 2] < 0xD0 or blk[i + 2] > 0xD7:
+            # ModRM must be register-to-register (mod=11) in both moves:
+            #   48 8B D<base>   mov rdx, r<base>      mod=11 reg=2(rdx)  r/m=base
+            #   48 8B C<8|base> mov rcx, r<base>      mod=11 reg=1(rcx)  r/m=base
+            # `48 8B 0B` is mov rcx,[rbx] - a member pointer, i.e. a different block - and letting
+            # the memory form through turned Excel's "free member, then free container" idiom into
+            # eight phantom hits while hiding nothing.
+            m0 = blk[i]
+            if blk[i] != 0x48 or blk[i + 1] != 0x8B or blk[i + 2] != (0xD0 | (blk[i + 2] & 7)):
                 i += 1
                 continue
             base = blk[i + 2] & 7
@@ -193,7 +248,7 @@ def main():
                 if blk[p2 + 5] != 0x48 or blk[p2 + 6] != 0x8B:
                     continue
                 md = blk[p2 + 7]
-                if (md & 7) != base or (md >> 3) & 7 != 1:
+                if md != (0xC8 | base):          # mov rcx, r<base>  (mod=11, reg=1)
                     continue
                 if blk[p2 + 8] != 0xFF or blk[p2 + 9] != 0x15:
                     continue
@@ -203,15 +258,15 @@ def main():
                 frel = struct.unpack_from("<i", blk, p2 + 10)[0]
                 slot = s["va"] + p2 + 14 + frel
                 kind = pe.slot_kind(slot)
-                hk, hn = pe.helper_releases(helper)
-                sf = pe.fn_of(site)
+                hk, hn = pe.helper_frees_arg(helper, 1)
+                sf = pe.fn_of(site) or (0, 0)
                 hits += 1
                 keep = kind == "free" and hk == "YES"
                 kept += 1 if keep else 0
                 print("%s site=0x%07X in_fn=0x%X..0x%X helper=0x%07X helper_releases=%s(%s) second_call=%s base=r%s" %
                       ("KEEP" if keep else "drop", site, sf[0] if sf else 0, sf[1] if sf else 0,
                        helper, hk, hn, kind,
-                       "rax rcx rdx rbx rsp rbp rsi rdi".split()[base]))
+                       "r%s" % "ax cx dx bx sp bp si di".split()[base]))
                 if found:
                     break
                 found = True
