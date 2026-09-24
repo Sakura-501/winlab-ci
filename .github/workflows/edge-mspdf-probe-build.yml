@@ -1,0 +1,108 @@
+name: edge-mspdf-probe-build
+'on':
+  workflow_dispatch: {}
+jobs:
+  t:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+    - name: install-current-stable-edge
+      shell: pwsh
+      continue-on-error: true
+      run: |
+        $j = (Invoke-WebRequest -Uri 'https://edgeupdates.microsoft.com/api/products' -UseBasicParsing -TimeoutSec 60).Content | ConvertFrom-Json
+        $rel = $null
+        foreach ($p in $j) {
+          if ($p.Product -ne 'Stable') { continue }
+          foreach ($r in $p.Releases) {
+            if ($r.Platform -eq 'Windows' -and $r.Architecture -eq 'x64') {
+              if (-not $rel -or [Version]$r.ProductVersion -gt [Version]$rel.ProductVersion) { $rel = $r }
+            }
+            if ($r.Platform -eq 'Windows x64') {
+              if (-not $rel -or [Version]$r.ProductVersion -gt [Version]$rel.ProductVersion) { $rel = $r }
+            }
+          }
+        }
+        if (-not $rel) { Write-Host 'no stable x64 release in api'; exit 0 }
+        $art = $rel.Artifacts | Where-Object { $_.ArtifactName -eq 'msi' } | Select-Object -First 1
+        Write-Host ('target_version=' + $rel.ProductVersion)
+        Invoke-WebRequest -Uri $art.Location -OutFile edge.msi -UseBasicParsing -TimeoutSec 900
+        $p2 = Start-Process msiexec.exe -ArgumentList '/i','edge.msi','/quiet','/norestart' -Wait -PassThru
+        Write-Host ('msiexec_exit=' + $p2.ExitCode)
+        Write-Host ('installed_after=' + (Get-Item 'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe' -EA SilentlyContinue).VersionInfo.FileVersion)
+    - name: build-and-run-probe
+      shell: pwsh
+      run: |
+        New-Item -ItemType Directory -Force -Path C:\mspdfprobe | Out-Null
+        $b64 = @'
+        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
+        '@
+        $clean = ($b64 -split "\s+" | Where-Object { $_ -ne '' }) -join ''
+        [IO.File]::WriteAllBytes('C:\mspdfprobe\p.gz', [Convert]::FromBase64String($clean))
+        tar -xzf C:\mspdfprobe\p.gz -C C:\mspdfprobe
+        $dll = Get-ChildItem 'C:\Program Files (x86)\Microsoft\Edge\Application' -Recurse -Filter mspdf.dll -EA SilentlyContinue | Select-Object -First 1
+        Write-Host ('mspdf=' + $dll.FullName + ' size=' + $dll.Length + ' v=' + $dll.VersionInfo.FileVersion)
+        Copy-Item $dll.FullName C:\mspdfprobe\mspdf.dll -Force
+        $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
+        Write-Host ('vs=' + $vs)
+        $vc = Join-Path $vs 'VC\Auxiliary\Build\vcvars64.bat'
+        Write-Host ('vcvars=' + $vc + ' exists=' + (Test-Path $vc))
+        Push-Location C:\mspdfprobe
+        cmd /c "`"$vc`" && cl /EHsc /W3 /Fe:mspdf_probe.exe mspdf_probe.cpp"
+        Write-Host ('build_exit=' + $LASTEXITCODE)
+        Write-Host ('exe_present=' + (Test-Path C:\mspdfprobe\mspdf_probe.exe))
+        .\mspdf_probe.exe C:\mspdfprobe\mspdf.dll 0
+        Write-Host ('mode0_exit=' + $LASTEXITCODE)
+        .\mspdf_probe.exe C:\mspdfprobe\mspdf.dll 1
+        Write-Host ('mode1_exit=' + $LASTEXITCODE)
+        Pop-Location
+        Get-Content C:\mspdfprobe\mspdf.dll.probe.log | Select-Object -First 200
+        Copy-Item C:\mspdfprobe\*.log C:\mspdfprobe\out_dir -Force -EA SilentlyContinue
+      continue-on-error: true
+    - name: upload
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: mspdf-probe
+        path: C:\mspdfprobe
+        if-no-files-found: warn
