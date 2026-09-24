@@ -1,0 +1,178 @@
+name: svg-probe-x64
+# In-process rig for MSOSVG.DLL (Office's own SVG parser; mso's SVGBlip::GetSVGImage
+# SafeLoadLibrary("msosvg.dll") + CreateSVGImage1Proxy(outObj, IStream*), mso 20430 x64
+# RVA 0x180b74de0). The probe runs under full page heap on its own image, so a one-byte tail
+# write or a use-after-free faults; the VEH records dir/rip/addr + owning module per case.
+# Gates: selftest must fault, init must load msosvg and resolve a proxy, otherwise the job dies
+# as instrument-blind instead of reporting a quiet zero.
+on:
+  workflow_dispatch:
+    inputs:
+      cap:
+        description: 'max payloads'
+        required: false
+        default: '400'
+      skip:
+        description: 'payloads to skip (shard offset)'
+        required: false
+        default: '0'
+      walk:
+        description: '1 = also call the parsed object vtable slots'
+        required: false
+        default: '1'
+      heap:
+        description: '1 = full page heap on the probe, 0 = off'
+        required: false
+        default: '1'
+      blob:
+        description: 'data/ file holding the tar.gz of .svg payloads'
+        required: false
+        default: 'svgc1.b64'
+
+jobs:
+  t:
+    runs-on: windows-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download ODT
+        shell: pwsh
+        run: |
+          $page = (Invoke-WebRequest -Uri "https://www.microsoft.com/en-us/download/details.aspx?id=49117" -UseBasicParsing).Content
+          if ($page -match 'href="(https://download\.microsoft\.com/download/[^"]+officedeploymenttool[^"]*\.exe)"') {
+            Invoke-WebRequest -Uri $Matches[1] -OutFile odt.exe
+          } else { throw "odt link not found" }
+          Start-Process -Wait -FilePath .\odt.exe -ArgumentList "/extract:odtx /quiet"
+
+      - name: Install Word only (x64)
+        shell: pwsh
+        run: |
+          $xml = '<Configuration><Add OfficeClientEdition="64" Channel="CurrentChannel"><Product ID="O365ProPlusRetail"><Language ID="en-us" /><ExcludeApp ID="Excel" /><ExcludeApp ID="PowerPoint" /><ExcludeApp ID="Outlook" /><ExcludeApp ID="OneDrive" /><ExcludeApp ID="OneNote" /><ExcludeApp ID="Access" /><ExcludeApp ID="Publisher" /><ExcludeApp ID="Lync" /><ExcludeApp ID="Bing" /></Product></Add><Display Level="None" AcceptEULA="TRUE" /><Updates Enabled="FALSE" /></Configuration>'
+          Set-Content -Path cfg.xml -Value $xml
+          Start-Process -Wait -FilePath .\odtx\setup.exe -ArgumentList "/configure","cfg.xml"
+          $inst = (Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Office\ClickToRun" -EA SilentlyContinue).InstallationPath
+          if (-not $inst) { $inst = "C:\Program Files\Microsoft Office\root" }
+          $inst = $inst.TrimEnd('\')
+          "INSTALLPATH=$inst" | Out-File -FilePath envline.txt -Encoding ascii
+          $w = Get-Item "$inst\Office16\WINWORD.EXE" -EA SilentlyContinue
+          if (-not $w) { throw "office install failed (inst=$inst)" }
+          "winword v=$($w.VersionInfo.FileVersion)" | Tee-Object ver.txt
+          (Get-Item "$inst\Office16\msosvg.dll").VersionInfo.FileVersion | Tee-Object -Append ver.txt
+          $m = Get-ChildItem "$inst\vfs\ProgramFilesCommonX64\Microsoft Shared\OFFICE16\mso.dll" -EA SilentlyContinue
+          "mso=$(if ($m) { $m.VersionInfo.FileVersion } else { 'MISSING' })" | Tee-Object -Append ver.txt
+
+      - name: Build the probe
+        shell: pwsh
+        run: |
+          $v = Get-ChildItem "C:\Program Files\Microsoft Visual Studio\2022\*\VC\Auxiliary\Build\vcvars64.bat" | Select-Object -First 1
+          if (-not $v) { $v = Get-ChildItem "C:\Program Files*\Microsoft Visual Studio\*\*\VC\Auxiliary\Build\vcvars64.bat" | Select-Object -First 1 }
+          if (-not $v) { throw "vcvars64 not found" }
+          $src = (Resolve-Path "tools\svgprobe.c").Path
+          # no null-device redirect inside generated batch text: '>/dev/null' style mangling broke a
+          # previous build (cmd reported "path not found" and cl never ran). Redirect outside.
+          Set-Content -Path build.bat -Value ("@echo off",
+            "call `"$($v.FullName)`" > buildlog.txt 2>&1",
+            "cl /nologo /W3 /O2 /Zi /Fesvgprobe_x64.exe /Fosvgprobe_obj\\ \"$src\" /link shlwapi.lib >> buildlog.txt 2>&1",
+            "echo EXIT=%ERRORLEVEL% >> buildlog.txt")
+          New-Item -ItemType Directory -Force -Path svgprobe_obj, out | Out-Null
+          cmd /c build.bat
+          Get-Content buildlog.txt
+          if (-not (Test-Path svgprobe_x64.exe)) { throw "probe did not build" }
+          $inst = (Get-Content envline.txt).Split('=')[1]
+          Copy-Item svgprobe_x64.exe "$inst\Office16\svgprobe_x64.exe" -Force
+          "probe at $inst\Office16\svgprobe_x64.exe" | Tee-Object probe.txt
+
+      - name: Arm page heap
+        shell: pwsh
+        run: |
+          $heap = [int]('${{ github.event.inputs.heap }}')
+          $k = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\svgprobe_x64.exe"
+          New-Item -Path $k -Force | Out-Null
+          if ($heap -eq 1) {
+            # measured premise: 0x02000000 is the value that actually engages full page heap here
+            New-ItemProperty -Path $k -Name GlobalFlag -Value 0x02000000 -PropertyType DWord -Force | Out-Null
+            New-ItemProperty -Path $k -Name DebuggerFlags -Value 0x100 -PropertyType DWord -Force | Out-Null
+          } else {
+            New-ItemProperty -Path $k -Name GlobalFlag -Value 0 -PropertyType DWord -Force | Out-Null
+          }
+          Get-Item $k | Format-List *
+
+      - name: Instrument selftest
+        shell: pwsh
+        run: |
+          $inst = (Get-Content envline.txt).Split('=')[1]
+          $exe = "$inst\Office16\svgprobe_x64.exe"
+          $o = & $exe selftest 2>&1
+          "SELFFOUT_LINES=$($o.Count)" | Out-File -FilePath out\selftest.txt
+          $o | Out-File -FilePath out\selftest.txt -Append
+          Get-Content out\selftest.txt
+          if ($LASTEXITCODE -ne 0) { throw "selftest tail write did not fault (exit=$LASTEXITCODE): instrument blind, not a zero result" }
+          if (-not (($o -join ' ') -match 'ooobo=1')) { throw "selftest did not report OOBO=1: instrument blind" }
+
+      - name: Loader selftest
+        shell: pwsh
+        run: |
+          $inst = (Get-Content envline.txt).Split('=')[1]
+          $o = & "$inst\Office16\svgprobe_x64.exe" init 2>&1
+          $o | Tee-Object -FilePath out\init.txt
+          if (-not (($o -join ' ') -match 'INIT ok')) { throw "msosvg.dll did not load / proxy unresolved: rig cannot drive the parser" }
+
+      - name: Unpack payloads
+        shell: pwsh
+        run: |
+          $blob = '${{ github.event.inputs.blob }}'
+          if ($blob -notmatch '^[a-z0-9]+\.b64$') { throw "bad blob name '$blob'" }
+          [IO.File]::WriteAllBytes("corpus.gz", [Convert]::FromBase64String((Get-Content ('data\' + $blob) -Raw).Trim()))
+          New-Item -ItemType Directory -Force -Path corpus | Out-Null
+          tar -xzf corpus.gz -C corpus
+          $n = @(Get-ChildItem corpus -Recurse -Filter *.svg | Where-Object { $_.Name -notlike '._*' }).Count
+          "svg=$n" | Tee-Object -FilePath out\setup.txt
+          if ($n -lt 40) { throw "payload corpus not materialized (n=$n)" }
+
+      - name: Sweep payloads
+        shell: pwsh
+        run: |
+          $inst = (Get-Content envline.txt).Split('=')[1]
+          $exe = "$inst\Office16\svgprobe_x64.exe"
+          $cap = [int]('${{ github.event.inputs.cap }}'); if ($cap -le 0) { $cap = 400 }
+          $skip = [int]('${{ github.event.inputs.skip }}')
+          $walk = '${{ github.event.inputs.walk }}'
+          $log = "out\sweep_log.txt"
+          $files = @(Get-ChildItem corpus -Recurse -Filter *.svg | Where-Object { $_.Name -notlike '._*' } |
+                     Sort-Object Name -Unique | Select-Object -Skip $skip -First $cap)
+          "cases=$($files.Count) walk=$walk" | Tee-Object -FilePath $log
+          $rows = @(); $bad = @()
+          $i = 0
+          foreach ($f in $files) {
+            $i++
+            $args2 = @('one', ('"{0}"' -f $f.FullName))
+            if ($walk -eq '1') { $args2 += 'v' }
+            $linefile = "out\row_{0:D4}.txt" -f $i
+            cmd /c "`"$exe`" $($args2 -join ' ') > `"$linefile`" 2>&1" | Out-Null
+            $txt = @(Get-Content $linefile -EA SilentlyContinue)
+            $row = ($txt | Where-Object { $_ -like 'ROW *' }) -join ' '
+            if (-not $row) { $row = "ROW file=$($f.Name) NOROW exit=$LASTEXITCODE tail=$(($txt | Select-Object -Last 2) -join ' / ')" }
+            $row | Tee-Object -FilePath $log -Append
+            $rows += $row
+            if ($row -match 'faults=[1-9]') { $bad += $row; $txt | Set-Content ("out\hit_{0:D4}.txt" -f $i) }
+            if ($row -like '*NOROW*') { $bad += $row }
+            if ($i % 25 -eq 0) { "progress $i/$($files.Count) hits=$($bad.Count)" | Tee-Object -FilePath $log -Append }
+          }
+          "SUMMARY cases=$($files.Count) rows=$($rows.Count) hits=$($bad.Count) " +
+            "write_hits=$(($bad | Where-Object { $_ -match 'dir=WRITE' }).Count) oobo=$(($rows | Where-Object { $_ -match 'faults=[1-9]' }).Count)" |
+            Tee-Object -FilePath $log -Append
+          $bad | Set-Content out\hits.txt
+          ($rows | Where-Object { $_ -match 'faults=[1-9]' }) | Set-Content out\fault_rows.txt
+          Get-Content out\hits.txt -EA SilentlyContinue | Select-Object -First 40
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: svg-probe-out
+          path: |
+            out
+            ver.txt
+            probe.txt
+            buildlog.txt
+          if-no-files-found: ignore
