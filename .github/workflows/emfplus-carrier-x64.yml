@@ -68,15 +68,15 @@ jobs:
         $src = Get-Content tools\ow_titles.ps1 -Raw; Invoke-Expression $src
         $O16 = "C:\Program Files\Microsoft Office\root\Office16"
         $log = "out\sweep_log.txt"
-        Add-Type @"
-using System; using System.Runtime.InteropServices;
-public class FG {
-  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
-  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
-  [DllImport("user32.dll")] public static extern IntPtr FindWindowW(string c, string t);
-  public struct RECT { public int Left, Top, Right, Bottom; }
-}
-"@
+        $fgsrc = @(
+          'using System;',
+          'using System.Runtime.InteropServices;',
+          'public class FG {',
+          '  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);',
+          '  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);',
+          '  public struct RECT { public int Left, Top, Right, Bottom; }',
+          '}') -join "`n"
+        Add-Type -TypeDefinition $fgsrc
         function Shot($path, $hwnd) {
           # Count red inside the document window only: the desktop and other Office windows carry red
           # chrome of their own, and a whole-screen count was measured red on a blank desktop.
