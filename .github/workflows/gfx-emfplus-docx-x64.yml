@@ -66,7 +66,9 @@ jobs:
         $emfL = @(Get-ChildItem corpus\emf | Where-Object { $_.Extension -eq '.emf' -and $_.Name -notlike '._*' } | Sort-Object Name -Unique)
         $ne = $emfL.Count
         "emf=$ne filterform=@(Get-ChildItem -Filter *.emf).Count=$(@(Get-ChildItem corpus\emf -Filter *.emf).Count)" | Tee-Object -FilePath out\setup_log.txt
-        if ($ne -lt 100) { throw "emf corpus not materialized (n=$ne)" }
+        # lowered from the original 100: small focused families (e.g. the DIB header sweep at 80
+        # carriers) were being killed here -- same inherited-gate failure mode as the .doc twin.
+        if ($ne -lt 40) { throw "emf corpus not materialized (n=$ne)" }
         python corpus\pack_all.py corpus\emf corpus\template.docx corpus\docx > out\manifest.tsv 2> out\pack_err.txt
         $rc = $LASTEXITCODE
         "pack_rc=$rc $(Get-Content out\pack_err.txt -Raw)".Trim() | Tee-Object -FilePath out\setup_log.txt -Append
