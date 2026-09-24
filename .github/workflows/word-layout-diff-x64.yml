@@ -76,7 +76,7 @@ jobs:
           $md5 = (Get-FileHash -Algorithm MD5 -Path $path -EA SilentlyContinue).Hash
           return @($wd, $ht, $red, $last, $ink, $md5)
         }
-        $names = @('a_nopic','b_pen','c_red','d_type13','e_wide')
+        $names = @('a_nopic','b_pen','c_red','d_type13','e_wide','f_pngblip','g_pngbig')
         $rounds = [int]('${{ github.event.inputs.rounds }}'); if ($rounds -le 0) { $rounds = 2 }
         $d = 0
         while ($d -lt $rounds) {
