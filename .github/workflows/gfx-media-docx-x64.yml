@@ -183,15 +183,23 @@ jobs:
         $docL = @(Get-ChildItem corpus\docx | Where-Object { $_.Extension -eq '.docx' -and $_.Name -notlike '._*' } | Sort-Object Name -Unique)
         # Cold start of a page-heaped Office measured 306 s to the first window, so the control carrier
         # gets a 480 s budget; every later case reuses that process (warm reuse measured 11 s/case).
-        $ctl = @($docL | Where-Object { $_.Name -like 'ctl_*' })[0]
-        if (-not $ctl) { throw "no ctl_* control carrier in corpus\docx" }
-        Set-Content -Path $ctl.FullName -Stream Zone.Identifier -Value "[ZoneTransfer]`r`nZoneId=3" -Encoding ASCII
+        # Sort-Object Name uses culture-aware comparison on the runner, so a -like 'ctl_*' pick can
+        # hand back the duotone BMP twin (run 36056160269: COLD ctl_ok_duo_bmp state=timeout s=481);
+        # the control list is therefore explicit and each candidate gets its own cold budget.
         $t0 = Get-Date
-        Start-Process -FilePath $ww -ArgumentList ('"' + $ctl.FullName + '"') | Out-Null
-        $r0 = Wait-Case $ctl.BaseName 96 5 ((DumpList).Count)
-        $cold = "COLD $ctl.Name state=$($r0.state) verifier=$(VerOn) s=$([int]((Get-Date)-$t0).TotalSeconds) title=$($r0.title)"
-        $cold | Tee-Object -FilePath $log
-        if ($r0.state -ne 'ok') { throw "cold control $ctl.Name never produced a window ($($r0.state)): instrument blind" }
+        $ctl = $null; $r0 = $null
+        foreach ($cn in @('ctl_ok8_plain_png.docx','ctl_ok_plain_gif.docx','ctl_ok_plain_bmp.docx')) {
+          $cand = @($docL | Where-Object { $_.Name -eq $cn })[0]
+          if (-not $cand) { "COLDMISS $cn" | Tee-Object -FilePath $log -Append; continue }
+          Set-Content -Path $cand.FullName -Stream Zone.Identifier -Value "[ZoneTransfer]`r`nZoneId=3" -Encoding ASCII
+          Start-Process -FilePath $ww -ArgumentList ('"' + $cand.FullName + '"') | Out-Null
+          $try = Wait-Case $cand.BaseName 48 5 ((DumpList).Count)
+          "COLD $cn state=$($try.state) verifier=$(VerOn) s=$([int]((Get-Date)-$t0).TotalSeconds) title=$($try.title)" | Tee-Object -FilePath $log -Append
+          if ($try.state -eq 'ok') { $ctl = $cand; $r0 = $try; break }
+          Stop-Process -Name WINWORD -Force -EA SilentlyContinue
+          Start-Sleep -Seconds 6
+        }
+        if (-not $ctl) { throw "no control carrier produced a window: instrument blind" }
         if ((VerOn) -ne 1) { throw "verifier.dll not loaded in the warm WINWORD: page heap not in effect" }
         [WX]::Close($r0.hwnd); Start-Sleep -Seconds 4
 
