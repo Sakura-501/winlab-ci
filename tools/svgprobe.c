@@ -139,11 +139,36 @@ static int load_dir(const wchar_t *dir)
     return 0;
 }
 
+/* A bare LoadLibraryExW of a guessed path reports err=126 for "wrong directory" and for
+ * "missing dependency" identically, which is what stalled run 36063810888: the two client
+ * modules msosvg imports 50 ordinals from are not both under Office16. Look each one up in
+ * every install directory, print where it was found, then load it with its own directory on
+ * the dependency search path. */
+static const wchar_t *g_dirs[3];
+static int g_ndirs;
+
+static HMODULE load_named(const wchar_t *name, const wchar_t *tag)
+{
+    int i;
+    HMODULE m = NULL;
+    wchar_t p[MAX_PATH];
+    for (i = 0; i < g_ndirs && !m; i++) {
+        DWORD a;
+        swprintf(p, MAX_PATH, L"%s\\%s", g_dirs[i], name);
+        a = GetFileAttributesW(p);
+        if (a == INVALID_FILE_ATTRIBUTES) continue;
+        m = LoadLibraryExW(p, NULL, LOAD_WITH_ALTERED_SEARCH_PATH);
+        printf("%s found=%S load=%s err=%lu\n", tag, p, m ? "ok" : "FAIL",
+               m ? 0 : GetLastError());
+    }
+    if (!m) printf("%s NOTFOUND in %d dirs\n", tag, g_ndirs);
+    return m;
+}
+
 static int office_init(void)
 {
-    wchar_t root[MAX_PATH], d1[MAX_PATH], d2[MAX_PATH];
-    HMODULE mso, c20, c40;
-    DWORD e;
+    wchar_t root[MAX_PATH], d1[MAX_PATH], d2[MAX_PATH], d3[MAX_PATH];
+    HMODULE m;
     if (!SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_DEFAULT_DIRS))
         printf("SetDefaultDllDirectories err=%lu\n", GetLastError());
     if (!GetModuleFileNameW(NULL, root, MAX_PATH)) { printf("no exepath err=%lu\n", GetLastError()); return 0; }
@@ -151,52 +176,32 @@ static int office_init(void)
         wchar_t *s = wcsrchr(root, L'\\');
         if (s) *s = 0;
         s = wcsrchr(root, L'\\');
-        if (s) *s = 0;              /* strip ..\svglab -> keep Office root */
+        if (s) *s = 0;              /* the probe runs from <root>\Office16 */
     }
     swprintf(d1, MAX_PATH, L"%s\\Office16", root);
-    swprintf(d2, MAX_PATH,
-             L"%s\\vfs\\ProgramFilesCommonX64\\Microsoft Shared\\OFFICE16", root);
-    printf("dir1=%S\n", d1);
-    printf("dir2=%S\n", d2);
-    load_dir(d1); load_dir(d2);
+    swprintf(d2, MAX_PATH, L"%s\\vfs\\ProgramFilesCommonX64\\Microsoft Shared\\OFFICE16", root);
+    swprintf(d3, MAX_PATH, L"%s\\Client\\Program Files\\Common Files\\Microsoft Shared\\OFFICE16", root);
+    load_dir(d1); load_dir(d2); load_dir(d3);
+    SetDllDirectoryW(d1);
+    g_dirs[0] = d2;                 /* mso.dll lives in the common tree */
+    g_dirs[1] = d1;
+    g_dirs[2] = d3;
+    g_ndirs = 3;
+    m = load_named(L"mso.dll", "mso");
+    if (!m) { printf("MSONOTLOADED\n"); return 0; }
+    load_named(L"Mso20Win32Client.dll", "c20");
+    load_named(L"mso40uiWin32Client.dll", "c40");
+    m = load_named(L"msosvg.dll", "msosvg");
+    if (!m) return 0;
+    g_svg = m;
     {
-        wchar_t mp[MAX_PATH];
-        swprintf(mp, MAX_PATH, L"%s\\mso.dll", d2);
-        mso = LoadLibraryExW(mp, NULL, LOAD_WITH_ALTERED_SEARCH_PATH);
-        printf("mso=%s err=%lu path=%S\n", mso ? "ok" : "FAIL", GetLastError(), mp);
-    }
-    {
-        wchar_t p[MAX_PATH];
-        swprintf(p, MAX_PATH, L"%s\\Mso20Win32Client.dll", d1);
-        c20 = LoadLibraryExW(p, NULL, LOAD_WITH_ALTERED_SEARCH_PATH);
-        printf("Mso20Win32Client=%s err=%lu\n", c20 ? "ok" : "FAIL", c20 ? 0 : GetLastError());
-        if (!c20) { swprintf(p, MAX_PATH, L"%s\\Mso20Win32Client.dll", d2);
-                    c20 = LoadLibraryExW(p, NULL, LOAD_WITH_ALTERED_SEARCH_PATH);
-                    printf("Mso20Win32Client(vfs)=%s err=%lu\n", c20 ? "ok" : "FAIL", GetLastError()); }
-        swprintf(p, MAX_PATH, L"%s\\mso40uiWin32Client.dll", d1);
-        c40 = LoadLibraryExW(p, NULL, LOAD_WITH_ALTERED_SEARCH_PATH);
-        printf("mso40uiWin32Client=%s err=%lu\n", c40 ? "ok" : "FAIL", c40 ? 0 : GetLastError());
-        swprintf(p, MAX_PATH, L"%s\\msosvg.dll", d1);
-        g_svg = LoadLibraryExW(p, NULL, LOAD_WITH_ALTERED_SEARCH_PATH);
-        e = GetLastError();
-        printf("msosvg=%s err=%lu\n", g_svg ? "ok" : "FAIL", e);
-        if (!g_svg) {
-            swprintf(p, MAX_PATH, L"%s\\MSOSVG.DLL", d1);
-            g_svg = LoadLibraryExW(p, NULL, LOAD_WITH_ALTERED_SEARCH_PATH);
-            printf("msosvg2=%s err=%lu\n", g_svg ? "ok" : "FAIL", GetLastError());
-        }
-    }
-    if (!g_svg) return 0;
-    {
-        wchar_t wv[MAX_PATH]; void *vp;
+        wchar_t wv[MAX_PATH];
         GetModuleFileNameW(g_svg, wv, MAX_PATH);
-        vp = GetProcAddress(g_svg, "CreateSVGImage1Proxy");
-        printf("svgpath=%S\nproxy_a=0x%p\n", wv, vp);
-        g_proxy[0] = (FARPROC)vp;
+        g_proxy[0] = GetProcAddress(g_svg, g_proxyName[0]);
         g_proxy[1] = GetProcAddress(g_svg, g_proxyName[1]);
-        printf("proxy_b=%p\n", (void *)g_proxy[1]);
+        printf("svgpath=%S\nproxy_a=%p\nproxy_b=%p\n", wv, (void *)g_proxy[0], (void *)g_proxy[1]);
     }
-    return 1;
+    return g_proxy[0] || g_proxy[1];
 }
 
 static unsigned char *slurp(const char *path, DWORD *len)
