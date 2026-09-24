@@ -26,25 +26,42 @@ jobs:
       - name: Run timing order probe
         shell: powershell
         run: |
-          # pre-warm: launch/quit POWERPNT once without debugger
-          Start-Process -FilePath 'C:\Program Files\Microsoft Office\root\Office16\POWERPNT.EXE'
-          Start-Sleep -Seconds 120
-          Get-Process POWERPNT -ErrorAction SilentlyContinue | Stop-Process -Force
-          Start-Sleep -Seconds 5
           New-Item -ItemType Directory -Force -Path C:\pptorder\out | Out-Null
           Copy-Item tools\pptorder\cdb_cmd.txt C:\pptorder\cdb_cmd.txt -Force
           Copy-Item carriers\timing_sample2.pptx C:\pptorder\timing_sample2.pptx -Force
           $c = Get-ChildItem 'C:\Program Files\WindowsApps' -Directory -Filter 'Microsoft.WinDbg*' -ErrorAction SilentlyContinue | ForEach-Object { Get-ChildItem $_.FullName -Recurse -Filter cdb.exe -ErrorAction SilentlyContinue | Where-Object {$_.DirectoryName -match 'amd64'} } | Select-Object -First 1
-          if (-not $c) {
-            winget install Microsoft.WinDbg --accept-source-agreements --accept-package-agreements --disable-interactivity
-            $c = Get-ChildItem 'C:\Program Files\WindowsApps' -Directory -Filter 'Microsoft.WinDbg*' -ErrorAction SilentlyContinue | ForEach-Object { Get-ChildItem $_.FullName -Recurse -Filter cdb.exe -ErrorAction SilentlyContinue | Where-Object {$_.DirectoryName -match 'amd64'} } | Select-Object -First 1
-          }
+          if (-not $c) { throw "cdb not found" }
           New-Item -ItemType Directory -Force -Path C:\pptorder\dbg | Out-Null
           Copy-Item $c.FullName C:\pptorder\dbg\cdb.exe
           Get-ChildItem $c.DirectoryName -Filter *.dll | Copy-Item -Destination C:\pptorder\dbg\ -Force
+          # cdb cmd: sxdn noise + bu deferred bps + long wait
+          Set-Content -Path C:\pptorder\cdb_cmd.txt -Value @'
+          sxdn av
+          sxdn e06d7363
+          sxdn 40080201
+          sxdn c000041d
+          sxdn c000001d
+          sxn ld
+          sxn unld
+          bu ppcore+0x788e8 "k 5; g"
+          bu ppcore+0x9f3e8 "k 5; g"
+          bu ppcore+0x5a878 "k 5; g"
+          g
+          '@ -Encoding ASCII
           $p = Start-Process -FilePath C:\pptorder\dbg\cdb.exe -ArgumentList '-logo','C:\pptorder\out\cdb_order.log','-cf','C:\pptorder\cdb_cmd.txt','C:\Program Files\Microsoft Office\root\Office16\POWERPNT.EXE','C:\pptorder\timing_sample2.pptx' -PassThru -WindowStyle Hidden
-          Start-Sleep -Seconds 1800
+          # wait up to 45 min for open to complete (poll title)
+          $deadline = (Get-Date).AddMinutes(45)
+          while ((Get-Date) -lt $deadline) {
+            Start-Sleep -Seconds 30
+            $t = (Get-Process POWERPNT -ErrorAction SilentlyContinue).MainWindowTitle
+            if ($t -and $t -notmatch 'Opening') { break }
+          }
+          Start-Sleep -Seconds 60
+          (Get-Process POWERPNT -ErrorAction SilentlyContinue).MainWindowTitle | Out-File C:\pptorder\out\title.txt
           Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 5
+          Copy-Item C:\pptorder\out\cdb_order.log C:\pptorder\out\cdb_order_copy.txt -Force
+
       - name: Collect
         if: always()
         shell: pwsh
