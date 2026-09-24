@@ -71,9 +71,12 @@ jobs:
           $src = (Resolve-Path "tools\svgprobe.c").Path
           # no null-device redirect inside generated batch text: '>/dev/null' style mangling broke a
           # previous build (cmd reported "path not found" and cl never ran). Redirect outside.
+          # PS escapes an inner double quote with a backtick, not a backslash (a \" form produced a
+          # ParserError on run 36060749823), so the cl line is built as a single-quoted format string.
+          $cl = 'cl /nologo /W3 /O2 /Zi /Fesvgprobe_x64.exe /Fosvgprobe_obj\ "{0}" /link shlwapi.lib >> buildlog.txt 2>&1' -f $src
           Set-Content -Path build.bat -Value ("@echo off",
             "call `"$($v.FullName)`" > buildlog.txt 2>&1",
-            "cl /nologo /W3 /O2 /Zi /Fesvgprobe_x64.exe /Fosvgprobe_obj\\ \"$src\" /link shlwapi.lib >> buildlog.txt 2>&1",
+            $cl,
             "echo EXIT=%ERRORLEVEL% >> buildlog.txt")
           New-Item -ItemType Directory -Force -Path svgprobe_obj, out | Out-Null
           cmd /c build.bat
