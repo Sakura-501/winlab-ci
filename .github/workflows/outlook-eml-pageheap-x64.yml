@@ -1,0 +1,148 @@
+name: outlook-eml-pageheap-x64
+'on':
+  workflow_dispatch:
+    inputs:
+      cap:
+        description: 'max carriers'
+        required: false
+        default: '110'
+jobs:
+  t:
+    runs-on: windows-latest
+    timeout-minutes: 200
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Download ODT
+      shell: pwsh
+      run: |
+        $page = (Invoke-WebRequest -Uri "https://www.microsoft.com/en-us/download/details.aspx?id=49117" -UseBasicParsing).Content
+        if ($page -match 'href="(https://download\.microsoft\.com/download/[^"]+officedeploymenttool[^"]*\.exe)"') {
+          Invoke-WebRequest -Uri $Matches[1] -OutFile odt.exe
+        } else { throw "odt link not found" }
+        Start-Process -Wait -FilePath .\odt.exe -ArgumentList "/extract:odtx /quiet"
+
+    - name: Install x64 Office (Outlook needed)
+      shell: pwsh
+      run: |
+        $xml = '<Configuration><Add OfficeClientEdition="64" Channel="CurrentChannel"><Product ID="O365ProPlusRetail"><Language ID="en-us" /><ExcludeApp ID="OneDrive" /><ExcludeApp ID="Bing" /></Product></Add><Display Level="None" AcceptEULA="TRUE" /><Updates Enabled="FALSE" /></Configuration>'
+        Set-Content -Path cfg.xml -Value $xml
+        Start-Process -Wait -FilePath .\odtx\setup.exe -ArgumentList "/configure","cfg.xml"
+        $o = Get-Item "C:\Program Files\Microsoft Office\root\Office16\OUTLOOK.EXE" -ErrorAction SilentlyContinue
+        if (-not $o) { throw "outlook install failed" }
+        "outlook: $($o.Length) bytes v=$($o.VersionInfo.FileVersion)"
+        $o.VersionInfo.FileVersion | Out-File ver.txt
+
+    - name: Register Outlook as the .eml handler and page-heap it
+      shell: pwsh
+      run: |
+        New-Item -ItemType Directory -Force -Path out, C:\dumps, tools, corpus | Out-Null
+        & "C:\Program Files\Microsoft Office\root\Office16\OUTLOOK.EXE" /regserver | Out-Null
+        Start-Sleep -Seconds 6
+        $pg = (Get-ItemProperty 'Registry::HKEY_CLASSES_ROOT\.eml' -EA SilentlyContinue).'(default)'
+        "progid_eml=$pg" | Tee-Object out\assoc.txt
+        (Get-ItemProperty 'Registry::HKEY_CLASSES_ROOT\Outlook.File.eml.15\shell\open\command' -EA SilentlyContinue).'(default)' | Add-Content out\assoc.txt
+        $k = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\OUTLOOK.EXE"
+        New-Item -Path $k -Force | Out-Null
+        Set-ItemProperty -Path $k -Name GlobalFlag -Value 0x02000000 -Type DWord
+        Set-ItemProperty -Path $k -Name EnableVerifier -Value 1 -Type DWord
+        Set-ItemProperty -Path $k -Name VerifierFlags -Value 0 -Type DWord
+        Set-ItemProperty -Path $k -Name PageHeapFlags -Value 0x3 -Type DWord
+        $ld = "HKLM:\SOFTWARE\Microsoft\Windows Error Reporting\LocalDumps"
+        New-Item -Path $ld -Force | Out-Null
+        Set-ItemProperty -Path $ld -Name DumpFolder -Value "C:\dumps" -Type ExpandString
+        Set-ItemProperty -Path $ld -Name DumpType -Value 2 -Type DWord
+        Set-ItemProperty -Path $ld -Name DumpCount -Value 40 -Type DWord
+        "pageheap GlobalFlag=$((Get-ItemProperty $k).GlobalFlag) verifier=$((Get-ItemProperty $k).EnableVerifier)" | Tee-Object out\setup_log.txt -Append
+
+    - name: Build carriers
+      shell: pwsh
+      run: |
+        python tools\mk_eml_corpus.py corpus
+        "carriers_in_corpus=" + (@(Get-ChildItem corpus -EA SilentlyContinue).Count)
+
+    - name: Smoke - enumerate desktop windows
+      shell: pwsh
+      run: |
+        $src = Get-Content tools\ow_titles.ps1 -Raw; Invoke-Expression $src
+        [OW]::Titles(0) -join "`n" | Out-File out\smoke_titles.txt
+        "smoke_windows=" + (@([OW]::Titles(0)).Count)
+
+    - name: Positive control - Outlook must render a plain eml under page heap
+      shell: pwsh
+      run: |
+        $src = Get-Content tools\ow_titles.ps1 -Raw; Invoke-Expression $src
+        $ol = "C:\Program Files\Microsoft Office\root\Office16\OUTLOOK.EXE"
+        Set-Content -Path corpus\ctl_plain.eml -Value (Get-Content corpus\ctl_plain.eml -Raw) -Encoding ASCII
+        Set-Content -Path (Get-Item corpus\ctl_plain.eml).FullName -Stream Zone.Identifier -Value "[ZoneTransfer]`r`nZoneId=3" -Encoding ASCII
+        $p = Start-Process -FilePath $ol -ArgumentList '/eml', ('"' + (Resolve-Path corpus\ctl_plain.eml).Path + '"') -PassThru
+        $ver = 0; $found = 0; $titles = @()
+        for ($i = 0; $i -lt 30; $i++) {
+          Start-Sleep -Seconds 3
+          try { if (@($p.Modules | % { $_.ModuleName.ToLower() }) -contains 'verifier.dll') { $ver = 1 } } catch { }
+          $titles = @([OW]::Titles(0))
+          if (@($titles | Where-Object { $_ -like '*GTMSGctlplainEND*' }).Count) { $found = 1; break }
+          if ($p.HasExited) { break }
+        }
+        "CONTROL found=$found verifier=$ver exited=$($p.HasExited) windows=$($titles.Count)" | Tee-Object out\control.txt
+        ($titles -join "`n") | Add-Content out\control.txt
+        Get-Process OUTLOOK -EA SilentlyContinue | Stop-Process -Force
+        if ($ver -ne 1) { throw "page heap not observed in OUTLOOK (verifier.dll unmapped)" }
+        if ($found -ne 1) { throw "control .eml never rendered: Outlook did not parse the carrier, the sweep would be blind" }
+
+    - name: Open every carrier, watch for faults
+      shell: pwsh
+      run: |
+        $src = Get-Content tools\ow_titles.ps1 -Raw; Invoke-Expression $src
+        $ol = "C:\Program Files\Microsoft Office\root\Office16\OUTLOOK.EXE"
+        $log = "out\sweep_log.txt"
+        function DumpList { @(Get-ChildItem C:\dumps -EA SilentlyContinue | ForEach-Object { $_.Name }) }
+        $cap = [int]('${{ github.event.inputs.cap }}')
+        if ($cap -le 0) { $cap = 110 }
+        $files = @(Get-ChildItem corpus\*.eml | Where-Object { $_.Name -notlike 'ctl_*' } | Sort-Object Name | Select-Object -First $cap)
+        "cases=$($files.Count)" | Tee-Object -FilePath $log
+        if ($files.Count -lt 40) { throw "corpus not materialized in corpus\ (cases=$($files.Count))" }
+        $bad = @(); $unopened = @()
+        foreach ($f in $files) {
+          $mark = ($f.BaseName -replace '[^A-Za-z0-9]','')
+          $before = DumpList
+          Set-Content -Path ($f.FullName + ':Zone.Identifier') -Value "[ZoneTransfer]`r`nZoneId=3" -Encoding ASCII
+          $t0 = Get-Date
+          $p = Start-Process -FilePath $ol -ArgumentList '/eml', ('"' + $f.FullName + '"') -PassThru
+          $alive = 1; $found = 0; $ver = 0; $exit = ''; $dumps = 0
+          for ($i = 0; $i -lt 20; $i++) {
+            Start-Sleep -Seconds 3
+            try { if ($p.HasExited) { $alive = 0; $exit = '0x' + ('{0:X8}' -f $p.ExitCode); break } } catch { $alive = 0; break }
+            try { if (@($p.Modules | Where-Object { $_.ModuleName -ieq 'verifier.dll' }).Count) { $ver = 1 } } catch { }
+            if (@([OW]::Titles([uint32]$p.Id) | Where-Object { $_ -like ('*GTMSG' + $mark + '*') }).Count) { $found = 1 }
+            $d = (DumpList).Count - $before.Count
+            if ($d -gt 0) { $dumps = $d; break }
+            if ($found -and $i -ge 8) { break }
+          }
+          $new = @((DumpList) | Where-Object { $before -notcontains $_ })
+          '{0,-30} alive={1} found={2} verifier={3} dumps={4} exit={5} s={6}' -f $f.Name, $alive, $found, $ver, $new.Count, $exit, [int]((Get-Date) - $t0).TotalSeconds | Tee-Object -FilePath $log -Append
+          if (-not $found) { $unopened += $f.Name }
+          if ($new.Count -or ($alive -eq 0 -and $found -eq 0)) {
+            $bad += $f.Name
+            New-Item -ItemType Directory -Force -Path out\bad | Out-Null
+            Copy-Item $f.FullName ('out\bad\CRASH_' + $f.Name) -Force -EA SilentlyContinue
+            foreach ($dd in $new) { Copy-Item ('C:\dumps\' + $dd) ('out\bad\' + $dd) -Force -EA SilentlyContinue }
+          }
+          Get-Process OUTLOOK -EA SilentlyContinue | Stop-Process -Force -EA SilentlyContinue
+          Remove-Item 'HKCU:\SOFTWARE\Microsoft\Office\16.0\Outlook\Resiliency' -Recurse -Force -EA SilentlyContinue
+          for ($i = 0; $i -lt 40; $i++) { if (-not (Get-Process OUTLOOK -EA SilentlyContinue)) { break }; Start-Sleep -Milliseconds 500 }
+        }
+        "SUMMARY cases=$($files.Count) flagged=$($bad.Count) [$($bad -join ' ')]" | Tee-Object -FilePath $log -Append
+        "unfound=$($unopened.Count) [$($unopened -join ' ')]" | Tee-Object -FilePath $log -Append
+        if ($unopened.Count -eq $files.Count) { throw "no carrier was ever rendered: instrument blind (first: $($unopened[0]))" }
+        $bad -join "`r`n" | Out-File out\bad.txt
+        if ($bad.Count) { throw "flagged carriers: $($bad -join ', ')" }
+
+    - name: Upload evidence
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: outlook-eml-pageheap
+        path: |
+          out
+          ver.txt
