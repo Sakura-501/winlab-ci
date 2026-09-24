@@ -48,6 +48,8 @@ jobs:
         New-Item -ItemType Directory -Force -Path out, corpus | Out-Null
         [IO.File]::WriteAllBytes("cov.gz", [Convert]::FromBase64String((Get-Content data\covprobe.b64 -Raw).Trim()))
         tar -xzf cov.gz -C corpus
+        # macOS writes ._ companions into tarballs; they keep the .docx extension and would be opened as carriers.
+        @(Get-ChildItem corpus -Recurse -Force | Where-Object { $_.Name -like '._*' }) | Remove-Item -Force -EA SilentlyContinue
         $nd = @(Get-ChildItem corpus\docx | Where-Object { $_.Extension -eq '.docx' }).Count
         $nr = @(Get-ChildItem corpus\rtf | Where-Object { $_.Extension -eq '.rtf' }).Count
         "docx=$nd rtf=$nr" | Tee-Object out\setup_log.txt
@@ -83,8 +85,8 @@ jobs:
         $syms = @($raw -split "`r?`n" | ForEach-Object {
             if ($_ -match '^\s*[0-9a-f`]+\s+(gfx!\S+)') {
               $n = $matches[1]
-              if ($n -match '(Metafile|Emf|Wmf|Blip|Gdiplus|Analyze|Convert|Create.*Record|Play|HrParse)' -and
-                  $n -notmatch '[<>()]' -and $n -notmatch '_imp_|thread|AddRef|Release|Lock|operator|::Stat') { $n }
+              if ($n -match '(AnalyzeMetafile|Metafile|Emf|Wmf|Blip|CreateMetafile|Play|HrParse)' -and
+                  $n -notmatch '[<>()]' -and $n -notmatch '_imp_|thread|AddRef|Release|~|Lock|operator|::Stat|GetThread') { $n }
             } } | Select-Object -Unique)
         "phase1_lines=$(($raw -split "`n").Count) gfx_syms_seen=$(@($raw -split "`n" | Where-Object { $_ -match '^\s*[0-9a-f`]+\s+gfx!' }).Count) parse_syms=$($syms.Count)" | Tee-Object out\phase2_gate.txt
         ($syms | Select-Object -First 60) | Add-Content -Path out\phase2_gate.txt
@@ -107,7 +109,7 @@ jobs:
           $i = 0
           foreach ($s in $syms) {
             $i++
-            $cmds += ('bp ' + $s + ' ".printf \"HIT_' + $i + ' ' + ($s -replace '[^A-Za-z0-9]','_') + '\\n\"; g"')
+            $cmds += ('bp ' + $s + ' ".printf \"@@HIT ' + $i + ' x\n\"; gc"')
           }
           $cmds += 'g'
           $cf = 'c_' + $f.BaseName + '.txt'
@@ -121,13 +123,16 @@ jobs:
           Stop-Process -Name WINWORD,cdb -Force -EA SilentlyContinue
           Start-Sleep 2
           $txt = if (Test-Path $lg) { Get-Content $lg -Raw } else { '' }
-          $hits = @($txt -split "`r?`n" | Where-Object { $_ -match 'HIT_\d+ ' } | ForEach-Object { ($_ -split ' ')[-1] } | Group-Object | ForEach-Object { $_.Name + 'x' + $_.Count })
-          $row = '{0,-34} motw=[{1}] bp={2} hitlines={3} distinct={4}' -f $f.Name, $motw, $syms.Count, @($txt -split "`r?`n" | Where-Object { $_ -match 'HIT_\d+ ' }).Count, (@($hits) -join ',')
+          # cdb echoes the command file (those lines contain "bp gfx!"), so only count the printed markers.
+          $hl = @($txt -split "`r?`n" | Where-Object { $_ -match '@@HIT \d+' -and $_ -notmatch 'bp ' })
+          $hits = @($hl | ForEach-Object { (($_ -replace '.*@@HIT ','') -split ' ')[0] } | Group-Object | ForEach-Object { 'bp#' + $_.Name + 'x' + $_.Count })
+          $row = '{0,-34} motw=[{1}] bp={2} hitlines={3} hits={4}' -f $f.Name, $motw, $syms.Count, $hl.Count, (@($hits) -join ',')
           $row | Tee-Object -FilePath out\cov_log.txt -Append
           $rows += $row
-          ($txt -split "`r?`n" | Where-Object { $_ -match 'HIT_\d+ ' } | Select-Object -First 40) | Add-Content -Path ('out\hits_' + $f.BaseName + '.txt')
+          # index -> routine name is the line number of out\syms.txt, which is uploaded alongside
+          ($hl | Select-Object -First 60) | Add-Content -Path ('out\hits_' + $f.BaseName + '.txt')
         }
-        "SUMMARY carriers=$($files.Count) with_hits=$(($rows | Where-Object { $_ -match 'hitlines=[1-9]' }).Count)" | Tee-Object -FilePath out\cov_log.txt -Append
+        "SUMMARY carriers=$($files.Count) with_hits=$(($rows | Where-Object { $_ -match 'hitlines=[1-9]' }).Count) zero_hit=$(($rows | Where-Object { $_ -match 'hitlines=0' }).Count)" | Tee-Object -FilePath out\cov_log.txt -Append
 
     - name: Upload evidence
       if: always()
