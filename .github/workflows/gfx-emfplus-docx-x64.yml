@@ -11,6 +11,10 @@ name: gfx-emfplus-docx-x64
         description: 'max docx carriers'
         required: false
         default: '200'
+      skip:
+        description: 'carriers to skip (shard offset; 38 s/case measured on wave 1, so a 300 min job covers ~440)'
+        required: false
+        default: '0'
       heap:
         description: '1=full page heap on WINWORD, 0=none'
         required: false
@@ -178,7 +182,8 @@ jobs:
           $bmp.Dispose(); return @($ink, $red)
         }
 
-        $cap = [int]('${{ github.event.inputs.cap }}'); if ($cap -le 0) { $cap = 200 }
+        $cap = [int]('${{ github.event.inputs.cap }}')
+        $skip = [int]('${{ github.event.inputs.skip }}'); if ($cap -le 0) { $cap = 200 }
         # Steps run in separate PowerShell processes, so the carrier list is enumerated again here.
         $docL = @(Get-ChildItem corpus\docx | Where-Object { $_.Extension -eq '.docx' -and $_.Name -notlike '._*' } | Sort-Object Name -Unique)
         # Cold start of a page-heaped Office measured 306 s to the first window, so the control carrier
@@ -194,7 +199,7 @@ jobs:
         if ((VerOn) -ne 1) { throw "verifier.dll not loaded in the warm WINWORD: page heap not in effect" }
         [WX]::Close($r0.hwnd); Start-Sleep -Seconds 4
 
-        $files = @($docL | Where-Object { $_.Name -ne 'ctl_pen12.docx' } | Select-Object -First $cap)
+        $files = @($docL | Where-Object { $_.Name -ne 'ctl_pen12.docx' } | Select-Object -Skip $skip -First $cap)
         "cases=$($files.Count)" | Add-Content -Path $log
         $rows = @(); $notfound = @(); $died = 0; $restarts = 0
         foreach ($f in $files) {
