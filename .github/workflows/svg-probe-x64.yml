@@ -65,23 +65,14 @@ jobs:
       - name: Build the probe
         shell: pwsh
         run: |
-          $v = Get-ChildItem "C:\Program Files\Microsoft Visual Studio\2022\*\VC\Auxiliary\Build\vcvars64.bat" | Select-Object -First 1
-          if (-not $v) { $v = Get-ChildItem "C:\Program Files*\Microsoft Visual Studio\*\*\VC\Auxiliary\Build\vcvars64.bat" | Select-Object -First 1 }
-          if (-not $v) { throw "vcvars64 not found" }
-          $src = (Resolve-Path "tools\svgprobe.c").Path
-          # no null-device redirect inside generated batch text: '>/dev/null' style mangling broke a
-          # previous build (cmd reported "path not found" and cl never ran). Redirect outside.
-          # PS escapes an inner double quote with a backtick, not a backslash (a \" form produced a
-          # ParserError on run 36060749823), so the cl line is built as a single-quoted format string.
-          $cl = 'cl /nologo /W3 /O2 /Zi /Fesvgprobe_x64.exe /Fosvgprobe_obj\ "{0}" /link shlwapi.lib >> buildlog.txt 2>&1' -f $src
-          Set-Content -Path build.bat -Value ("@echo off",
-            "call `"$($v.FullName)`" > buildlog.txt 2>&1",
-            $cl,
-            "echo EXIT=%ERRORLEVEL% >> buildlog.txt")
-          New-Item -ItemType Directory -Force -Path svgprobe_obj, out | Out-Null
-          cmd /c build.bat
-          Get-Content buildlog.txt
-          if (-not (Test-Path svgprobe_x64.exe)) { throw "probe did not build" }
+          # same locator and single cmd-line build that ships in gfx-probe4-x64 (vswhere -> vcvars64 -> cl)
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $vs) { throw "no vc tools" }
+          $bat = Join-Path $vs "VC\Auxiliary\Build\vcvars64.bat"
+          New-Item -ItemType Directory -Force -Path out | Out-Null
+          cmd /c "`"$bat`" && cd /d %GITHUB_WORKSPACE% && cl /nologo /W1 /O2 /MT /D_CRT_SECURE_NO_WARNINGS tools\svgprobe.c /Fe:svgprobe_x64.exe /link shlwapi.lib > out\build_log.txt 2>&1"
+          Get-Content out\build_log.txt | Select-Object -Last 20
+          if (-not (Test-Path .\svgprobe_x64.exe)) { throw "probe build failed" }
           $inst = (Get-Content envline.txt).Split('=')[1]
           Copy-Item svgprobe_x64.exe "$inst\Office16\svgprobe_x64.exe" -Force
           "probe at $inst\Office16\svgprobe_x64.exe" | Tee-Object probe.txt
@@ -93,12 +84,17 @@ jobs:
           $k = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\svgprobe_x64.exe"
           New-Item -Path $k -Force | Out-Null
           if ($heap -eq 1) {
-            # measured premise: 0x02000000 is the value that actually engages full page heap here
-            New-ItemProperty -Path $k -Name GlobalFlag -Value 0x02000000 -PropertyType DWord -Force | Out-Null
-            New-ItemProperty -Path $k -Name DebuggerFlags -Value 0x100 -PropertyType DWord -Force | Out-Null
-          } else {
-            New-ItemProperty -Path $k -Name GlobalFlag -Value 0 -PropertyType DWord -Force | Out-Null
-          }
+            Set-ItemProperty -Path $k -Name GlobalFlag -Value 0x02000000 -Type DWord
+            Set-ItemProperty -Path $k -Name EnableVerifier -Value 1 -Type DWord
+            Set-ItemProperty -Path $k -Name PageHeapFlags -Value 0x3 -Type DWord
+            "heap=on" | Tee-Object out\heap.txt
+          } else { "heap=off" | Tee-Object out\heap.txt }
+          $ld = "HKLM:\SOFTWARE\Microsoft\Windows Error Reporting\LocalDumps"
+          New-Item -Path $ld -Force | Out-Null
+          New-Item -Path "$ld\svgprobe_x64.exe" -Force | Out-Null
+          Set-ItemProperty -Path "$ld\svgprobe_x64.exe" -Name DumpFolder -Value "C:\dumps" -Type ExpandString
+          Set-ItemProperty -Path "$ld\svgprobe_x64.exe" -Name DumpType -Value 2 -Type DWord
+          New-Item -ItemType Directory -Force -Path C:\dumps | Out-Null
           Get-Item $k | Format-List *
 
       - name: Instrument selftest
