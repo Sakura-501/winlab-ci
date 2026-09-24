@@ -83,12 +83,13 @@ jobs:
         $syms = @($raw -split "`r?`n" | ForEach-Object {
             if ($_ -match '^\s*[0-9a-f`]+\s+(gfx!\S+)') {
               $n = $matches[1]
-              if ($n -match '(HrParse|Parse|HrInit|Read|Decode|Convert|Disassembl)' -and $n -notmatch '[<>()]') { $n }
+              if ($n -match '(Metafile|Emf|Wmf|Blip|Gdiplus|Analyze|Convert|Create.*Record|Play|HrParse)' -and
+                  $n -notmatch '[<>()]' -and $n -notmatch '_imp_|thread|AddRef|Release|Lock|operator|::Stat') { $n }
             } } | Select-Object -Unique)
         "phase1_lines=$(($raw -split "`n").Count) gfx_syms_seen=$(@($raw -split "`n" | Where-Object { $_ -match '^\s*[0-9a-f`]+\s+gfx!' }).Count) parse_syms=$($syms.Count)" | Tee-Object out\phase2_gate.txt
         ($syms | Select-Object -First 60) | Add-Content -Path out\phase2_gate.txt
         if ($syms.Count -eq 0) { throw "no gfx parse symbols resolved: symbols not loadable" }
-        ($syms | Select-Object -First 40) | Set-Content out\syms.txt -Encoding ASCII
+        ($syms | Select-Object -First 24) | Set-Content out\syms.txt -Encoding ASCII
 
     - name: Phase 2 - count decode entries per carrier
       shell: pwsh
@@ -113,7 +114,8 @@ jobs:
           Set-Content -Path $cf -Value $cmds -Encoding ASCII
           $lg = 'out\cov_' + $f.BaseName + '.txt'
           Remove-Item $lg -Force -EA SilentlyContinue
-          $p = Start-Process -FilePath $cdb -ArgumentList '-cf',$cf,'-logo',$lg,$ww,'"' + $f.FullName + '"' -PassThru -WindowStyle Hidden
+          $q = '"' + $f.FullName + '"'
+          $p = Start-Process -FilePath $cdb -ArgumentList '-cf',$cf,'-logo',$lg,$ww,$q -PassThru -WindowStyle Hidden
           $sw = [Diagnostics.Stopwatch]::StartNew()
           while (-not $p.HasExited -and $sw.Elapsed.TotalSeconds -lt $poll) { Start-Sleep 3 }
           Stop-Process -Name WINWORD,cdb -Force -EA SilentlyContinue
