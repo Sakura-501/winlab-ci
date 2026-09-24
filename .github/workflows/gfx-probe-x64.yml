@@ -1,0 +1,150 @@
+name: gfx-probe-x64
+on:
+  workflow_dispatch:
+    inputs:
+      blob:
+        default: emfdocx4.b64
+        description: data/ tar.gz(base64) holding corpus/emf/*.emf
+      basefile:
+        default: ctl_pen12.emf
+        description: filename inside corpus/emf used for the ABI probe
+      kind:
+        default: meta
+        description: meta (IMetafilePlus::Create) or img (IImage::Create)
+      abi:
+        default: "2"
+        description: 1 = return-in-RAX, 2 = hidden return pointer
+      cap:
+        default: "400"
+      budget:
+        default: "20"
+        description: minutes for the sweep loop
+      heap:
+        default: "1"
+jobs:
+  t:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Download ODT
+      shell: pwsh
+      run: |
+        $page = (Invoke-WebRequest -Uri "https://www.microsoft.com/en-us/download/details.aspx?id=49117" -UseBasicParsing).Content
+        if ($page -match 'href="(https://download\.microsoft\.com/download/[^"]+officedeploymenttool[^"]*\.exe)"') {
+          Invoke-WebRequest -Uri $Matches[1] -OutFile odt.exe
+        } else { throw "odt link not found" }
+        Start-Process -Wait -FilePath .\odt.exe -ArgumentList "/extract:odtx /quiet"
+
+    - name: Install x64 Office
+      shell: pwsh
+      run: |
+        $xml = '<Configuration><Add OfficeClientEdition="64" Channel="CurrentChannel"><Product ID="O365ProPlusRetail"><Language ID="en-us" /><ExcludeApp ID="OneDrive" /><ExcludeApp ID="Bing" /></Product></Add><Display Level="None" AcceptEULA="TRUE" /><Updates Enabled="FALSE" /></Configuration>'
+        Set-Content -Path cfg.xml -Value $xml
+        Start-Process -Wait -FilePath .\odtx\setup.exe -ArgumentList "/configure","cfg.xml"
+        $w = Get-Item "C:\Program Files\Microsoft Office\root\Office16\WINWORD.EXE" -EA SilentlyContinue
+        if (-not $w) { throw "office install failed" }
+        "winword v=$($w.VersionInfo.FileVersion)" | Tee-Object ver.txt
+        (Get-Item "C:\Program Files\Microsoft Office\root\Office16\gfx.dll").VersionInfo.FileVersion | Tee-Object -Append ver.txt
+
+    - name: Locate module directories
+      shell: pwsh
+      run: |
+        New-Item -ItemType Directory -Force -Path out, C:\dumps | Out-Null
+        $gfx = Get-ChildItem "C:\Program Files\Microsoft Office\root" -Recurse -Filter gfx.dll -EA SilentlyContinue | Select-Object -First 1
+        $mso = Get-ChildItem "C:\Program Files\Microsoft Office\root" -Recurse -Filter mso.dll -EA SilentlyContinue | Select-Object -First 1
+        if (-not $gfx -or -not $mso) { throw "gfx or mso not found" }
+        "gfxdir=$($gfx.DirectoryName)" | Tee-Object out\dirs.txt
+        "msodir=$($mso.DirectoryName)"  | Tee-Object -Append out\dirs.txt
+        "msodll=$($mso.Length) msover=$($mso.VersionInfo.FileVersion)" | Tee-Object -Append out\dirs.txt
+        "GFXDir=$($gfx.DirectoryName)"  >> $env:GITHUB_ENV
+        "MSODir=$($mso.DirectoryName)"  >> $env:GITHUB_ENV
+
+    - name: Build harness
+      shell: pwsh
+      run: |
+        $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+        if (-not $vs) { throw "no vc tools" }
+        $bat = Join-Path $vs "VC\Auxiliary\Build\vcvars64.bat"
+        cmd /c "`"$bat`" && cd /d %GITHUB_WORKSPACE% && cl /nologo /W1 /O2 /MT /D_CRT_SECURE_NO_WARNINGS tools\gfxprobe3.c /Fe:gfxprobe3_x64.exe /link shlwapi.lib" 2>&1 | Tee-Object out\build_log.txt
+        if (-not (Test-Path .\gfxprobe3_x64.exe)) { throw "harness build failed" }
+
+    - name: Arm page heap and local dumps
+      shell: pwsh
+      run: |
+        if ([int]'${{ github.event.inputs.heap }}' -eq 1) {
+          $k = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\gfxprobe3_x64.exe"
+          New-Item -Path $k -Force | Out-Null
+          Set-ItemProperty -Path $k -Name GlobalFlag -Value 0x02000000 -Type DWord
+          Set-ItemProperty -Path $k -Name EnableVerifier -Value 1 -Type DWord
+          Set-ItemProperty -Path $k -Name PageHeapFlags -Value 0x3 -Type DWord
+          "heap=on" | Tee-Object out\heap.txt
+        } else { "heap=off" | Tee-Object out\heap.txt }
+        $ld = "HKLM:\SOFTWARE\Microsoft\Windows Error Reporting\LocalDumps"
+        New-Item -Path $ld -Force | Out-Null
+        Set-ItemProperty -Path $ld -Name DumpFolder -Value "C:\dumps" -Type ExpandString
+        Set-ItemProperty -Path $ld -Name DumpType -Value 2 -Type DWord
+        Set-ItemProperty -Path $ld -Name DumpCount -Value 30 -Type DWord
+
+    - name: Instrument self-proof
+      shell: pwsh
+      run: |
+        Set-Location $env:GITHUB_WORKSPACE
+        .\gfxprobe3_x64.exe selftest 2>&1 | Tee-Object out\selftest.txt
+        $t = Get-Content out\selftest.txt -Raw
+        if ($t -notmatch 'FAULT') { throw "SELFTEST did not fault - instrument not armed (page heap unproven)" }
+        "SELFTEST_ARMED" | Tee-Object -Append out\selftest.txt
+
+    - name: Materialize corpus and probe ABI
+      shell: pwsh
+      run: |
+        Set-Location $env:GITHUB_WORKSPACE
+        $blob = '${{ github.event.inputs.blob }}'
+        if ($blob -notmatch '^[a-z0-9]+\.b64$') { throw "bad blob name '$blob'" }
+        [IO.File]::WriteAllBytes("carriers.gz", [Convert]::FromBase64String((Get-Content ('data\' + $blob) -Raw).Trim()))
+        tar -xzf carriers.gz -C .
+        $emf = @(Get-ChildItem corpus\emf | Where-Object { $_.Extension -eq '.emf' -and $_.Name -notlike '._*' } | Sort-Object Name -Unique)
+        "emf=$($emf.Count)" | Tee-Object out\probe.txt
+        if ($emf.Count -lt 5) { throw "corpus too small n=$($emf.Count)" }
+        $base = Join-Path $emf[0].FullName ''
+        $pick = $emf | Where-Object { $_.Name -eq '${{ github.event.inputs.basefile }}' } | Select-Object -First 1
+        if (-not $pick) { $pick = $emf[0] }
+        "base=$($pick.Name)" | Tee-Object -Append out\probe.txt
+        .\gfxprobe3_x64.exe probe $pick.FullName 2>&1 | Tee-Object -Append out\probe.txt
+        .\gfxprobe3_x64.exe init 2>&1 | Tee-Object -Append out\init.txt
+
+    - name: Sweep corpus in-process
+      shell: pwsh
+      run: |
+        Set-Location $env:GITHUB_WORKSPACE
+        $kind = '${{ github.event.inputs.kind }}'
+        $abi  = [int]'${{ github.event.inputs.abi }}'
+        $cap  = [int]'${{ github.event.inputs.cap }}'
+        $end  = (Get-Date).AddMinutes([int]'${{ github.event.inputs.budget }}')
+        $dir  = (Resolve-Path corpus\emf).Path
+        $start = 0
+        while ((Get-Date) -lt $end) {
+          $o = & .\gfxprobe3_x64.exe sweep $dir $kind $abi $start $cap 2>&1
+          $o | Tee-Object -Append out\sweep_log.txt | Out-Null
+          $prog = $o | Select-String '^PROG idx=(\d+)' | Select-Object -Last 1
+          if ($prog) { $start = [int]$prog.Matches[0].Groups[1].Value + 1 }
+          $sum = $o | Select-String '^SUMMARY' | Select-Object -Last 1
+          if ($sum) { "DONE_AT_START=$start" | Tee-Object -Append out\sweep_log.txt; if ($start -ge [int](Get-ChildItem $dir | Where-Object { $_.Extension -eq '.emf' -and $_.Name -notlike '._*' }).Count) { break } }
+          else { "DIED_AT_START=$start rc=$LASTEXITCODE" | Tee-Object -Append out\sweep_log.txt; $start += 1 }
+          if ($start -ge [int](Get-ChildItem $dir | Where-Object { $_.Extension -eq '.emf' -and $_.Name -notlike '._*' }).Count) { break }
+        }
+        "--- dumps" | Tee-Object -Append out\sweep_log.txt
+        Get-ChildItem C:\dumps -EA SilentlyContinue | ForEach-Object { $_.Name + " " + $_.Length } | Tee-Object -Append out\sweep_log.txt
+        Get-WinEvent -FilterHashtable @{LogName='Application'; Level=2; StartTime=(Get-Date).AddMinutes(-70)} -EA SilentlyContinue |
+          Where-Object { $_.Message -match 'gfxprobe3|GFX.dll' } | ForEach-Object { "EVENT " + $_.TimeCreated + " " + ($_.Message -split "`n")[0..3] } |
+          Tee-Object -Append out\sweep_log.txt
+
+    - name: Upload evidence
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: gfx-probe-x64
+        path: |
+          out
+          ver.txt
