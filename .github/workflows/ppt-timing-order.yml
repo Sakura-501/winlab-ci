@@ -29,8 +29,22 @@ jobs:
           New-Item -ItemType Directory -Force -Path C:\pptorder\out | Out-Null
           Copy-Item tools\pptorder\cdb_cmd.txt C:\pptorder\cdb_cmd.txt -Force
           Copy-Item carriers\timing_sample2.pptx C:\pptorder\timing_sample2.pptx -Force
-          $c = Get-ChildItem 'C:\Program Files\WindowsApps' -Directory -Filter 'Microsoft.WinDbg*' -ErrorAction SilentlyContinue | ForEach-Object { Get-ChildItem $_.FullName -Recurse -Filter cdb.exe -ErrorAction SilentlyContinue | Where-Object {$_.DirectoryName -match 'amd64'} } | Select-Object -First 1
-          if (-not $c) { throw "cdb not found" }
+          $c = $null
+          foreach ($base in @('C:\Program Files\WindowsApps','C:\Users\runneradmin\AppData\Local\Microsoft\WindowsApps')) {
+            if (-not $c) { $c = Get-ChildItem $base -Directory -Filter 'Microsoft.WinDbg*' -ErrorAction SilentlyContinue | ForEach-Object { Get-ChildItem $_.FullName -Recurse -Filter cdb.exe -ErrorAction SilentlyContinue | Where-Object {$_.DirectoryName -match 'amd64|x64'} } | Select-Object -First 1 }
+          }
+          if (-not $c) {
+            # fallback: check common WinDbg paths
+            foreach ($p in @('C:\Program Files (x86)\Windows Kits\10\Debuggers\x64\cdb.exe','C:\Program Files\Windows Kits\10\Debuggers\x64\cdb.exe')) {
+              if (Test-Path $p) { $c = Get-Item $p; break }
+            }
+          }
+          if (-not $c) {
+            winget install Microsoft.WinDbg --accept-source-agreements --accept-package-agreements --disable-interactivity
+            Start-Sleep 10
+            $c = Get-ChildItem 'C:\Program Files\WindowsApps' -Recurse -Filter cdb.exe -ErrorAction SilentlyContinue | Where-Object {$_.DirectoryName -match 'amd64|x64'} | Select-Object -First 1
+          }
+          if (-not $c) { Get-ChildItem 'C:\Program Files\WindowsApps' -Directory -EA SilentlyContinue | Select-Object -First 20 Name | Out-File C:\pptorder\wa_dirs.txt; throw "cdb truly not found" }
           New-Item -ItemType Directory -Force -Path C:\pptorder\dbg | Out-Null
           Copy-Item $c.FullName C:\pptorder\dbg\cdb.exe
           Get-ChildItem $c.DirectoryName -Filter *.dll | Copy-Item -Destination C:\pptorder\dbg\ -Force
