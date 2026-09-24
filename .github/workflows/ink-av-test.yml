@@ -1,70 +1,34 @@
 name: Windows Ink AV Reproduction Test
-
 on:
   workflow_dispatch:
-
 jobs:
   repro:
     runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: ink-av-test
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Compile test program
+      - uses: actions/checkout@v4
+      - name: Compile
         shell: pwsh
         run: |
           $csc = "C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
           $wmd = "C:\Windows\System32\WinMetadata"
-          & $csc /nologo /target:exe /out:isfuzz.exe `
-            /r:System.Runtime.WindowsRuntime.dll `
-            /r:"$wmd\Windows.Foundation.winmd" `
-            /r:"$wmd\Windows.UI.winmd" `
-            /r:"$wmd\Windows.Storage.winmd" `
-            isfuzz_source.cs
-
-      - name: Setup test environment
+          & $csc /nologo /target:exe /out:isfuzz.exe /r:System.Runtime.WindowsRuntime.dll /r:"$wmd\Windows.Foundation.winmd" /r:"$wmd\Windows.UI.winmd" /r:"$wmd\Windows.Storage.winmd" isfuzz_source.cs
+      - name: Run PoC
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force -Path testdir | Out-Null
-          Copy-Item crash.isf testdir\crash.isf -Force
-          Write-Host "Test file: $((Get-Item testdir\crash.isf).Length) bytes"
-          Write-Host "File header: $((Get-Content testdir\crash.isf -Encoding Byte -TotalCount 8 | ForEach-Object { $_.ToString('X2') }) -join '-')"
-
-      - name: Run PoC (expect crash)
-        shell: pwsh
-        run: |
-          $output = & .\isfuzz.exe testdir 10 progress.txt 2>&1 | Out-String
+          $output = & .\isfuzz.exe . 10 progress.txt 2>&1 | Out-String
           $output | Out-File result.txt -Encoding UTF8
           Write-Host $output
-          
-          # Check for AccessViolation
-          if ($output -match "AccessViolationException") {
-            Write-Host "=== VULNERABILITY CONFIRMED ==="
-            Write-Host "AccessViolationException reproduced on x64 Windows"
-            "VULN_CONFIRMED" | Out-File verdict.txt -Encoding UTF8
-          } elseif ($output -match "OK strokes=") {
-            Write-Host "No crash - file loaded successfully"
-            "NOT_VULNERABLE" | Out-File verdict.txt -Encoding UTF8
-          } else {
-            Write-Host "Unexpected result"
-            "UNKNOWN" | Out-File verdict.txt -Encoding UTF8
-          }
-
-      - name: Check verdict
+          if ($output -match "AccessViolationException") { "VULN_CONFIRMED" | Out-File verdict.txt -Encoding UTF8 } else { "NOT_VULNERABLE" | Out-File verdict.txt -Encoding UTF8 }
+      - name: Check
         shell: pwsh
         run: |
-          $v = Get-Content verdict.txt
-          Write-Host "VERDICT: $v"
-          if ($v -match "VULN_CONFIRMED") {
-            Write-Host "::error::AccessViolationException confirmed on x64 Windows!"
-          }
-
-      - name: Upload results
+          Write-Host "VERDICT: $(Get-Content verdict.txt)"
+      - name: Upload
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: test-results
-          path: |
-            result.txt
-            verdict.txt
-            progress.txt
+          name: results
+          path: result.txt
