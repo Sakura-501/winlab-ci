@@ -1,0 +1,177 @@
+name: outlook-msg-emfplus-x64
+'on':
+  workflow_dispatch:
+    inputs:
+      cap:
+        description: 'max carriers'
+        required: false
+        default: '50'
+jobs:
+  t:
+    runs-on: windows-latest
+    timeout-minutes: 300
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Download ODT
+      shell: pwsh
+      run: |
+        $page = (Invoke-WebRequest -Uri "https://www.microsoft.com/en-us/download/details.aspx?id=49117" -UseBasicParsing).Content
+        if ($page -match 'href="(https://download\.microsoft\.com/download/[^"]+officedeploymenttool[^"]*\.exe)"') {
+          Invoke-WebRequest -Uri $Matches[1] -OutFile odt.exe
+        } else { throw "odt link not found" }
+        Start-Process -Wait -FilePath .\odt.exe -ArgumentList "/extract:odtx /quiet"
+
+    - name: Install x64 Office (Outlook needed)
+      shell: pwsh
+      run: |
+        $xml = '<Configuration><Add OfficeClientEdition="64" Channel="CurrentChannel"><Product ID="O365ProPlusRetail"><Language ID="en-us" /><ExcludeApp ID="OneDrive" /><ExcludeApp ID="Bing" /></Product></Add><Display Level="None" AcceptEULA="TRUE" /><Updates Enabled="FALSE" /></Configuration>'
+        Set-Content -Path cfg.xml -Value $xml
+        Start-Process -Wait -FilePath .\odtx\setup.exe -ArgumentList "/configure","cfg.xml"
+        $o = Get-Item "C:\Program Files\Microsoft Office\root\Office16\OUTLOOK.EXE" -ErrorAction SilentlyContinue
+        if (-not $o) { throw "outlook install failed" }
+        "outlook: $($o.Length) bytes v=$($o.VersionInfo.FileVersion)"
+        $o.VersionInfo.FileVersion | Out-File ver.txt
+
+    - name: Register Outlook, page heap it, unpack the carrier set
+      shell: pwsh
+      run: |
+        New-Item -ItemType Directory -Force -Path out, C:\dumps, corpus | Out-Null
+        & "C:\Program Files\Microsoft Office\root\Office16\OUTLOOK.EXE" /regserver | Out-Null
+        Start-Sleep -Seconds 8
+        $b64 = (Get-Content data\msgemfplus.b64 -Raw).Trim()
+        [IO.File]::WriteAllBytes("$PWD\m15.tgz", [Convert]::FromBase64String($b64))
+        tar -xzf m15.tgz -C corpus
+        "files_in_corpus=" + (@(Get-ChildItem corpus -Recurse -File).Count)
+        "msg_in_corpus=" + (@(Get-ChildItem corpus -Filter *.msg -Recurse).Count)
+        (Get-ChildItem corpus -Filter *.msg -Recurse | Sort-Object Name | Select-Object -First 3 | ForEach-Object { $_.Name + " " + $_.Length }) | Out-File out\corpus_head.txt
+        $k = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\OUTLOOK.EXE"
+        New-Item -Path $k -Force | Out-Null
+        Set-ItemProperty -Path $k -Name GlobalFlag -Value 0x02000000 -Type DWord
+        Set-ItemProperty -Path $k -Name EnableVerifier -Value 1 -Type DWord
+        Set-ItemProperty -Path $k -Name VerifierFlags -Value 0 -Type DWord
+        Set-ItemProperty -Path $k -Name PageHeapFlags -Value 0x3 -Type DWord
+        $ld = "$k\LocalDumps"
+        New-Item -Path $ld -Force | Out-Null
+        Set-ItemProperty -Path $ld -Name DumpFolder -Value "C:\dumps" -Type ExpandString
+        Set-ItemProperty -Path $ld -Name DumpType -Value 2 -Type DWord
+        Set-ItemProperty -Path $ld -Name DumpCount -Value 60 -Type DWord
+        $sf = "HKCU:\SOFTWARE\Microsoft\Office\16.0\Outlook\Setup"
+        New-Item -Path $sf -Force | Out-Null
+        Set-ItemProperty -Path $sf -Name DisableWelcomePage -Value 1 -Type DWord
+        Set-ItemProperty -Path $sf -Name DisableFirstRunCustomize -Value 1 -Type DWord
+        "GlobalFlag=$((Get-ItemProperty $k).GlobalFlag) EnableVerifier=$((Get-ItemProperty $k).EnableVerifier) PageHeapFlags=$((Get-ItemProperty $k).PageHeapFlags) firstrun_suppressed=1" | Out-File out\setup_log.txt
+
+    - name: Window instrument
+      shell: pwsh
+      run: |
+        $src = @('using System;','using System.Text;','using System.Runtime.InteropServices;','using System.Collections.Generic;','public class OWT {','  [StructLayout(LayoutKind.Sequential)] public struct RECT { public int L; public int T; public int R; public int B; }','  [DllImport("user32.dll")] public static extern bool EnumWindows(EnumWindowsProc cb, IntPtr l);','  public delegate bool EnumWindowsProc(IntPtr h, IntPtr l);','  [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetWindowTextW(IntPtr h, StringBuilder s, int n);','  [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetClassNameW(IntPtr h, StringBuilder s, int n);','  [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);','  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);','  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);','  [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr h, uint m, IntPtr w, IntPtr l);','  public static List<string> Titles(uint wantPid) {','    var res = new List<string>();','    EnumWindows((h, l) => { uint pid; GetWindowThreadProcessId(h, out pid);','      if ((wantPid == 0 || pid == wantPid) && IsWindowVisible(h)) {','        var sb = new StringBuilder(512); GetWindowTextW(h, sb, 512);','        var cn = new StringBuilder(128); GetClassNameW(h, cn, 128);','        if (sb.Length > 0) res.Add(pid + "|" + cn.ToString() + "|" + sb.ToString()); }','      return true; }, IntPtr.Zero);','    return res; }','  public static IntPtr Find(string needle, uint wantPid) {','    IntPtr hit = IntPtr.Zero;','    EnumWindows((h, l) => { uint pid; GetWindowThreadProcessId(h, out pid);','      if ((wantPid == 0 || pid == wantPid) && IsWindowVisible(h)) {','        var sb = new StringBuilder(512); GetWindowTextW(h, sb, 512);','        if (sb.Length > 0 && sb.ToString().IndexOf(needle, StringComparison.Ordinal) >= 0) { hit = h; return false; } }','      return true; }, IntPtr.Zero);','    return hit; }','}') -join "`n"
+        Add-Type -TypeDefinition $src
+        Add-Type -AssemblyName System.Windows.Forms,System.Drawing
+        $f = Get-ChildItem corpus -Filter m15c_ctl.msg -Recurse | Select-Object -First 1
+        if (-not $f) { throw "control carrier m15c_ctl.msg missing from the unpacked set" }
+        Set-Content -Path $f.FullName -Stream Zone.Identifier -Value "[ZoneTransfer]`r`nZoneId=3" -Encoding ASCII
+        $motw = ((Get-Content $f.FullName -Stream Zone.Identifier -EA SilentlyContinue) -join '/')
+        $exe = "C:\Program Files\Microsoft Office\root\Office16\OUTLOOK.EXE"
+        $p = Start-Process -FilePath $exe -PassThru
+        $ver = 0; $found = 0; $tt = @()
+        for ($i = 0; $i -lt 150; $i++) {
+          Start-Sleep -Seconds 3
+          try { if (@($p.Modules | ForEach-Object { $_.ModuleName.ToLower() }) -contains 'verifier.dll') { $ver = 1 } } catch { }
+          $tt = @(); foreach ($q in @(Get-Process OUTLOOK -EA SilentlyContinue)) { $tt += @([OWT]::Titles([uint32]$q.Id)) }
+          if (@($tt | Where-Object { $_ -like '*M15CTL*' }).Count) { $found = 1; break }
+          if ($p.HasExited) { break }
+          # a fresh runner has no mail profile: Outlook's first-run wizard shows modal dialogs whose
+          # class is #32770, and until they are gone no inspector can appear.  Close them by class.
+          if ($i % 5 -eq 4) {
+            foreach ($w in @($tt | Where-Object { $_ -like '*|#32770|*' })) {
+              $hh = [OWT]::Find(($w -split '\|')[2], 0)
+              if ($hh -ne [IntPtr]::Zero) { [OWT]::PostMessage($hh, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero) | Out-Null }
+            }
+          }
+        }
+        "CONTROL opened=$found verifier=$ver exited=$($p.HasExited) motw=[$motw] windows=$($tt.Count)" | Tee-Object out\control.txt
+        "first_visible_windows:" | Add-Content out\control.txt
+        ($tt | Select-Object -First 12) | Add-Content out\control.txt
+        ($tt -join "`r`n") | Add-Content out\control.txt
+        if ($ver -ne 1) { throw "page heap not observed in OUTLOOK (verifier.dll unmapped)" }
+        if ($found -ne 1) { throw "control .msg never produced an inspector window: the sweep would be blind" }
+
+    - name: Open every carrier under page heap, watch for faults
+      shell: pwsh
+      run: |
+        $src = @('using System;','using System.Text;','using System.Runtime.InteropServices;','using System.Collections.Generic;','public class OWU {','  [StructLayout(LayoutKind.Sequential)] public struct RECT { public int L; public int T; public int R; public int B; }','  [DllImport("user32.dll")] public static extern bool EnumWindows(EnumWindowsProc cb, IntPtr l);','  public delegate bool EnumWindowsProc(IntPtr h, IntPtr l);','  [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetWindowTextW(IntPtr h, StringBuilder s, int n);','  [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetClassNameW(IntPtr h, StringBuilder s, int n);','  [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);','  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);','  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);','  [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr h, uint m, IntPtr w, IntPtr l);','  public static List<string> Titles(uint wantPid) {','    var res = new List<string>();','    EnumWindows((h, l) => { uint pid; GetWindowThreadProcessId(h, out pid);','      if ((wantPid == 0 || pid == wantPid) && IsWindowVisible(h)) {','        var sb = new StringBuilder(512); GetWindowTextW(h, sb, 512);','        var cn = new StringBuilder(128); GetClassNameW(h, cn, 128);','        if (sb.Length > 0) res.Add(pid + "|" + cn.ToString() + "|" + sb.ToString()); }','      return true; }, IntPtr.Zero);','    return res; }','  public static IntPtr Find(string needle, uint wantPid) {','    IntPtr hit = IntPtr.Zero;','    EnumWindows((h, l) => { uint pid; GetWindowThreadProcessId(h, out pid);','      if ((wantPid == 0 || pid == wantPid) && IsWindowVisible(h)) {','        var sb = new StringBuilder(512); GetWindowTextW(h, sb, 512);','        if (sb.Length > 0 && sb.ToString().IndexOf(needle, StringComparison.Ordinal) >= 0) { hit = h; return false; } }','      return true; }, IntPtr.Zero);','    return hit; }','}') -join "`n"
+        Add-Type -TypeDefinition $src
+        Add-Type -AssemblyName System.Windows.Forms,System.Drawing
+        function Crop([IntPtr]$h, [string]$path) {
+          $r = New-Object OWU+RECT
+          if (-not [OWU]::GetWindowRect($h, [ref]$r)) { return -1 }
+          $w = $r.R - $r.L; $b = $r.B - $r.T
+          if ($w -le 0 -or $b -le 0) { return -1 }
+          $bmp = New-Object System.Drawing.Bitmap($w, $b)
+          $g = [System.Drawing.Graphics]::FromImage($bmp)
+          $g.CopyFromScreen($r.L, $r.T, 0, 0, (New-Object System.Drawing.Size($w, $b)))
+          $red = 0
+          for ($y = 0; $y -lt $b; $y += 3) { for ($x = 0; $x -lt $w; $x += 3) {
+            $c = $bmp.GetPixel($x, $y)
+            if ($c.R -gt 170 -and $c.G -lt 90 -and $c.B -lt 90) { $red++ } } }
+          $bmp.Save($path); $g.Dispose(); $bmp.Dispose(); return $red
+        }
+        $log = "out\sweep_log.txt"
+        $exe = "C:\Program Files\Microsoft Office\root\Office16\OUTLOOK.EXE"
+        $cap = [int]('${{ github.event.inputs.cap }}')
+        if ($cap -le 0) { $cap = 50 }
+        $files = @(Get-ChildItem corpus -Filter m15_*.msg -Recurse | Sort-Object Name | Select-Object -First $cap)
+        "cases=$($files.Count)" | Tee-Object -FilePath $log
+        if ($files.Count -lt 40) { throw "carrier set not materialized (cases=$($files.Count))" }
+        $bad = @(); $unopened = @()
+        foreach ($f in $files) {
+          $tag = ($f.BaseName -replace 'm15_','')
+          $t0 = Get-Date
+          Set-Content -Path $f.FullName -Stream Zone.Identifier -Value "[ZoneTransfer]`r`nZoneId=3" -Encoding ASCII
+          $motw = ((Get-Content $f.FullName -Stream Zone.Identifier -EA SilentlyContinue) -join '/')
+          $dumps0 = @(Get-ChildItem C:\dumps -Filter *.dmp -EA SilentlyContinue).Count
+          Start-Process $f.FullName | Out-Null
+          $h = [IntPtr]::Zero; $pid2 = 0; $tt = @()
+          for ($i = 0; $i -lt 40; $i++) {
+            Start-Sleep -Seconds 3
+            $qs = @(Get-Process OUTLOOK -EA SilentlyContinue)
+            if ($qs.Count -eq 0) { break }
+            $tt = @(); foreach ($q in $qs) { $tt += @([OWU]::Titles([uint32]$q.Id)) }
+            foreach ($q in $qs) {
+              $h = [OWU]::Find("M15-$tag", [uint32]$q.Id)
+              if ($h -ne [IntPtr]::Zero) { $pid2 = $q.Id; break }
+            }
+            if ($h -ne [IntPtr]::Zero) { break }
+          }
+          Start-Sleep -Seconds 10
+          $red = -1
+          if ($h -ne [IntPtr]::Zero) { $red = Crop $h ("out\crop_" + $tag + ".png") }
+          $new = @(Get-ChildItem C:\dumps -Filter *.dmp -EA SilentlyContinue | Where-Object { $_.LastWriteTime -gt $t0 })
+          $alive = @(Get-Process OUTLOOK -EA SilentlyContinue).Count
+          '{0,-16} opened={1} pid={2} alive={3} red={4} dumps={5} motw=[{6}] s={7}' -f $f.Name, [int]($h -ne [IntPtr]::Zero), $pid2, $alive, $red, $new.Count, $motw, [int]((Get-Date)-$t0).TotalSeconds | Tee-Object -FilePath $log -Append
+          if ($h -eq [IntPtr]::Zero) { $unopened += $f.Name }
+          if ($new.Count -or ($alive -eq 0)) {
+            $bad += $f.Name
+            New-Item -ItemType Directory -Force -Path out\bad | Out-Null
+            Copy-Item $f.FullName ('out\bad\CRASH_' + $f.Name) -Force -EA SilentlyContinue
+            foreach ($dd in $new) { Copy-Item $dd.FullName ('out\bad\' + $dd.Name) -Force -EA SilentlyContinue }
+            Start-Process $exe | Out-Null
+            Start-Sleep -Seconds 60
+          }
+          if ($h -ne [IntPtr]::Zero) { [OWU]::PostMessage($h, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero) | Out-Null }
+        }
+        "SUMMARY cases=$($files.Count) flagged=$($bad.Count) [$($bad -join ' ')]" | Tee-Object -FilePath $log -Append
+        "unopened=$($unopened.Count) [$($unopened -join ' ')]" | Tee-Object -FilePath $log -Append
+        if ($unopened.Count -eq $files.Count) { throw "no carrier ever produced an inspector window: instrument blind (first: $($unopened[0]))" }
+        $bad -join "`r`n" | Out-File out\bad.txt
+
+    - name: Upload evidence
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: outlook-msg-emfplus
+        path: |
+          out
+          corpus\cases.txt
+          ver.txt
