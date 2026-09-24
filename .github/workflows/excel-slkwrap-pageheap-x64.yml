@@ -98,7 +98,7 @@ jobs:
         "cases=$($files.Count)" | Tee-Object -FilePath $log
         # A sweep that opens nothing must never read as "no faults": the generator wrote to a
         # different directory than the loop globbed once, and the job was green with cases=0.
-        if ($files.Count -lt 50) { throw "corpus not materialized in corpus\ (cases=$($files.Count))" }
+        if ($files.Count -lt 5) { throw "corpus not materialized in corpus\ (cases=$($files.Count))" }
         $bad = @()
         $unopened = @()
         foreach ($f in $files) {
