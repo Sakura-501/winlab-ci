@@ -43,6 +43,9 @@ jobs:
         "winstations:" | Add-Content out\diag0.txt
         (Get-ChildItem 'Registry::HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\WindowStations' -EA SilentlyContinue).PSChildName | Add-Content out\diag0.txt
         "console_owner=$((Get-Process -EA SilentlyContinue | Where-Object { $_.ProcessName -eq 'LogonUI' }).Count) logonui" | Add-Content out\diag0.txt
+        "winstation_of_agent=$((Get-Process -Id $PID).MainWindowTitle)|procs_with_windows=$((@(Get-Process -EA SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 })).Count)" | Add-Content out\diag0.txt
+        Get-Content out\diag0.txt
+        exit 0
 
     - name: Build control documents
       shell: pwsh
