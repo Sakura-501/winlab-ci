@@ -1,0 +1,65 @@
+name: mso-slot-probe-x64
+# Resolve the two indirect call slots behind FObtainXmlItemString / MsoConvertXmlNCRs.
+# In the static image those IAT-like slots (mso+0x194fe48, mso+0x1950868) hold 0xFFFF... - they are
+# filled at load time, so the four "capacity in callee, write in caller" rows in
+# mso-html-import-20260923/STATE.md cannot be closed from files. cdb is on the runner and Office is
+# installed here, so ask the running process for the slot contents and the symbol behind them.
+'on': {workflow_dispatch: {}}
+jobs:
+  t:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+    - uses: actions/checkout@v4
+    - name: Download ODT
+      shell: pwsh
+      run: |
+        $page = (Invoke-WebRequest -Uri "https://www.microsoft.com/en-us/download/details.aspx?id=49117" -UseBasicParsing).Content
+        if ($page -match 'href="(https://download\.microsoft\.com/download/[^"]+officedeploymenttool[^"]*\.exe)"') { Invoke-WebRequest -Uri $Matches[1] -OutFile odt.exe } else { throw "odt link not found" }
+        Start-Process -Wait -FilePath .\odt.exe -ArgumentList "/extract:odtx /quiet"
+    - name: Install x64 Office
+      shell: pwsh
+      run: |
+        $xml = '<Configuration><Add OfficeClientEdition="64" Channel="CurrentChannel"><Product ID="O365ProPlusRetail"><Language ID="en-us" /><ExcludeApp ID="OneDrive" /><ExcludeApp ID="Bing" /></Product></Add><Display Level="None" AcceptEULA="TRUE" /><Updates Enabled="FALSE" /></Configuration>'
+        Set-Content -Path cfg.xml -Value $xml
+        Start-Process -Wait -FilePath .\odtx\setup.exe -ArgumentList "/configure","cfg.xml"
+        $m = Get-Item "C:\Program Files\Microsoft Office\root\Office16\mso.dll" -EA SilentlyContinue
+        if (-not $m) { throw "mso.dll missing" }
+        "mso v=$($m.VersionInfo.FileVersion)" | Tee-Object ver.txt
+    - name: Read the slots from the running process
+      shell: pwsh
+      run: |
+        New-Item -ItemType Directory -Force -Path out | Out-Null
+        $cdb = 'C:\Program Files (x86)\Windows Kits\10\Debuggers\x64\cdb.exe'
+        if (-not (Test-Path $cdb)) { throw "cdb missing" }
+        $ww = 'C:\Program Files\Microsoft Office\root\Office16\WINWORD.EXE'
+        $cmds = @(
+          '.sympath srv*C:\sym*https://msdl.microsoft.com/download/symbols',
+          'sxe ld:mso',
+          'g',
+          '.reload',
+          'lmvm mso',
+          '?mso',
+          'dq mso+194fe48 L2',
+          'dq mso+1950868 L2',
+          'ln mso+194fe48',
+          'r $t0 = poi(mso+194fe48); ? poi(mso+194fe48); ln poi(mso+194fe48)',
+          'r $t1 = poi(mso+1950868); ? poi(mso+1950868); ln poi(mso+1950868)',
+          'x mso!*ObtainXml*',
+          'x mso!*ConvertXmlNCR*',
+          'x mso!*XmlItem*',
+          'q'
+        )
+        Set-Content -Path cmds.txt -Value $cmds -Encoding ASCII
+        $p = Start-Process -FilePath $cdb -ArgumentList '-cf','cmds.txt','-logo','out\slot_log.txt',$ww,'/n' -PassThru -WindowStyle Hidden
+        $sw = [Diagnostics.Stopwatch]::StartNew()
+        while (-not $p.HasExited -and $sw.Elapsed.TotalSeconds -lt 300) { Start-Sleep 3 }
+        Stop-Process -Name WINWORD,cdb -Force -EA SilentlyContinue
+        Start-Sleep 2
+        if (-not (Test-Path out\slot_log.txt)) { throw "no cdb log: instrument blind" }
+        "log_lines=$((Get-Content out\slot_log.txt).Count)" | Tee-Object out\gate.txt
+        (Get-Content out\slot_log.txt | Where-Object { $_ -match 'mso\+194fe48|mso\+1950868|XmlItem|ConvertXmlNCR|ObtainXml|Image path|module mso' }) | Select-Object -First 40 | Tee-Object -Append out\gate.txt
+    - name: Upload evidence
+      if: always()
+      uses: actions/upload-artifact@v4
+      with: { name: mso-slot-probe-x64, path: out }
