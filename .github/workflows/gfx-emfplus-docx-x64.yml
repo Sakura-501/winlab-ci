@@ -56,16 +56,21 @@ jobs:
         "blob=$blob" | Tee-Object out\blob.txt
         [IO.File]::WriteAllBytes("carriers.gz", [Convert]::FromBase64String((Get-Content ('data\' + $blob) -Raw).Trim()))
         tar -xzf carriers.gz -C corpus
-        $ne = @(Get-ChildItem corpus\emf -Filter *.emf).Count
-        "emf=$ne" | Tee-Object -FilePath out\setup_log.txt
+        # Get-ChildItem -Filter can hand back the same file twice when many long names share one
+        # 8.3 short-name prefix (measured on the runner: 172 files on disk reported as emf=344), so
+        # every count here goes through Extension + Unique rather than -Filter.
+        $emfL = @(Get-ChildItem corpus\emf | Where-Object { $_.Extension -eq '.emf' -and $_.Name -notlike '._*' } | Sort-Object Name -Unique)
+        $ne = $emfL.Count
+        "emf=$ne filterform=@(Get-ChildItem -Filter *.emf).Count=$(@(Get-ChildItem corpus\emf -Filter *.emf).Count)" | Tee-Object -FilePath out\setup_log.txt
         if ($ne -lt 100) { throw "emf corpus not materialized (n=$ne)" }
         python corpus\pack_all.py corpus\emf corpus\template.docx corpus\docx > out\manifest.tsv 2> out\pack_err.txt
         $rc = $LASTEXITCODE
         "pack_rc=$rc $(Get-Content out\pack_err.txt -Raw)".Trim() | Tee-Object -FilePath out\setup_log.txt -Append
-        $nd = @(Get-ChildItem corpus\docx -Filter *.docx).Count
-        "docx=$nd" | Tee-Object -FilePath out\setup_log.txt -Append
+        $docL = @(Get-ChildItem corpus\docx | Where-Object { $_.Extension -eq '.docx' -and $_.Name -notlike '._*' } | Sort-Object Name -Unique)
+        $nd = $docL.Count
+        "docx=$nd" | Tee-Object -FilePath out\setup_log.txt -Append -Append
         if ($rc -ne 0 -or $nd -ne $ne) { throw "docx packing incomplete rc=$rc emf=$ne docx=$nd" }
-        Get-ChildItem corpus\docx\ctl_pen12.docx | Out-Null
+        if (-not (Test-Path corpus\docx\ctl_pen12.docx)) { throw "control carrier corpus\docx\ctl_pen12.docx missing" }
 
     - name: Arm page heap and local dumps
       shell: pwsh
@@ -174,9 +179,11 @@ jobs:
         }
 
         $cap = [int]('${{ github.event.inputs.cap }}'); if ($cap -le 0) { $cap = 200 }
+        # Steps run in separate PowerShell processes, so the carrier list is enumerated again here.
+        $docL = @(Get-ChildItem corpus\docx | Where-Object { $_.Extension -eq '.docx' -and $_.Name -notlike '._*' } | Sort-Object Name -Unique)
         # Cold start of a page-heaped Office measured 306 s to the first window, so the control carrier
         # gets a 480 s budget; every later case reuses that process (warm reuse measured 11 s/case).
-        $ctl = Get-Item corpus\docx\ctl_pen12.docx
+        $ctl = @($docL | Where-Object { $_.Name -eq 'ctl_pen12.docx' })[0]
         Set-Content -Path $ctl.FullName -Stream Zone.Identifier -Value "[ZoneTransfer]`r`nZoneId=3" -Encoding ASCII
         $t0 = Get-Date
         Start-Process -FilePath $ww -ArgumentList ('"' + $ctl.FullName + '"') | Out-Null
@@ -187,7 +194,7 @@ jobs:
         if ((VerOn) -ne 1) { throw "verifier.dll not loaded in the warm WINWORD: page heap not in effect" }
         [WX]::Close($r0.hwnd); Start-Sleep -Seconds 4
 
-        $files = @(Get-ChildItem corpus\docx -Filter *.docx | Where-Object { $_.Name -notlike '._*' -and $_.Name -ne 'ctl_pen12.docx' } | Sort-Object Name | Select-Object -First $cap)
+        $files = @($docL | Where-Object { $_.Name -ne 'ctl_pen12.docx' } | Select-Object -First $cap)
         "cases=$($files.Count)" | Add-Content -Path $log
         $rows = @(); $notfound = @(); $died = 0; $restarts = 0
         foreach ($f in $files) {
