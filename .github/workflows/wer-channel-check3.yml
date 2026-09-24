@@ -1,0 +1,54 @@
+name: wer-channel-check3
+# v1/v2 controls were swallowed by the PowerShell host (exit code 1, no WER at all), so they never
+# tested the channels. This one faults inside a native interpreter: CPython writing through a NULL
+# pointer dies with 0xC0000005 in C code, which is what an Office AV looks like to the OS.
+# Step A tests WER LocalDumps + event log with AeDebug cleared; step B re-arms the AeDebug postmortem
+# hook and tests that channel.
+'on': {workflow_dispatch: {}}
+jobs:
+  t:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+    - name: A - WER LocalDumps + Application Error channel
+      shell: pwsh
+      run: |
+        New-Item -ItemType Directory -Force -Path out, C:\dumps, C:\pm | Out-Null
+        Remove-Item 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\AeDebug' -Name Debugger -Force -EA SilentlyContinue
+        $ld = "HKLM:\SOFTWARE\Microsoft\Windows Error Reporting\LocalDumps"
+        New-Item -Path $ld -Force | Out-Null
+        Set-ItemProperty -Path $ld -Name DumpFolder -Value "C:\dumps" -Type ExpandString
+        Set-ItemProperty -Path $ld -Name DumpType -Value 2 -Type DWord
+        Set-ItemProperty -Path $ld -Name DumpCount -Value 30 -Type DWord
+        $code = 'import ctypes; ctypes.cast(0, ctypes.POINTER(ctypes.c_int))[0] = 1'
+        Set-Content -Path fault.py -Value $code
+        $b = @(Get-ChildItem C:\dumps -EA SilentlyContinue).Count
+        $t0 = Get-Date
+        $p = Start-Process -FilePath python -ArgumentList 'fault.py' -PassThru -WindowStyle Hidden
+        $done = $p.WaitForExit(120000)
+        Start-Sleep 8
+        $a = @(Get-ChildItem C:\dumps -EA SilentlyContinue)
+        $ev = @(Get-WinEvent -FilterHashtable @{LogName='Application'} -MaxEvents 400 -EA SilentlyContinue |
+                Where-Object { $_.TimeGenerated -gt $t0 -and $_.ProviderName -in 'Application Error','Windows Error Reporting' })
+        "A py_exit=0x{0:x8} dumps_before=$b dumps_after={1} delta={2} events={3}" -f $(if ($done) { $p.ExitCode } else { -1 }), $a.Count, ($a.Count - $b), $ev.Count | Tee-Object out\ch3.txt
+        $a | ForEach-Object { "  DUMP $($_.Name) $($_.Length)" } | Tee-Object -Append out\ch3.txt
+        $ev | Select-Object -First 3 | ForEach-Object { "  EVT[$($_.ProviderName)] " + (($_.Message -split "`r?`n" | Select-Object -Skip 1) -join ' ') } | Tee-Object -Append out\ch3.txt
+    - name: B - AeDebug postmortem cdb channel
+      shell: pwsh
+      run: |
+        $ad = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\AeDebug'
+        Set-ItemProperty -Path $ad -Name Debugger -Value 'C:\Program Files (x86)\Windows Kits\10\Debuggers\x64\cdb.exe -pv -p %ld -c ".exccnt av+1; g; .dump /ma C:\pm\pm.dmp; q" -logo C:\pm\pmlog.txt' -Force
+        Set-ItemProperty -Path $ad -Name Auto -Value 1 -Type DWord -Force
+        $t0 = Get-Date
+        $p = Start-Process -FilePath python -ArgumentList 'fault.py' -PassThru -WindowStyle Hidden
+        $done = $p.WaitForExit(180000)
+        Start-Sleep 10
+        $pm = @(Get-ChildItem C:\pm -EA SilentlyContinue)
+        "B py_exit=0x{0:x8} pm_files={1}" -f $(if ($done) { $p.ExitCode } else { -1 }), $pm.Count | Tee-Object -Append out\ch3.txt
+        $pm | ForEach-Object { "  PM $($_.Name) $($_.Length)" } | Tee-Object -Append out\ch3.txt
+        if (Test-Path C:\pm\pmlog.txt) { (Get-Content C:\pm\pmlog.txt | Where-Object { $_ -match 'AV:|ExceptionCode|ModLoad: .*python|Faulting|exception code' } | Select-Object -First 12) | Tee-Object -Append out\ch3.txt }
+        Copy-Item C:\pm\pmlog.txt out\pmlog.txt -Force -EA SilentlyContinue
+    - name: Upload
+      if: always()
+      uses: actions/upload-artifact@v4
+      with: { name: wer-channel-check3, path: out }
