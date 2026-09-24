@@ -1,0 +1,41 @@
+name: wer-channel-check
+# Positive control for the two crash-capture channels the Office waves rely on:
+# WER LocalDumps writing into C:\dumps and the "Application Error" event carrying faulting module+offset.
+# Neither channel had ever produced a row (all waves so far had zero crashes), so both are unverified
+# on the positive path. Deliberately fault inside a plain process and read both back.
+'on': {workflow_dispatch: {}}
+jobs:
+  t:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+    - name: arm LocalDumps then fault
+      shell: pwsh
+      run: |
+        New-Item -ItemType Directory -Force -Path out, C:\dumps | Out-Null
+        $ld = "HKLM:\SOFTWARE\Microsoft\Windows Error Reporting\LocalDumps"
+        New-Item -Path $ld -Force | Out-Null
+        Set-ItemProperty -Path $ld -Name DumpFolder -Value "C:\dumps" -Type ExpandString
+        Set-ItemProperty -Path $ld -Name DumpType -Value 2 -Type DWord
+        Set-ItemProperty -Path $ld -Name DumpCount -Value 20 -Type DWord
+        $before = @(Get-ChildItem C:\dumps -EA SilentlyContinue).Count
+        $t0 = Get-Date
+        $inner = 'Add-Type -TypeDefinition ''public class K { [System.Runtime.InteropServices.DllImport("kernel32.dll")] public static extern void ZeroMemory(System.IntPtr p, uint n); }''; [K]::ZeroMemory([IntPtr]::Zero,16)'
+        $p = Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoProfile','-Command',$inner -PassThru -WindowStyle Hidden
+        $p.WaitForExit(120000) | Out-Null
+        "child_exit=$($p.ExitCode) child_hasexit=$($p.HasExited)" | Tee-Object out\wer.txt
+        Start-Sleep 6
+        $after = @(Get-ChildItem C:\dumps -EA SilentlyContinue)
+        "dumps_before=$before dumps_after=$($after.Count)" | Tee-Object -Append out\wer.txt
+        $after | ForEach-Object { "DUMP $($_.Name) $($_.Length)" } | Tee-Object -Append out\wer.txt
+        $ev = @(Get-WinEvent -FilterHashtable @{LogName='Application'; ProviderName='Application Error'} -MaxEvents 25 -EA SilentlyContinue | Where-Object { $_.TimeGenerated -gt $t0 })
+        "app_error_events=$($ev.Count)" | Tee-Object -Append out\wer.txt
+        $ev | ForEach-Object { "EVENT " + (($_.Message -split "`r?`n" | Select-Object -Skip 1) -join ' ') } | Select-Object -First 4 | Tee-Object -Append out\wer.txt
+        $hu = @(Get-WinEvent -FilterHashtable @{LogName='Application'; ProviderName='Windows Error Reporting'} -MaxEvents 25 -EA SilentlyContinue | Where-Object { $_.TimeGenerated -gt $t0 })
+        "wer_events=$($hu.Count)" | Tee-Object -Append out\wer.txt
+        $hu | ForEach-Object { "WEREVT " + (($_.Message -split "`r?`n" | Select-Object -Skip 1) -join ' ') } | Select-Object -First 2 | Tee-Object -Append out\wer.txt
+        if ($after.Count -eq $before -and $ev.Count -eq 0) { "BOTH_CHANNELS_SILENT" | Tee-Object -Append out\wer.txt }
+    - name: Upload
+      if: always()
+      uses: actions/upload-artifact@v4
+      with: { name: wer-channel-check, path: out }
