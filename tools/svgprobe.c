@@ -16,6 +16,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <ole2.h>
+
+static int readable(const void *p);
 
 /* objidlbase.h (pulled in by windows.h) already declares STATSTG and LPSTREAM; redeclaring
  * them is a C2011/C2371 on 10.0.26100 headers (run 36062072487). */
@@ -37,10 +40,38 @@ static void *g_rip, *g_addr;
 static int g_writedir;
 static int g_walk;
 
+static char g_throwName[160];
+
+/* x64 MSVC C++ throw: ExceptionInformation[0]==0x19930520, [2] points at a ThrowInfo whose +8
+ * holds an RVA (not a pointer) to the TypeDescriptor, whose +8 is the mangled name. */
+static void throw_name(struct _EXCEPTION_RECORD *er, char *out, size_t cap)
+{
+    unsigned __int64 ti, mod, rva;
+    char *nm;
+    MEMORY_BASIC_INFORMATION mi;
+    out[0] = 0;
+    if (er->NumberParameters < 4) return;
+    if (er->ExceptionInformation[0] != 0x19930520) { snprintf(out, cap, "code=0x%08X", (unsigned)er->ExceptionCode); return; }
+    ti = er->ExceptionInformation[2];
+    if (!ti) return;
+    if (!VirtualQuery((LPCVOID)ti, &mi, sizeof(mi)) || !mi.AllocationBase) return;
+    mod = (unsigned __int64)mi.AllocationBase;
+    rva = *(unsigned __int64 *)(ti + 8);
+    if (rva > 0x10000000 || rva < mod) rva = rva + mod;      /* RVA vs absolute */
+    if (!readable((const void *)(rva + 8))) { snprintf(out, cap, "tid_unmapped ti=0x%llX", ti); return; }
+    nm = *(char **)(rva + 8);
+    if (!readable(nm)) { snprintf(out, cap, "name_unmapped rva=0x%llX", rva); return; }
+    snprintf(out, cap, "%.150s", nm);
+}
+
 static LONG CALLBACK veh(struct _EXCEPTION_POINTERS *ep)
 {
     DWORD c = ep->ExceptionRecord->ExceptionCode;
-    if (c == (DWORD)0xE06D7363) { g_throws++; return EXCEPTION_EXECUTE_HANDLER; }
+    if (c == (DWORD)0xE06D7363) {
+        g_throws++;
+        throw_name(ep->ExceptionRecord, g_throwName, sizeof(g_throwName));
+        return EXCEPTION_EXECUTE_HANDLER;
+    }
     if (c == EXCEPTION_ACCESS_VIOLATION) {
         g_faults++;
         g_code = c;
@@ -244,9 +275,9 @@ static int run_one(const char *path, int doWalk)
     mod_of(g_rip, g_ripMod, sizeof(g_ripMod));
     mod_of(g_addr, g_addrOwner, sizeof(g_addrOwner));
     printf("ROW file=%s len=%lu hr=0x%08X obj=%p objok=%d faults=%d code=0x%08X dir=%s "
-           "rip=%p[%s] addr=%p[%s] throws=%d\n",
+           "rip=%p[%s] addr=%p[%s] throws=%d throw=[%s]\n",
            path, len, (unsigned)hr, obj, ok, g_faults, g_code,
-           g_writedir ? "WRITE" : "READ", g_rip, g_ripMod, g_addr, g_addrOwner, g_throws);
+           g_writedir ? "WRITE" : "READ", g_rip, g_ripMod, g_addr, g_addrOwner, g_throws, g_throwName);
     printf("PARSE file=%s parsed=%d\n", path, (ok && !g_faults && !g_throws) ? 1 : 0);
     fflush(stdout);
     free(b);
@@ -256,6 +287,11 @@ static int run_one(const char *path, int doWalk)
 int main(int argc, char **argv)
 {
     HMODULE sh;
+    HRESULT coh;
+    /* run 36064753324: all four modules loaded and the proxy resolved, yet the entry threw.
+     * The DOM-backed parser needs a COM apartment in this process, which nothing had created. */
+    coh = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+    printf("CoInitializeEx=0x%08X\n", (unsigned)coh);
     SetUnhandledExceptionFilter((LPTOP_LEVEL_EXCEPTION_FILTER)veh);
     AddVectoredExceptionHandler(1, veh);
     setvbuf(stdout, NULL, _IONBF, 0);
