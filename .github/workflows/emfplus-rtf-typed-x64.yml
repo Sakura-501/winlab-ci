@@ -135,7 +135,7 @@ jobs:
         if ($r0.found -ne 1) { throw "cold-start control ctl_pen.rtf never produced a window in 480 s: instrument blind" }
         $files = @()
         $files += @(Get-ChildItem corpus\rtf -Filter *.rtf | Where-Object { $_.Name -notlike '._*' -and $_.Name -ne 'ctl_pen.rtf' } | Sort-Object Name | Select-Object -First $cap)
-        $files += @(Get-ChildItem corpus\eml -Filter *.eml | Where-Object { $_.Name -notlike '._*' } | Sort-Object Name)
+        $files += @(Get-ChildItem corpus\eml -Filter *.eml -EA SilentlyContinue | Where-Object { $_.Name -notlike '._*' } | Sort-Object Name)
         "cases=$($files.Count)" | Add-Content -Path $log
         $rows = @(); $blind = @()
         foreach ($f in $files) {
