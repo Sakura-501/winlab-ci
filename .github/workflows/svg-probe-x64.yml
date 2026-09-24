@@ -70,7 +70,7 @@ jobs:
           if (-not $vs) { throw "no vc tools" }
           $bat = Join-Path $vs "VC\Auxiliary\Build\vcvars64.bat"
           New-Item -ItemType Directory -Force -Path out | Out-Null
-          cmd /c "`"$bat`" && cd /d %GITHUB_WORKSPACE% && cl /nologo /W1 /O2 /MT /D_CRT_SECURE_NO_WARNINGS tools\svgprobe.c /Fe:svgprobe_x64.exe /link shlwapi.lib > out\build_log.txt 2>&1"
+          cmd /c "`"$bat`" && cd /d %GITHUB_WORKSPACE% && cl /nologo /W1 /O2 /MT /D_CRT_SECURE_NO_WARNINGS tools\svgprobe.c /Fe:svgprobe_x64.exe /link shlwapi.lib ole32.lib > out\build_log.txt 2>&1"
           Get-Content out\build_log.txt | Select-Object -Last 20
           if (-not (Test-Path .\svgprobe_x64.exe)) { throw "probe build failed" }
           $inst = (Get-Content envline.txt).Split('=')[1]
