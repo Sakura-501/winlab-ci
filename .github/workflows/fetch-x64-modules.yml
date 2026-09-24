@@ -1,0 +1,37 @@
+name: fetch-x64-modules
+on:
+  workflow_dispatch:
+    inputs:
+      blob:
+        description: comma separated module names under System32
+        default: gdiplus.dll
+        type: string
+jobs:
+  t:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: copy
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path out | Out-Null
+          foreach ($n in ($env:BLOB -split ',')) {
+            $p = Join-Path $env:SystemRoot ("System32\" + $n.Trim())
+            if (-not (Test-Path $p)) { "MISSING $p"; continue }
+            $src = [IO.File]::Open($p, 'Open', 'Read', 'ReadWrite')
+            $dst = [IO.File]::Create(("out\" + $n.Trim()))
+            $src.CopyTo($dst); $dst.Close(); $src.Close()
+            $b = [IO.File]::ReadAllBytes(("out\" + $n.Trim()))
+            $e = [BitConverter]::ToInt32($b, 60)
+            $mach = [BitConverter]::ToUInt16($b, $e + 4)
+            "GOT $n len=$($b.Length) machine=0x{0:X4}" -f $mach
+          }
+          Get-ChildItem out | ForEach-Object { "{0} {1}" -f $_.Length, $_.Name }
+          "runner os: " + (Get-CimInstance Win32_OperatingSystem).BuildNumber + " arch=" + $env:PROCESSOR_ARCHITECTURE
+        env:
+          BLOB: ${{ inputs.blob }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: x64-modules
+          path: |
+            out
