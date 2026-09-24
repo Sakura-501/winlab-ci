@@ -68,7 +68,7 @@ jobs:
         "pack_rc=$rc $(Get-Content out\pack_err.txt -Raw)".Trim() | Tee-Object -FilePath out\setup_log.txt -Append
         $docL = @(Get-ChildItem corpus\docx | Where-Object { $_.Extension -eq '.docx' -and $_.Name -notlike '._*' } | Sort-Object Name -Unique)
         $nd = $docL.Count
-        "docx=$nd" | Tee-Object -FilePath out\setup_log.txt -Append -Append
+        "docx=$nd" | Tee-Object -FilePath out\setup_log.txt -Append
         if ($rc -ne 0 -or $nd -ne $ne) { throw "docx packing incomplete rc=$rc emf=$ne docx=$nd" }
         if (-not (Test-Path corpus\docx\ctl_pen12.docx)) { throw "control carrier corpus\docx\ctl_pen12.docx missing" }
 
