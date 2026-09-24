@@ -1,0 +1,131 @@
+name: word-layout-diff-x64
+'on':
+  workflow_dispatch:
+    inputs:
+      rounds:
+        description: 'passes over the 5 carriers'
+        required: false
+        default: '2'
+jobs:
+  t:
+    runs-on: windows-latest
+    timeout-minutes: 120
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Download ODT
+      shell: pwsh
+      run: |
+        $page = (Invoke-WebRequest -Uri "https://www.microsoft.com/en-us/download/details.aspx?id=49117" -UseBasicParsing).Content
+        if ($page -match 'href="(https://download\.microsoft\.com/download/[^"]+officedeploymenttool[^"]*\.exe)"') {
+          Invoke-WebRequest -Uri $Matches[1] -OutFile odt.exe
+        } else { throw "odt link not found" }
+        Start-Process -Wait -FilePath .\odt.exe -ArgumentList "/extract:odtx /quiet"
+
+    - name: Install x64 Office (Word needed)
+      shell: pwsh
+      run: |
+        $xml = '<Configuration><Add OfficeClientEdition="64" Channel="CurrentChannel"><Product ID="O365ProPlusRetail"><Language ID="en-us" /><ExcludeApp ID="OneDrive" /><ExcludeApp ID="Bing" /></Product></Add><Display Level="None" AcceptEULA="TRUE" /><Updates Enabled="FALSE" /></Configuration>'
+        Set-Content -Path cfg.xml -Value $xml
+        Start-Process -Wait -FilePath .\odtx\setup.exe -ArgumentList "/configure","cfg.xml"
+        $w = Get-Item "C:\Program Files\Microsoft Office\root\Office16\WINWORD.EXE" -EA SilentlyContinue
+        if (-not $w) { throw "word install failed" }
+        "winword v=$($w.VersionInfo.FileVersion)" | Tee-Object ver.txt
+        $w.VersionInfo.FileVersion | Out-File ver.txt
+
+    - name: Unpack carriers
+      shell: pwsh
+      run: |
+        New-Item -ItemType Directory -Force -Path out, corpus, C:\dumps | Out-Null
+        [IO.File]::WriteAllBytes("lay.tgz", [Convert]::FromBase64String((Get-Content data\laydiff.b64 -Raw).Trim()))
+        tar -xzf lay.tgz -C corpus
+        "rtf=" + (@(Get-ChildItem corpus -Filter *.rtf -Recurse).Count)
+        (Get-ChildItem corpus -Filter *.rtf -Recurse | Sort-Object Name | ForEach-Object { $_.Name + "=" + $_.Length }) | Tee-Object out\corpus.txt
+        $ld = "HKLM:\SOFTWARE\Microsoft\Windows Error Reporting\LocalDumps"
+        New-Item -Path $ld -Force | Out-Null
+        Set-ItemProperty -Path $ld -Name DumpFolder -Value "C:\dumps" -Type ExpandString
+        Set-ItemProperty -Path $ld -Name DumpType -Value 2 -Type DWord
+        Set-ItemProperty -Path $ld -Name DumpCount -Value 30 -Type DWord
+
+    - name: Measure the document window per carrier, with and without MOTW
+      shell: pwsh
+      run: |
+        $native = @('using System;','using System.Text;','using System.Runtime.InteropServices;','using System.Collections.Generic;','public class OWL {','  [StructLayout(LayoutKind.Sequential)] public struct RECT { public int L; public int T; public int R; public int B; }','  [DllImport("user32.dll")] public static extern bool EnumWindows(EnumWindowsProc cb, IntPtr l);','  public delegate bool EnumWindowsProc(IntPtr h, IntPtr l);','  [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetWindowTextW(IntPtr h, StringBuilder s, int n);','  [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetClassNameW(IntPtr h, StringBuilder s, int n);','  [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);','  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);','  [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr h, uint m, IntPtr w, IntPtr l);','  public static IntPtr Find(string needle) {','    IntPtr hit = IntPtr.Zero;','    EnumWindows((h, l) => {','      if (IsWindowVisible(h)) { var sb = new StringBuilder(512); GetWindowTextW(h, sb, 512);','        var cn = new StringBuilder(128); GetClassNameW(h, cn, 128);','        if (cn.ToString() == "OpusApp" && sb.Length > 0 && sb.ToString().IndexOf(needle, StringComparison.Ordinal) >= 0) { hit = h; return false; } }','      return true; }, IntPtr.Zero);','    return hit; }','}') -join "`n"
+        Add-Type -TypeDefinition $native
+        Add-Type -AssemblyName System.Windows.Forms,System.Drawing
+        $log = "out\layout_log.txt"
+        function Measure2([IntPtr]$h, [string]$path) {
+          $r = New-Object OWL+RECT
+          if (-not [OWL]::GetWindowRect($h, [ref]$r)) { return @(-1,-1,-1,-1,-1,-1) }
+          $wd = $r.R - $r.L; $ht = $r.B - $r.T
+          if ($wd -le 0 -or $ht -le 0) { return @($wd,$ht,-1,-1,-1,-1) }
+          $bmp = New-Object System.Drawing.Bitmap($wd, $ht)
+          $gg = [System.Drawing.Graphics]::FromImage($bmp)
+          $gg.CopyFromScreen($r.L, $r.T, 0, 0, (New-Object System.Drawing.Size($wd, $ht)))
+          $red = 0; $last = -1; $ink = 0
+          for ($y = 0; $y -lt $ht; $y += 2) {
+            $rowInk = 0
+            for ($x = 0; $x -lt $wd; $x += 2) {
+              $c = $bmp.GetPixel($x, $y)
+              if ($c.R -gt 170 -and $c.G -lt 90 -and $c.B -lt 90) { $red = $red + 1 }
+              if (-not ($c.R -gt 245 -and $c.G -gt 245 -and $c.B -gt 245)) { $rowInk = $rowInk + 1 }
+            }
+            if ($rowInk -gt 2) { $last = $y; $ink = $ink + $rowInk }
+          }
+          $bmp.Save($path); $gg.Dispose(); $bmp.Dispose()
+          $md5 = (Get-FileHash -Algorithm MD5 -Path $path -EA SilentlyContinue).Hash
+          return @($wd, $ht, $red, $last, $ink, $md5)
+        }
+        $names = @('a_nopic','b_pen','c_red','d_type13','e_wide')
+        $rounds = [int]('${{ github.event.inputs.rounds }}'); if ($rounds -le 0) { $rounds = 2 }
+        $d = 0
+        while ($d -lt $rounds) {
+          foreach ($st in @('pv','bare')) {
+            foreach ($n in $names) {
+              $srcF = "corpus\$n.rtf"
+              if (-not (Test-Path $srcF)) { "$n/$st MISSING" | Tee-Object -FilePath $log -Append; continue }
+              $work = "corpus\w_${n}_${st}_r$d.rtf"
+              Copy-Item $srcF $work -Force
+              if ($st -eq 'pv') {
+                Set-Content -Path $work -Stream Zone.Identifier -Value "[ZoneTransfer]`r`nZoneId=3" -Encoding ASCII
+              } else {
+                Remove-Item -Path $work -Stream Zone.Identifier -Force -EA SilentlyContinue
+              }
+              $streams = ((Get-Item $work -Stream * -EA SilentlyContinue | ForEach-Object { $_.Stream }) -join ',')
+              $t0 = Get-Date
+              Get-Process WINWORD -EA SilentlyContinue | Stop-Process -Force -EA SilentlyContinue
+              Start-Sleep -Seconds 3
+              Remove-Item 'HKCU:\SOFTWARE\Microsoft\Office\16.0\Word\Resiliency' -Recurse -Force -EA SilentlyContinue
+              Start-Process ("C:\Program Files\Microsoft Office\root\Office16\WINWORD.EXE") -ArgumentList ('"' + (Resolve-Path $work).Path + '"') | Out-Null
+              $h = [IntPtr]::Zero
+              for ($i = 0; $i -lt 60; $i++) {
+                Start-Sleep -Seconds 2
+                $h = [OWL]::Find("w_${n}_${st}_r$d")
+                if ($h -ne [IntPtr]::Zero) { break }
+              }
+              if ($h -eq [IntPtr]::Zero) {
+                "$n/$st/r$d opened=0 streams=[$streams] s=$([int]((Get-Date)-$t0).TotalSeconds)" | Tee-Object -FilePath $log -Append
+                continue
+              }
+              Start-Sleep -Seconds 8
+              $m = Measure2 $h ("out\crop_${n}_${st}_r$d.png")
+              $sb = New-Object System.Text.StringBuilder 512
+              [void][OWL]::GetWindowTextW($h, $sb, 512)
+              $dumps = @(Get-ChildItem C:\dumps -Filter *.dmp -EA SilentlyContinue).Count
+              "$n/$st/r$d opened=1 streams=[$streams] nfields=$($m.Count) win=$($m[0])x$($m[1]) red=$($m[2]) lastrow=$($m[3]) ink=$($m[4]) md5=$($m[5]) dumps=$dumps title=$($sb.ToString())" | Tee-Object -FilePath $log -Append
+              [OWL]::PostMessage($h, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero) | Out-Null
+            }
+          }
+          $d = $d + 1
+        }
+        Get-Process WINWORD -EA SilentlyContinue | Stop-Process -Force -EA SilentlyContinue
+        "END dumps_total=$((@(Get-ChildItem C:\dumps -Filter *.dmp -EA SilentlyContinue).Count))" | Tee-Object -FilePath $log -Append
+
+    - name: Upload evidence
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: word-layout-diff
+        path: |
+          out
+          ver.txt
