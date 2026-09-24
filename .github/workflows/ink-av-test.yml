@@ -14,21 +14,23 @@ jobs:
         run: |
           $fw = "C:\Windows\Microsoft.NET\Framework64\v4.0.30319"
           $wmd = "C:\Windows\System32\WinMetadata"
-          & "$fw\csc.exe" /nologo /target:exe /out:isfuzz.exe /r:"$fw\System.Runtime.WindowsRuntime.dll" /r:"$fw\System.Runtime.dll" /r:"$wmd\Windows.Foundation.winmd" /r:"$wmd\Windows.UI.winmd" /r:"$wmd\Windows.Storage.winmd" isfuzz_source.cs
+          & "$fw\csc.exe" /nologo /target:exe /out:isfuzz.exe /r:"$fw\System.Runtime.WindowsRuntime.dll" /r:"$fw\System.Runtime.dll" /r:"$fw\System.Runtime.InteropServices.WindowsRuntime.dll" /r:"$wmd\Windows.Foundation.winmd" /r:"$wmd\Windows.UI.winmd" /r:"$wmd\Windows.Storage.winmd" isfuzz_source.cs
       - name: Run PoC
         shell: pwsh
         run: |
           $output = & .\isfuzz.exe . 10 progress.txt 2>&1 | Out-String
           $output | Out-File result.txt -Encoding UTF8
           Write-Host $output
-          if ($output -match "AccessViolationException") { "VULN_CONFIRMED" | Out-File verdict.txt -Encoding UTF8 } else { "NOT_VULNERABLE" | Out-File verdict.txt -Encoding UTF8 }
-      - name: Check
+          if ($output -match "AccessViolationException") { "VULN_CONFIRMED" | Out-File verdict.txt -Encoding UTF8; Write-Host "=== VULNERABILITY CONFIRMED ON x64 ===" } else { "NOT_VULNERABLE" | Out-File verdict.txt -Encoding UTF8 }
+      - name: Check verdict
         shell: pwsh
         run: |
           Write-Host "VERDICT: $(Get-Content verdict.txt)"
-      - name: Upload
+      - name: Upload results
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: results
-          path: result.txt
+          path: |
+            result.txt
+            verdict.txt
