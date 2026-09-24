@@ -40,7 +40,7 @@ jobs:
         New-Item -ItemType Directory -Force -Path out | Out-Null
         $cdb = 'C:\Program Files (x86)\Windows Kits\10\Debuggers\x64\cdb.exe'
         $ww = 'C:\Program Files\Microsoft Office\root\Office16\WINWORD.EXE'
-        Set-Content -Path a.txt -Value @('.sympath srv*C:\sym*https://msdl.microsoft.com/download/symbols','sxe ld:mso','g','.reload','? mso','lmm m','dq mso+194f000 L600','q') -Encoding ASCII
+        Set-Content -Path a.txt -Value @('.sympath srv*C:\sym*https://msdl.microsoft.com/download/symbols','sxe ld:mso','g','.reload','? mso','lmm m','lm m','dq mso+194f000 L600','q') -Encoding ASCII
         $p = Start-Process -FilePath $cdb -ArgumentList '-cf','a.txt','-logo','out\passA.txt',$ww,'/n' -PassThru -WindowStyle Hidden
         $sw = [Diagnostics.Stopwatch]::StartNew()
         while (-not $p.HasExited -and $sw.Elapsed.TotalSeconds -lt 260) { Start-Sleep 3 }
@@ -48,15 +48,22 @@ jobs:
         Start-Sleep 2
         $raw = Get-Content out\passA.txt -Raw -EA SilentlyContinue
         if (-not $raw) { throw "passA empty: cdb produced nothing" }
+        # cdb prints addresses as 00007ff9`12345678 (8+backtick+8), so a fixed 16-char class never
+        # matches; take the module base from the lmm line and strip backticks before parsing.
         $base = $null
-        if ($raw -match 'mso\s+([0-9a-f`]+)\s*\(') { $base = [Convert]::ToUInt64(($matches[1] -replace '`',''),16) }
-        if (-not $base -and $raw -match 'Evaluate expression:\s+([0-9`a-f]+)') { $base = [Convert]::ToUInt64(($matches[1] -replace '`',''),16) }
+        foreach ($l in ($raw -split "`r?`n")) {
+          if ($l -match '^\s*([0-9a-f`]+)\s+([0-9a-f`]+)\s+mso\s') { $base = [Convert]::ToUInt64(($matches[1] -replace '`',''),16); break }
+        }
+        if (-not $base) { foreach ($l in ($raw -split "`r?`n")) {
+          if ($l -match '=\s*([0-9a-f`]{17})') { $base = [Convert]::ToUInt64(($matches[1] -replace '`',''),16); break } } }
         "base=0x{0:x}" -f [uint64]$base | Tee-Object out\passB_prep.txt
         $rv = @()
         foreach ($l in ($raw -split "`r?`n")) {
-          if ($l -match '^\s*([0-9a-f`]{16})\s+([0-9a-f`]{16})\s*') {
-            $addr = [Convert]::ToUInt64(($matches[1] -replace '`',''),16)
-            $val  = [Convert]::ToUInt64(($matches[2] -replace '`',''),16)
+          $toks = @($l.Trim() -split '\s+' | Where-Object { $_ -match '^[0-9a-f`]{8,17}$' })
+          if ($toks.Count -lt 2) { continue }
+          foreach ($vt in ($toks | Select-Object -Skip 1)) {
+            if ($vt.Length -lt 16) { continue }
+            $val = [Convert]::ToUInt64(($vt -replace '`',''),16)
             if ($base -and $val -ge $base -and ($val - $base) -lt 0x2000000 -and ($val -band 7) -eq 0) {
               $rv += ('{0:x}' % ($val - $base))
             }
