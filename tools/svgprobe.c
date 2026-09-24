@@ -159,13 +159,20 @@ static int office_init(void)
     printf("dir1=%S\n", d1);
     printf("dir2=%S\n", d2);
     load_dir(d1); load_dir(d2);
-    mso = LoadLibraryExW(d2, NULL, LOAD_WITH_ALTERED_SEARCH_PATH);
-    if (mso) printf("mso=ok\n");
+    {
+        wchar_t mp[MAX_PATH];
+        swprintf(mp, MAX_PATH, L"%s\\mso.dll", d2);
+        mso = LoadLibraryExW(mp, NULL, LOAD_WITH_ALTERED_SEARCH_PATH);
+        printf("mso=%s err=%lu path=%S\n", mso ? "ok" : "FAIL", GetLastError(), mp);
+    }
     {
         wchar_t p[MAX_PATH];
         swprintf(p, MAX_PATH, L"%s\\Mso20Win32Client.dll", d1);
         c20 = LoadLibraryExW(p, NULL, LOAD_WITH_ALTERED_SEARCH_PATH);
         printf("Mso20Win32Client=%s err=%lu\n", c20 ? "ok" : "FAIL", c20 ? 0 : GetLastError());
+        if (!c20) { swprintf(p, MAX_PATH, L"%s\\Mso20Win32Client.dll", d2);
+                    c20 = LoadLibraryExW(p, NULL, LOAD_WITH_ALTERED_SEARCH_PATH);
+                    printf("Mso20Win32Client(vfs)=%s err=%lu\n", c20 ? "ok" : "FAIL", GetLastError()); }
         swprintf(p, MAX_PATH, L"%s\\mso40uiWin32Client.dll", d1);
         c40 = LoadLibraryExW(p, NULL, LOAD_WITH_ALTERED_SEARCH_PATH);
         printf("mso40uiWin32Client=%s err=%lu\n", c40 ? "ok" : "FAIL", c40 ? 0 : GetLastError());
@@ -235,6 +242,7 @@ static int run_one(const char *path, int doWalk)
            "rip=%p[%s] addr=%p[%s] throws=%d\n",
            path, len, (unsigned)hr, obj, ok, g_faults, g_code,
            g_writedir ? "WRITE" : "READ", g_rip, g_ripMod, g_addr, g_addrOwner, g_throws);
+    printf("PARSE file=%s parsed=%d\n", path, (ok && !g_faults && !g_throws) ? 1 : 0);
     fflush(stdout);
     free(b);
     return g_faults ? 1 : 0;
