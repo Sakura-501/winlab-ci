@@ -31,7 +31,7 @@ jobs:
         if (-not $w) { throw "office install failed" }
         "winword v=$($w.VersionInfo.FileVersion)" | Tee-Object ver.txt
         (Get-Item "C:\Program Files\Microsoft Office\root\Office16\gfx.dll").VersionInfo.FileVersion | Tee-Object -Append ver.txt
-        (Get-Item "C:\Program Files\Microsoft Office\root\Office16\mso.dll").VersionInfo.FileVersion | Tee-Object -Append ver.txt
+        $ms=(Get-ChildItem "C:\Program Files\Microsoft Office" -Recurse -Filter mso.dll -EA SilentlyContinue | Select-Object -First 1); "$($ms.FullName) $($ms.VersionInfo.FileVersion)" | Tee-Object -Append ver.txt
     - name: Materialize and pick carriers
       shell: pwsh
       run: |
