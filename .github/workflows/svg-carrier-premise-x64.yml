@@ -14,7 +14,7 @@ on:
         required: false
         default: '0'
       blob:
-        description: 'data/ file holding the two carriers'
+        description: 'data/ file holding the three carrier shapes'
         required: false
         default: 'svgprem.b64'
 
@@ -56,7 +56,7 @@ jobs:
           tar -xzf carriers.gz -C .
           $n = @(Get-ChildItem carriers -Filter *.docx | Where-Object { $_.Name -notlike '._*' })
           "carriers=$($n.Count) names=$(($n.Name | Sort-Object) -join ',')" | Tee-Object -FilePath out\setup.txt
-          if ($n.Count -lt 2) { throw "both carriers required" }
+          if ($n.Count -lt 3) { throw "all three carrier shapes required" }
 
       - name: Module census per carrier and per MOTW state
         shell: pwsh
@@ -134,7 +134,9 @@ jobs:
             Stop-Process -Name WINWORD -Force -EA SilentlyContinue
             Start-Sleep -Seconds 3
           }
-          foreach ($f in @('ctl_ok.docx', 'ctl_no_svg.docx')) {
+          # three carrier shapes: asvg:svgBlip extension on the template picture, the svg part in
+          # the primary blip slot (rIdEmf1 -> media/image1.svg, no extension), and the no-svg control
+          foreach ($f in @('ctl_ok.docx', 'pri_ctl_ok.docx', 'ctl_no_svg.docx')) {
             Census $f 1 'motw'
             Census $f 0 'bare'
           }
