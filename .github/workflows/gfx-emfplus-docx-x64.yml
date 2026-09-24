@@ -15,6 +15,10 @@ name: gfx-emfplus-docx-x64
         description: '1=full page heap on WINWORD, 0=none'
         required: false
         default: '1'
+      blob:
+        description: 'data/ file with the emf+template payload'
+        required: false
+        default: 'emfdocx.b64'
 jobs:
   t:
     runs-on: windows-latest
@@ -46,7 +50,11 @@ jobs:
       shell: pwsh
       run: |
         New-Item -ItemType Directory -Force -Path out, C:\dumps, corpus | Out-Null
-        [IO.File]::WriteAllBytes("carriers.gz", [Convert]::FromBase64String((Get-Content data\emfdocx.b64 -Raw).Trim()))
+        New-Item -ItemType Directory -Force -Path out | Out-Null
+        $blob = '${{ github.event.inputs.blob }}'
+        if ($blob -notmatch '^[a-z0-9]+\.b64$') { throw "bad blob name '$blob'" }
+        "blob=$blob" | Tee-Object out\blob.txt
+        [IO.File]::WriteAllBytes("carriers.gz", [Convert]::FromBase64String((Get-Content ('data\' + $blob) -Raw).Trim()))
         tar -xzf carriers.gz -C corpus
         $ne = @(Get-ChildItem corpus\emf -Filter *.emf).Count
         "emf=$ne" | Tee-Object -FilePath out\setup_log.txt
