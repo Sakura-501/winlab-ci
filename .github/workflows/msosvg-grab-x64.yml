@@ -1,0 +1,137 @@
+name: msosvg-grab-x64
+# Office ships its SVG parser as a separate, on-demand module: mso's SVGBlip::GetSVGImage does
+# Mso::SafeLoadLibrary(L"msosvg.dll") + GetProcAddress("CreateSVGImage1Proxy"/
+# "ISVGImageFactoryCreateSVGImage1Proxy") (mso 20430 x64 RVA 0x180b74de0). This job brings that
+# module (and any other *svg* module in the install) back to the analysis host, where the PDB is
+# pulled from msdl and the IDB built. Derived from odt-grab-current.
+on:
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: 'CurrentChannel | MonthlyEnterprise | InsiderFast'
+        required: false
+        default: 'CurrentChannel'
+
+jobs:
+  grab:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download ODT
+        shell: pwsh
+        run: |
+          $page = (Invoke-WebRequest -Uri "https://www.microsoft.com/en-us/download/details.aspx?id=49117" -UseBasicParsing).Content
+          if ($page -match 'href="(https://download\.microsoft\.com/download/[^"]+officedeploymenttool[^"]*\.exe)"') {
+            Invoke-WebRequest -Uri $Matches[1] -OutFile odt.exe
+          } else { throw "odt link not found" }
+          Start-Process -Wait -FilePath .\odt.exe -ArgumentList "/extract:odtx /quiet"
+
+      - name: Install Word only (x64)
+        shell: pwsh
+        run: |
+          $ch = '${{ github.event.inputs.channel }}'
+          if (-not $ch) { $ch = 'CurrentChannel' }
+          $xml = "<Configuration><Add OfficeClientEdition=`"64`" Channel=`"$ch`"><Product ID=`"O365ProPlusRetail`"><Language ID=`"en-us`" /><ExcludeApp ID=`"Excel`" /><ExcludeApp ID=`"PowerPoint`" /><ExcludeApp ID=`"Outlook`" /><ExcludeApp ID=`"OneDrive`" /><ExcludeApp ID=`"OneNote`" /><ExcludeApp ID=`"Lync`" /><ExcludeApp ID=`"Access`" /><ExcludeApp ID=`"Publisher`" /><ExcludeApp ID=`"Bing`" /></Product></Add><Display Level=`"None`" AcceptEULA=`"TRUE`" /><Updates Enabled=`"FALSE`" /></Configuration>"
+          Set-Content -Path cfg.xml -Value $xml
+          Start-Process -Wait -FilePath .\odtx\setup.exe -ArgumentList "/configure","cfg.xml"
+          $w = Get-Item "C:\Program Files\Microsoft Office\root\Office16\WINWORD.EXE" -ErrorAction SilentlyContinue
+          if (-not $w) { throw "install failed" }
+          "winword v=$($w.VersionInfo.FileVersion)" | Out-File ver.txt
+          $cfg = Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Office\ClickToRun\Configuration" -ErrorAction SilentlyContinue
+          if ($cfg) { "channel=$($cfg.UpdateChannel) ver=$($cfg.VersionToReport)" | Out-File ver.txt -Append }
+          Get-Content ver.txt
+
+      - name: Inventory svg modules
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path pack | Out-Null
+          # The install keeps several module trees; look at all of them rather than guessing.
+          $roots = @("C:\Program Files\Microsoft Office\root\Office16",
+                     "C:\Program Files\Microsoft Office\root\vfs\ProgramFilesCommonX64",
+                     "C:\Program Files\Microsoft Office\root\vfs\ProgramFilesX64")
+          $found = @()
+          foreach ($r in $roots) {
+            if (-not (Test-Path $r)) { continue }
+            $found += Get-ChildItem $r -Recurse -File -EA SilentlyContinue |
+                      Where-Object { $_.Name -match 'svg|SVG' }
+          }
+          if ($found.Count -eq 0) { throw "no *svg* module found in the install tree" }
+          $rows = foreach ($f in $found) {
+            $v = $f.VersionInfo
+            "{0}`t{1}`t{2}`t{3}" -f $f.FullName, $f.Length, $v.FileVersion, $v.ProductVersion
+          }
+          $rows | Tee-Object -FilePath out_svg.txt
+          "module_count=$($found.Count)" | Out-File -FilePath out_svg.txt -Append
+          foreach ($f in $found) { Copy-Item $f.FullName ("pack\" + $f.Name) -Force }
+          # also grab the loader side so the proxy contract can be read next to the parser
+          foreach ($m in @('mso.dll','gfx.dll')) {
+            $p = Get-ChildItem "C:\Program Files\Microsoft Office\root" -Recurse -Filter $m -EA SilentlyContinue | Select-Object -First 1
+            if ($p) { "reference $m = $($p.VersionInfo.FileVersion)" | Out-File -FilePath out_svg.txt -Append }
+          }
+          Get-Content out_svg.txt
+
+      - name: Show the svg module's own imports
+        shell: pwsh
+        run: |
+          # A parser that imports d2d1/dwrite is delegating; one that imports only kernel/ucrt is
+          # parsing in-house. Read the import directory in PS so this is answerable from the log
+          # without waiting for the IDB.
+          $p = "pack\msosvg.dll"
+          if (-not (Test-Path $p)) { $p = (Get-ChildItem pack | Select-Object -First 1).FullName }
+          $bytes = [IO.File]::ReadAllBytes($p)
+          $pe = [BitConverter]::ToInt32($bytes, 0x3C)
+          $magic = [BitConverter]::ToUInt16($bytes, $pe + 24)
+          $ddOff = if ($magic -eq 0x20b) { $pe + 24 + 112 } else { $pe + 24 + 96 }
+          $dirRva = [BitConverter]::ToUInt32($bytes, $ddOff + 15 * 8)
+          $nSec = [BitConverter]::ToUInt16($bytes, $pe + 6)
+          $sizeOpt = [BitConverter]::ToUInt16($bytes, $pe + 20)
+          $secOff = $pe + 4 + 20 + $sizeOpt
+          function RvaToOff($rva) {
+            for ($i = 0; $i -lt $nSec; $i++) {
+              $o = $secOff + $i * 40
+              $va = [BitConverter]::ToUInt32($bytes, $o + 12)
+              $vs = [BitConverter]::ToUInt32($bytes, $o + 8)
+              $pr = [BitConverter]::ToUInt32($bytes, $o + 20)
+              if ($rva -ge $va -and $rva -lt ($va + $vs)) { return $pr + ($rva - $va) }
+            }
+            return -1
+          }
+          $dbg = RvaToOff ([BitConverter]::ToUInt32($bytes, $ddOff + 6 * 8))
+          if ($dbg -ge 0) {
+            for ($i = 0; ; $i++) {
+              $e = $dbg + $i * 28
+              if ($e + 28 -gt $bytes.Length) { break }
+              $typ = [BitConverter]::ToUInt32($bytes, $e + 12)
+              if ($typ -ne 2) { break }
+              $sz = [BitConverter]::ToUInt32($bytes, $e + 16)
+              $ptr = [BitConverter]::ToUInt32($bytes, $e + 20)
+              if ([BitConverter]::ToUInt32($bytes, $ptr) -ne 0x53445352) { break }  # 'RSDS'
+              $g = $bytes[($ptr+4)..($ptr+19)]
+              $guid = ('{0:X2}{1:X2}{2:X2}{3:X2}-{4:X2}{5:X2}-{6:X2}{7:X2}-{8:X2}{9:X2}-{10:X2}{11:X2}{12:X2}{13:X2}{14:X2}{15:X2}' -f `
+                      $g[3],$g[2],$g[1],$g[0],$g[5],$g[4],$g[7],$g[6],$g[8],$g[9],$g[10],$g[11],$g[12],$g[13],$g[14],$g[15])
+              $age = [BitConverter]::ToUInt32($bytes, $ptr+20)
+              $nmEnd = $ptr + 24
+              while ($bytes[$nmEnd] -ne 0) { $nmEnd++ }
+              $orig = [Text.Encoding]::ASCII.GetString($bytes[($ptr+24)..($nmEnd-1)])
+              $base = [IO.Path]::GetFileName($orig)
+              "PDB_ORIG=$orig" | Out-File -FilePath imports.txt -Append
+              "GUID_AGE=$guid$age" | Out-File -FilePath imports.txt -Append
+              "PDB_URL=https://msdl.microsoft.com/download/symbols/$base/$guid$age/$base" | Out-File -FilePath imports.txt -Append
+              break
+            }
+          }
+          "file=$p size=$($bytes.Length) pe=$pe magic=0x$($magic.ToString('X')) importDirRva=$dirRva" | Out-File -FilePath imports.txt -Append
+          Get-Content imports.txt
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: msosvg-pack
+          path: |
+            pack
+            ver.txt
+            out_svg.txt
+            imports.txt
+          if-no-files-found: ignore
