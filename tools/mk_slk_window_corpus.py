@@ -90,6 +90,29 @@ def mk_u(n):
     return ('﻿' + txt).encode('utf-16-le')
 
 
+def mk_wi(n, entry='8'):
+    """`W;N` with ';'-separated numeric entries so the *record line* is exactly n bytes and the
+    record stays syntactically valid at lengths where `K`/`P` are refused by the loader."""
+    pre = 'W;N'
+    unit = len(entry) + 1          # '8;'
+    k = max(1, (n - len(pre) + 1) // unit)
+    line = pre + ';'.join([entry] * k)
+    while len(line) < n:
+        k += 1
+        line = pre + ';'.join([entry] * k)
+        if len(line) > n:
+            break
+    if len(line) > n:              # trim by shortening the last entry's padding
+        line = line[:n] if line[n - 1] == ';' else line[:n].rstrip(';')
+    return body([line, 'C;Y1;X1;K"1"'])
+
+
+def mk_wic(k, entry='8'):
+    """`W;N` with exactly k ';'-separated width entries - the count that reaches the +0x88 list
+    whose consumer shifts it by 6 bits (STATE \u00a731: lsl w1, w8, #6)."""
+    return body(['W;N' + ';'.join([entry] * k), 'C;Y1;X1;K"1"'])
+
+
 def write(name, data):
     p = os.path.join(OUT, name)
     if isinstance(data, (bytes, bytearray)):
@@ -118,6 +141,11 @@ def main():
         write('sw_m_%06d.slk' % n, mk_m(n)); made += 1
     for n in sorted(set(ladder_ansi + ladder_wide)):
         write('sw_u_%06d.slk' % n, mk_u(n)); made += 1
+    for n in sorted(set(ladder_ansi + ladder_wide + ladder_coarse)):
+        write('sw_wi_%06d.slk' % n, mk_wi(n)); made += 1
+    for k in (2, 100, 1000, 4095, 4096, 4097, 8191, 8192, 16382, 16383, 16384, 16385, 32767,
+              32768, 65535, 65536, 131072):
+        write('sw_wic_%06d.slk' % k, mk_wic(k)); made += 1
     write('sw_ctl_small.slk', mk_k(40)); made += 1
     write('sw_ctl_4000.slk', mk_k(4000)); made += 1
     tot = sum(os.path.getsize(os.path.join(OUT, f)) for f in os.listdir(OUT))
