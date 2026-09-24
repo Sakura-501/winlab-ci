@@ -139,7 +139,10 @@ jobs:
           $exe = "$inst\Office16\svgprobe_x64.exe"
           $ctl = "corpus\ctl_ok.svg"
           if (-not (Test-Path $ctl)) { $ctl = (Get-ChildItem corpus -Filter *.svg | Select-Object -First 1).FullName }
-          $o = & $exe one ('"{0}"' -f $ctl) v 2>&1
+          # run 36064252239: & $exe with an embedded literal quote passes the quotes through as
+          # part of argv -> openfail err=123 file="corpus\ctl_ok.svg". Pass the resolved path bare.
+          $ctl = (Resolve-Path $ctl).Path
+          $o = & $exe one $ctl v 2>&1
           $o | Tee-Object -FilePath out\positive_control.txt
           if (-not (($o -join ' ') -match 'parsed=1')) { throw "control payload was not parsed (objok/parsed): the rig is not driving msosvg -- not a zero result" }
           "POSITIVE_CONTROL ok $ctl" | Tee-Object -FilePath out\positive_control.txt -Append
