@@ -1,0 +1,57 @@
+name: wer-channel-check2
+# Channel-test v2. v1 (wer-channel-check, run 36001621729) faulted a PowerShell process via a P/Invoke
+# ZeroMemory(NULL) and got child_exit=1 with dumps_before==dumps_after==0, app_error_events==0,
+# wer_events==0 - i.e. that particular fault never reached WER at all, so it says nothing about the
+# channels. This run drives three different fault shapes and, in parallel, arms the AeDebug
+# postmortem hook (cdb -z), which captures an unhandled AV without depending on WER.
+'on': {workflow_dispatch: {}}
+jobs:
+  t:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+    - name: arm channels
+      shell: pwsh
+      run: |
+        New-Item -ItemType Directory -Force -Path out, C:\dumps, C:\pm | Out-Null
+        $ld = "HKLM:\SOFTWARE\Microsoft\Windows Error Reporting\LocalDumps"
+        New-Item -Path $ld -Force | Out-Null
+        Set-ItemProperty -Path $ld -Name DumpFolder -Value "C:\dumps" -Type ExpandString
+        Set-ItemProperty -Path $ld -Name DumpType -Value 2 -Type DWord
+        Set-ItemProperty -Path $ld -Name DumpCount -Value 30 -Type DWord
+        Set-ItemProperty -Path $ld -Name DumpFlow -Value 2 -Type DWord
+        Set-ItemProperty -Path $ld -Name DumpType -Value 2 -Type DWord
+        $ae = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\powershell.exe"
+        New-Item -Path $ae -Force | Out-Null
+        New-ItemProperty -Path $ae -Name PostOfficeUpdate -Value 0 -Force | Out-Null
+        $ad = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\AeDebug'
+        Set-ItemProperty -Path $ad -Name Debugger -Value 'C:\Program Files (x86)\Windows Kits\10\Debuggers\x64\cdb.exe -p "%ld" -e "%ld" -c ".dump /ma C:\pm\pm.dmp; q"' -Force
+        Set-ItemProperty -Path $ad -Name Auto -Value 1 -Type DWord -Force
+        "aedebug=$(Get-ItemProperty $ad).Debugger" | Tee-Object out\ch2.txt
+    - name: three fault shapes
+      shell: pwsh
+      run: |
+        function Fault([string]$tag, [string]$code) {
+          $b = @(Get-ChildItem C:\dumps -EA SilentlyContinue).Count
+          $pmb = @(Get-ChildItem C:\pm -EA SilentlyContinue).Count
+          $t0 = Get-Date
+          $p = Start-Process -FilePath 'C:\Program Files\PowerShell\7\pwsh.exe' -ArgumentList '-NoProfile','-Command',$code -PassThru -WindowStyle Hidden
+          $done = $p.WaitForExit(180000)
+          Start-Sleep 5
+          $a = @(Get-ChildItem C:\dumps -EA SilentlyContinue)
+          $pma = @(Get-ChildItem C:\pm -EA SilentlyContinue)
+          $ev = @(Get-WinEvent -FilterHashtable @{LogName='Application'} -MaxEvents 300 -EA SilentlyContinue |
+                  Where-Object { $_.TimeGenerated -gt $t0 -and $_.ProviderName -in 'Application Error','Windows Error Reporting','.NET Runtime' })
+          "{0} exited={1} code=0x{2:x8} dumps+={3} pm+={4} events={5}" -f $tag, $p.HasExited, $(if ($done) { $p.ExitCode } else { -1 }), ($a.Count - $b), ($pma.Count - $pmb), $ev.Count | Tee-Object -Append out\ch2.txt
+          $ev | Select-Object -First 2 | ForEach-Object { "  EVT[$($_.ProviderName)] " + (($_.Message -split "`r?`n" | Select-Object -Skip 1) -join ' ') } | Tee-Object -Append out\ch2.txt
+          Get-Process pwsh,cdb,WINWORD -EA SilentlyContinue | Stop-Process -Force -EA SilentlyContinue
+          Remove-Item C:\pm\* -Force -EA SilentlyContinue
+        }
+        Fault 'failfast'   '[Environment]::FailFast("ch2 failfast")'
+        $native = 'Add-Type -TypeDefinition "using System;using System.Runtime.InteropServices;public class K{[DllImport(\"kernel32.dll\")]public static extern bool VirtualProtect(IntPtr p,UIntPtr s,uint f,out uint o);}"; $o=0; [K]::VirtualProtect([IntPtr]0,[UIntPtr]16,0x40,[ref]$o) | Out-Null; [System.Runtime.InteropServices.Marshal]::WriteInt32([IntPtr]0, 0x41)'
+        Fault 'native_write' $native
+        Fault 'stack_overflow' 'function R($n){ R ($n+1) }; R 0'
+    - name: Upload
+      if: always()
+      uses: actions/upload-artifact@v4
+      with: { name: wer-channel-check2, path: out }
