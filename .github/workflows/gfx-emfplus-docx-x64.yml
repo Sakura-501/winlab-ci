@@ -1,0 +1,242 @@
+name: gfx-emfplus-docx-x64
+# Word (.docx, MOTW/Protected View, zero clicks) x anchored EMF+ object-marker mutants x full page heap.
+# The .docx media route is the one carrier whose EMF+ parse was breakpoint-confirmed on a shipping
+# build ([submit]gfx-emfplus-pen-oob-read-20260918: ENTRY/GATE/DIAG fire for legal_pen12.docx both
+# bare and with MOTW), so every mutant below is packed into that container by swapping
+# word/media/image1.emf only.
+'on':
+  workflow_dispatch:
+    inputs:
+      cap:
+        description: 'max docx carriers'
+        required: false
+        default: '200'
+      heap:
+        description: '1=full page heap on WINWORD, 0=none'
+        required: false
+        default: '1'
+jobs:
+  t:
+    runs-on: windows-latest
+    timeout-minutes: 300
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Download ODT
+      shell: pwsh
+      run: |
+        $page = (Invoke-WebRequest -Uri "https://www.microsoft.com/en-us/download/details.aspx?id=49117" -UseBasicParsing).Content
+        if ($page -match 'href="(https://download\.microsoft\.com/download/[^"]+officedeploymenttool[^"]*\.exe)"') {
+          Invoke-WebRequest -Uri $Matches[1] -OutFile odt.exe
+        } else { throw "odt link not found" }
+        Start-Process -Wait -FilePath .\odt.exe -ArgumentList "/extract:odtx /quiet"
+
+    - name: Install x64 Office
+      shell: pwsh
+      run: |
+        $xml = '<Configuration><Add OfficeClientEdition="64" Channel="CurrentChannel"><Product ID="O365ProPlusRetail"><Language ID="en-us" /><ExcludeApp ID="OneDrive" /><ExcludeApp ID="Bing" /></Product></Add><Display Level="None" AcceptEULA="TRUE" /><Updates Enabled="FALSE" /></Configuration>'
+        Set-Content -Path cfg.xml -Value $xml
+        Start-Process -Wait -FilePath .\odtx\setup.exe -ArgumentList "/configure","cfg.xml"
+        $w = Get-Item "C:\Program Files\Microsoft Office\root\Office16\WINWORD.EXE" -EA SilentlyContinue
+        if (-not $w) { throw "office install failed" }
+        "winword v=$($w.VersionInfo.FileVersion)" | Tee-Object ver.txt
+        (Get-Item "C:\Program Files\Microsoft Office\root\Office16\gfx.dll").VersionInfo.FileVersion | Tee-Object -Append ver.txt
+
+    - name: Materialize docx carriers
+      shell: pwsh
+      run: |
+        New-Item -ItemType Directory -Force -Path out, C:\dumps, corpus | Out-Null
+        [IO.File]::WriteAllBytes("carriers.gz", [Convert]::FromBase64String((Get-Content data\emfdocx.b64 -Raw).Trim()))
+        tar -xzf carriers.gz -C corpus
+        $ne = @(Get-ChildItem corpus\emf -Filter *.emf).Count
+        "emf=$ne" | Tee-Object -FilePath out\setup_log.txt
+        if ($ne -lt 100) { throw "emf corpus not materialized (n=$ne)" }
+        python corpus\pack_all.py corpus\emf corpus\template.docx corpus\docx > out\manifest.tsv 2> out\pack_err.txt
+        $rc = $LASTEXITCODE
+        "pack_rc=$rc $(Get-Content out\pack_err.txt -Raw)".Trim() | Tee-Object -FilePath out\setup_log.txt -Append
+        $nd = @(Get-ChildItem corpus\docx -Filter *.docx).Count
+        "docx=$nd" | Tee-Object -FilePath out\setup_log.txt -Append
+        if ($rc -ne 0 -or $nd -ne $ne) { throw "docx packing incomplete rc=$rc emf=$ne docx=$nd" }
+        Get-ChildItem corpus\docx\ctl_pen12.docx | Out-Null
+
+    - name: Arm page heap and local dumps
+      shell: pwsh
+      run: |
+        $heap = [int]('${{ github.event.inputs.heap }}')
+        if ($heap -eq 1) {
+          $k = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\WINWORD.EXE"
+          New-Item -Path $k -Force | Out-Null
+          Set-ItemProperty -Path $k -Name GlobalFlag -Value 0x02000000 -Type DWord
+          Set-ItemProperty -Path $k -Name EnableVerifier -Value 1 -Type DWord
+          Set-ItemProperty -Path $k -Name VerifierFlags -Value 0 -Type DWord
+          Set-ItemProperty -Path $k -Name PageHeapFlags -Value 0x3 -Type DWord
+          "heap=on" | Tee-Object out\heap.txt
+        } else { "heap=off" | Tee-Object out\heap.txt }
+        $ld = "HKLM:\SOFTWARE\Microsoft\Windows Error Reporting\LocalDumps"
+        New-Item -Path $ld -Force | Out-Null
+        Set-ItemProperty -Path $ld -Name DumpFolder -Value "C:\dumps" -Type ExpandString
+        Set-ItemProperty -Path $ld -Name DumpType -Value 2 -Type DWord
+        Set-ItemProperty -Path $ld -Name DumpCount -Value 40 -Type DWord
+
+    - name: Sweep carriers warm in one Word instance
+      shell: pwsh
+      run: |
+        $cs = @'
+        using System; using System.Text; using System.Runtime.InteropServices; using System.Collections.Generic;
+        public class WX {
+          public delegate bool EnumProc(IntPtr h, IntPtr l);
+          [DllImport("user32.dll")] static extern bool EnumWindows(EnumProc cb, IntPtr l);
+          [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern int GetWindowTextW(IntPtr h, StringBuilder s, int n);
+          [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern int GetClassNameW(IntPtr h, StringBuilder s, int n);
+          [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
+          [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint p);
+          [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr h, out RECT r);
+          [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr h);
+          [DllImport("user32.dll")] static extern IntPtr PostMessageW(IntPtr h, uint m, IntPtr w, IntPtr l);
+          public struct RECT { public int Left, Top, Right, Bottom; }
+          public static List<string> Info(uint only) {
+            var r = new List<string>();
+            EnumWindows((h,l) => { uint p; GetWindowThreadProcessId(h, out p);
+              if (only != 0 && p != only) return true;
+              if (!IsWindowVisible(h)) return true;
+              var t = new StringBuilder(1024); GetWindowTextW(h, t, 1024);
+              var c = new StringBuilder(256); GetClassNameW(h, c, 256);
+              r.Add(h.ToInt64() + "|" + p + "|" + c + "|" + t.ToString()); return true; }, IntPtr.Zero);
+            return r; }
+          public static RECT Rect(IntPtr h) { RECT r; GetWindowRect(h, out r); return r; }
+          public static void Close(IntPtr h) { PostMessageW(h, 0x10, IntPtr.Zero, IntPtr.Zero); }
+          public static void Fore(IntPtr h) { SetForegroundWindow(h); }
+        }
+        '@
+        Add-Type -TypeDefinition $cs
+        Add-Type -AssemblyName System.Windows.Forms,System.Drawing
+
+        $O16 = "C:\Program Files\Microsoft Office\root\Office16"
+        $ww = Join-Path $O16 "WINWORD.EXE"
+        $log = "out\sweep_log.txt"
+        function DumpList { @(Get-ChildItem C:\dumps -EA SilentlyContinue | ForEach-Object { $_.Name }) }
+        function WwProcs { @(Get-Process WINWORD -EA SilentlyContinue) }
+        function VerOn {
+          $v = 0
+          foreach ($q in (WwProcs)) { try { if (@($q.Modules | Where-Object { $_.ModuleName -ieq 'verifier.dll' }).Count) { $v = 1 } } catch { } }
+          return $v
+        }
+        function Wait-Case([string]$mark, [int]$polls, [int]$step, [int]$before) {
+          for ($i = 0; $i -lt $polls; $i++) {
+            Start-Sleep -Seconds $step
+            $ps = WwProcs
+            if ($ps.Count -eq 0) { return @{ state = 'died'; hwnd = [IntPtr]::Zero; title = '' } }
+            foreach ($q in $ps) {
+              foreach ($line in [WX]::Info([uint32]$q.Id)) {
+                $p = $line -split '\|',4
+                if ($p[3] -like ('*' + $mark + '*')) {
+                  return @{ state = 'ok'; hwnd = [IntPtr][int64]$p[0]; title = $p[3] }
+                }
+              }
+            }
+            if (((DumpList).Count -gt $before)) { return @{ state = 'dump'; hwnd = [IntPtr]::Zero; title = '' } }
+          }
+          return @{ state = 'timeout'; hwnd = [IntPtr]::Zero; title = '' }
+        }
+        function Measure-Win($hwnd, $png) {
+          $b = [System.Windows.Forms.SystemInformation]::VirtualScreen
+          $full = New-Object System.Drawing.Bitmap($b.Width, $b.Height)
+          $g = [System.Drawing.Graphics]::FromImage($full)
+          $g.CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size)
+          $r = [WX]::Rect($hwnd)
+          $x = [Math]::Max(0, $r.Left); $y = [Math]::Max(0, $r.Top)
+          $w = [Math]::Min($r.Right, $b.Width - 1) - $x
+          $h = [Math]::Min($r.Bottom, $b.Height - 1) - $y
+          if ($w -gt 40 -and $h -gt 40) {
+            $crop = $full.Clone([System.Drawing.Rectangle]::new($x, $y, $w, $h), [System.Drawing.Imaging.PixelFormat]::Format24bppRgb)
+            $crop.Save($png); $crop.Dispose()
+          } else { $full.Save($png) }
+          $g.Dispose(); $full.Dispose()
+          if (-not (Test-Path $png)) { return @(0, 0) }
+          $bmp = New-Object System.Drawing.Bitmap($png)
+          $ink = 0; $red = 0
+          for ($yy = 0; $yy -lt $bmp.Height; $yy += 2) {
+            for ($xx = 0; $xx -lt $bmp.Width; $xx += 2) {
+              $c = $bmp.GetPixel($xx, $yy)
+              if (-not ($c.R -gt 245 -and $c.G -gt 245 -and $c.B -gt 245)) { $ink = $ink + 1 }
+              if ($c.R -gt 170 -and $c.G -lt 90 -and $c.B -lt 90) { $red = $red + 1 }
+            }
+          }
+          $bmp.Dispose(); return @($ink, $red)
+        }
+
+        $cap = [int]('${{ github.event.inputs.cap }}'); if ($cap -le 0) { $cap = 200 }
+        # Cold start of a page-heaped Office measured 306 s to the first window, so the control carrier
+        # gets a 480 s budget; every later case reuses that process (warm reuse measured 11 s/case).
+        $ctl = Get-Item corpus\docx\ctl_pen12.docx
+        Set-Content -Path $ctl.FullName -Stream Zone.Identifier -Value "[ZoneTransfer]`r`nZoneId=3" -Encoding ASCII
+        $t0 = Get-Date
+        Start-Process -FilePath $ww -ArgumentList ('"' + $ctl.FullName + '"') | Out-Null
+        $r0 = Wait-Case 'ctl_pen12' 96 5 ((DumpList).Count)
+        $cold = "COLD ctl_pen12.docx state=$($r0.state) verifier=$(VerOn) s=$([int]((Get-Date)-$t0).TotalSeconds) title=$($r0.title)"
+        $cold | Tee-Object -FilePath $log
+        if ($r0.state -ne 'ok') { throw "cold control ctl_pen12.docx never produced a window ($($r0.state)): instrument blind" }
+        if ((VerOn) -ne 1) { throw "verifier.dll not loaded in the warm WINWORD: page heap not in effect" }
+        [WX]::Close($r0.hwnd); Start-Sleep -Seconds 4
+
+        $files = @(Get-ChildItem corpus\docx -Filter *.docx | Where-Object { $_.Name -notlike '._*' -and $_.Name -ne 'ctl_pen12.docx' } | Sort-Object Name | Select-Object -First $cap)
+        "cases=$($files.Count)" | Add-Content -Path $log
+        $rows = @(); $notfound = @(); $died = 0; $restarts = 0
+        foreach ($f in $files) {
+          if (@(WwProcs).Count -eq 0) {
+            $restarts++
+            Start-Process -FilePath $ww -ArgumentList ('"' + $ctl.FullName + '"') | Out-Null
+            $rr = Wait-Case 'ctl_pen12' 96 5 ((DumpList).Count)
+            "RESTART state=$($rr.state) title=$($rr.title)" | Tee-Object -FilePath $log -Append
+            if ($rr.state -ne 'ok') { throw "WINWORD could not be restarted: instrument blind after row $($rows.Count)" }
+            [WX]::Close($rr.hwnd); Start-Sleep -Seconds 4
+          }
+          Set-Content -Path $f.FullName -Stream Zone.Identifier -Value "[ZoneTransfer]`r`nZoneId=3" -Encoding ASCII
+          $motw = ((Get-Content $f.FullName -Stream Zone.Identifier -EA SilentlyContinue) -join '/')
+          $before = (DumpList).Count
+          $werBefore = @(Get-WinEvent -FilterHashtable @{LogName='Application'} -MaxEvents 400 -EA SilentlyContinue | Where-Object { $_.ProviderName -in 'Application Error','Windows Error Reporting' }).Count
+          $t = Get-Date
+          Start-Process -FilePath $ww -ArgumentList ('"' + $f.FullName + '"') | Out-Null
+          $r = Wait-Case $f.BaseName 45 2 $before
+          $ink = -1; $red = -1; $dlg = 0
+          if ($r.state -eq 'ok') {
+            Start-Sleep -Seconds 4
+            [WX]::Fore($r.hwnd); Start-Sleep -Seconds 1
+            $png = "out\shot_" + $f.BaseName + ".png"
+            $m = Measure-Win $r.hwnd $png
+            $ink = $m[0]; $red = $m[1]
+            $dlg = @([WX]::Info(0) | Where-Object { $_ -match '\|#32770\|' }).Count
+          }
+          if ($r.state -eq 'died') { $died++ }
+          $new = @((DumpList) | Where-Object { $before -notcontains $_ })
+          $ev = @(Get-WinEvent -FilterHashtable @{LogName='Application'} -MaxEvents 400 -EA SilentlyContinue |
+                  Where-Object { $_.ProviderName -in 'Application Error','Windows Error Reporting' -and $_.TimeGenerated -gt $t } |
+                  ForEach-Object { ($_.Message -split "`r?`n" | Select-Object -Skip 1) -join ' ' })
+          if ($ev.Count) { ($f.BaseName + ' EVENT ' + ($ev -join ' || ')) | Add-Content -Path out\events.txt }
+          $row = '{0,-30} st={1} s={2} ink={3} red={4} dlg={5} dumps={6} wer={7} motw=[{8}] title={9}' -f `
+                $f.Name, $r.state, [int]((Get-Date)-$t).TotalSeconds, $ink, $red, $dlg, $new.Count, $ev.Count, $motw, $r.title
+          $row | Tee-Object -FilePath $log -Append
+          $rows += $row
+          if ($r.state -ne 'ok' -and $r.state -ne 'dump') { $notfound += $f.Name }
+          foreach ($dd in $new) { (Get-Item ('C:\dumps\' + $dd)).Length | Add-Content -Path out\dump_sizes.txt }
+          # ~170 window crops would bloat the evidence bundle, so only the shots that carry information
+          # (controls, anything with visible red ink, anything that never produced a window) are kept.
+          if ($f.Name -notlike 'ctl_*' -and $r.state -eq 'ok' -and $red -le 0) { Remove-Item $png -Force -EA SilentlyContinue }
+          if ($r.state -eq 'ok') {
+            [WX]::Close($r.hwnd); Start-Sleep -Seconds 3
+            foreach ($line in [WX]::Info(0)) { $p = $line.Split('|'); if ($p[2] -eq '#32770') { [WX]::Close([IntPtr][int64]$p[0]) } }
+            Start-Sleep -Seconds 2
+          }
+        }
+        "SUMMARY cases=$($files.Count) ok=$(($rows | Where-Object { $_ -match 'st=ok' }).Count) notfound=$($notfound.Count) died=$died restarts=$restarts dumps=$((DumpList).Count)" | Tee-Object -FilePath $log -Append
+        ($rows -join "`r`n") | Out-File out\rows.txt
+        if (@($rows | Where-Object { $_ -match 'st=ok' }).Count -eq 0) { throw "no carrier produced a window: instrument blind" }
+
+    - name: Upload evidence
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: gfx-emfplus-docx-x64
+        path: |
+          out
+          ver.txt
