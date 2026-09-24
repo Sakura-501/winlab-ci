@@ -1,0 +1,193 @@
+name: emfplus-carrier4-x64
+'on':
+  workflow_dispatch:
+    inputs:
+      cap:
+        description: 'max rtf mutants'
+        required: false
+        default: '60'
+jobs:
+  t:
+    runs-on: windows-latest
+    timeout-minutes: 180
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Download ODT
+      shell: pwsh
+      run: |
+        $page = (Invoke-WebRequest -Uri "https://www.microsoft.com/en-us/download/details.aspx?id=49117" -UseBasicParsing).Content
+        if ($page -match 'href="(https://download\.microsoft\.com/download/[^"]+officedeploymenttool[^"]*\.exe)"') {
+          Invoke-WebRequest -Uri $Matches[1] -OutFile odt.exe
+        } else { throw "odt link not found" }
+        Start-Process -Wait -FilePath .\odt.exe -ArgumentList "/extract:odtx /quiet"
+
+    - name: Install x64 Office
+      shell: pwsh
+      run: |
+        $xml = '<Configuration><Add OfficeClientEdition="64" Channel="CurrentChannel"><Product ID="O365ProPlusRetail"><Language ID="en-us" /><ExcludeApp ID="OneDrive" /><ExcludeApp ID="Bing" /></Product></Add><Display Level="None" AcceptEULA="TRUE" /><Updates Enabled="FALSE" /></Configuration>'
+        Set-Content -Path cfg.xml -Value $xml
+        Start-Process -Wait -FilePath .\odtx\setup.exe -ArgumentList "/configure","cfg.xml"
+        $w = Get-Item "C:\Program Files\Microsoft Office\root\Office16\WINWORD.EXE" -EA SilentlyContinue
+        $o = Get-Item "C:\Program Files\Microsoft Office\root\Office16\OUTLOOK.EXE" -EA SilentlyContinue
+        if (-not $w -or -not $o) { throw "office install failed word=$($w -ne $null) outlook=$($o -ne $null)" }
+        "winword v=$($w.VersionInfo.FileVersion) outlook v=$($o.VersionInfo.FileVersion)" | Tee-Object ver.txt
+
+    - name: Materialize carriers
+      shell: pwsh
+      run: |
+        New-Item -ItemType Directory -Force -Path out, C:\dumps, corpus | Out-Null
+        [IO.File]::WriteAllBytes("carriers.gz", [Convert]::FromBase64String((Get-Content data\emfcarriers.b64 -Raw).Trim()))
+        tar -xzf carriers.gz -C corpus
+        "rtf=" + (@(Get-ChildItem corpus\rtf -Filter *.rtf -EA SilentlyContinue).Count)
+        "eml=" + (@(Get-ChildItem corpus\eml -Filter *.eml -EA SilentlyContinue).Count)
+        if (@(Get-ChildItem corpus -Recurse -File).Count -lt 40) { throw "carriers not materialized" }
+
+    - name: Page-heap WINWORD and OUTLOOK
+      shell: pwsh
+      run: |
+        foreach ($exe in 'WINWORD.EXE','OUTLOOK.EXE') {
+          $k = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\$exe"
+          New-Item -Path $k -Force | Out-Null
+          Set-ItemProperty -Path $k -Name GlobalFlag -Value 0x02000000 -Type DWord
+          Set-ItemProperty -Path $k -Name EnableVerifier -Value 1 -Type DWord
+          Set-ItemProperty -Path $k -Name VerifierFlags -Value 0 -Type DWord
+          Set-ItemProperty -Path $k -Name PageHeapFlags -Value 0x3 -Type DWord
+        }
+        $ld = "HKLM:\SOFTWARE\Microsoft\Windows Error Reporting\LocalDumps"
+        New-Item -Path $ld -Force | Out-Null
+        Set-ItemProperty -Path $ld -Name DumpFolder -Value "C:\dumps" -Type ExpandString
+        Set-ItemProperty -Path $ld -Name DumpType -Value 2 -Type DWord
+        Set-ItemProperty -Path $ld -Name DumpCount -Value 60 -Type DWord
+        "armed" | Tee-Object out\setup_log.txt
+
+    - name: Cold-start the control, then sweep warm
+      shell: pwsh
+      run: |
+        Add-Type -AssemblyName System.Windows.Forms,System.Drawing
+        $src = Get-Content tools\ow_titles.ps1 -Raw; Invoke-Expression $src
+        $fgsrc = @(
+          'using System;',
+          'using System.Runtime.InteropServices;',
+          'public class FG {',
+          '  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);',
+          '  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);',
+          '  public struct RECT { public int Left, Top, Right, Bottom; }',
+          '}') -join "`n"
+        Add-Type -TypeDefinition $fgsrc
+        $O16 = "C:\Program Files\Microsoft Office\root\Office16"
+        $log = "out\sweep_log.txt"
+        function DumpList { @(Get-ChildItem C:\dumps -EA SilentlyContinue | ForEach-Object { $_.Name }) }
+        function Shot($path, $hwnd) {
+          $b = [System.Windows.Forms.SystemInformation]::VirtualScreen
+          $full = New-Object System.Drawing.Bitmap($b.Width, $b.Height)
+          $g = [System.Drawing.Graphics]::FromImage($full)
+          $g.CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size)
+          if ($hwnd -ne [IntPtr]::Zero) {
+            $r = New-Object FG+RECT
+            if ([FG]::GetWindowRect($hwnd, [ref]$r)) {
+              $x = [Math]::Max(0, $r.Left); $y = [Math]::Max(0, $r.Top)
+              $w = [Math]::Min($r.Right, $b.Width - 1) - $x
+              $h = [Math]::Min($r.Bottom, $b.Height - 1) - $y
+              if ($w -gt 40 -and $h -gt 40) {
+                $crop = $full.Clone([System.Drawing.Rectangle]::new($x, $y, $w, $h), [System.Drawing.Imaging.PixelFormat]::Format24bppRgb)
+                $crop.Save($path); $crop.Dispose(); $g.Dispose(); $full.Dispose(); return
+              }
+            }
+          }
+          $full.Save($path); $g.Dispose(); $full.Dispose()
+        }
+        function RedCount($png) {
+          if (-not (Test-Path $png)) { return -1 }
+          $bmp = [System.Drawing.Bitmap]::FromFile($png); $n = 0
+          for ($y = 0; $y -lt $bmp.Height; $y += 2) {
+            for ($x = 0; $x -lt $bmp.Width; $x += 2) {
+              $c = $bmp.GetPixel($x, $y)
+              if ($c.R -gt 170 -and $c.G -lt 90 -and $c.B -lt 90) { $n++ }
+            }
+          }
+          $bmp.Dispose(); return $n
+        }
+        function OpenOne($exe, $file, $mark, $polls, $step) {
+          $before = (DumpList).Count
+          $p = Start-Process -FilePath $exe -ArgumentList $file -PassThru
+          $t = ''; $found = 0; $ver = 0
+          for ($i = 0; $i -lt $polls; $i++) {
+            Start-Sleep -Seconds $step
+            $qs = @(Get-Process ([IO.Path]::GetFileNameWithoutExtension($exe)) -EA SilentlyContinue)
+            if ($qs.Count -eq 0) { break }
+            foreach ($q in $qs) { try { if (@($q.Modules | Where-Object { $_.ModuleName -ieq 'verifier.dll' }).Count) { $ver = 1 } } catch { } }
+            $mine = @(); foreach ($q in $qs) { $mine += @([OW]::Titles([uint32]$q.Id)) }
+            $hit = @($mine | Where-Object { $_ -like ('*' + $mark + '*') })
+            if ($hit) { $found = 1; $t = ($hit | Select-Object -First 1); break }
+            if (((DumpList).Count -gt $before)) { break }
+          }
+          return @{ found = $found; title = $t; ver = $ver }
+        }
+        $cap = [int]('${{ github.event.inputs.cap }}'); if ($cap -le 0) { $cap = 60 }
+        $ww = Join-Path $O16 "WINWORD.EXE"
+        $ol = Join-Path $O16 "OUTLOOK.EXE"
+        # A page-heaped Office cold start measured 306 s to the first window (run 35949587266), so the
+        # first document is opened with a 480 s budget and every later carrier reuses that process.
+        $ctl = Get-ChildItem corpus\rtf -Filter ctl_pen.rtf | Select-Object -First 1
+        $r0 = OpenOne $ww ('"' + $ctl.FullName + '"') $ctl.BaseName 96 5
+        "COLD $($ctl.Name) found=$($r0.found) verifier=$($r0.ver) title=$($r0.title)" | Tee-Object -FilePath $log
+        if ($r0.found -ne 1) { throw "cold-start control ctl_pen.rtf never produced a window in 480 s: instrument blind" }
+        $files = @()
+        $files += @(Get-ChildItem corpus\rtf -Filter *.rtf | Where-Object { $_.Name -notlike '._*' -and $_.Name -ne 'ctl_pen.rtf' } | Sort-Object Name | Select-Object -First $cap)
+        $files += @(Get-ChildItem corpus\eml -Filter *.eml | Where-Object { $_.Name -notlike '._*' } | Sort-Object Name)
+        "cases=$($files.Count)" | Add-Content -Path $log
+        $rows = @(); $blind = @()
+        foreach ($f in $files) {
+          $isEml = $f.Extension -eq '.eml'
+          $exe = if ($isEml) { $ol } else { $ww }
+          if ($isEml) {
+            Get-Process OUTLOOK -EA SilentlyContinue | Stop-Process -Force -EA SilentlyContinue
+            Start-Sleep -Seconds 3
+            $argl = @('/eml', ('"' + $f.FullName + '"'))
+          } else {
+            $argl = @('"' + $f.FullName + '"')
+          }
+          Set-Content -Path $f.FullName -Stream Zone.Identifier -Value "[ZoneTransfer]`r`nZoneId=3" -Encoding ASCII
+          $motw = ((Get-Content $f.FullName -Stream Zone.Identifier -EA SilentlyContinue) -join '/')
+          $before = (DumpList).Count
+          $t0 = Get-Date
+          Start-Process -FilePath $exe -ArgumentList $argl | Out-Null
+          $mark = if ($isEml) { 'GTMSG' } else { $f.BaseName }
+          $found = 0; $title = ''
+          for ($i = 0; $i -lt 45; $i++) {
+            Start-Sleep -Seconds 2
+            $q = Get-Process $(if ($isEml) { 'OUTLOOK' } else { 'WINWORD' }) -EA SilentlyContinue | Select-Object -First 1
+            if (-not $q) { break }
+            $hit = @([OW]::Titles([uint32]$q.Id)) | Where-Object { $_ -like ('*' + $mark + '*') }
+            if ($hit) { $found = 1; $title = ($hit | Select-Object -First 1); break }
+            if (((DumpList).Count -gt $before)) { break }
+          }
+          Start-Sleep -Seconds 5
+          $png = "out\shot_" + $f.BaseName + ".png"
+          $hwnd = [IntPtr]::Zero
+          $q2 = Get-Process $(if ($isEml) { 'OUTLOOK' } else { 'WINWORD' }) -EA SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1
+          if ($q2) { $hwnd = $q2.MainWindowHandle; try { [FG]::SetForegroundWindow($hwnd) | Out-Null } catch { } }
+          if ($f.Name -like 'ctl_*' -or $f.Name -like '*broken*' -or $isEml) { Shot $png $hwnd } else { $png = '' }
+          $red = RedCount $png
+          $new = @((DumpList) | Where-Object { $before -notcontains $_ })
+          $r = '{0,-34} eml={1} found={2} red={3} dumps={4} s={5} motw=[{7}] title={6}' -f `
+               $f.Name, $(if ($isEml) { 1 } else { 0 }), $found, $red, $new.Count, [int]((Get-Date) - $t0).TotalSeconds, $title, $motw
+          $r | Tee-Object -FilePath $log -Append
+          $rows += $r
+          if (-not $found) { $blind += $f.Name }
+          foreach ($dd in $new) { Copy-Item ('C:\dumps\' + $dd) ('out\' + $f.BaseName + '_' + $dd) -Force -EA SilentlyContinue }
+          if ($f.Name -like 'ctl_*' -or $f.Name -like '*broken*') { Copy-Item $f.FullName ('out\kept_' + $f.Name) -Force -EA SilentlyContinue }
+        }
+        "SUMMARY cases=$($files.Count) notfound=$($blind.Count) dumps_total=$((DumpList).Count)" | Tee-Object -FilePath $log -Append
+        ($rows -join "`r`n") | Out-File out\rows.txt
+        if (@($rows | Where-Object { $_ -match 'found=1' }).Count -eq 0) { throw "no carrier produced a window: instrument blind" }
+
+    - name: Upload evidence
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: emfplus-carrier4-x64
+        path: |
+          out
+          ver.txt
