@@ -183,25 +183,26 @@ jobs:
         $docL = @(Get-ChildItem corpus\docx | Where-Object { $_.Extension -eq '.docx' -and $_.Name -notlike '._*' } | Sort-Object Name -Unique)
         # Cold start of a page-heaped Office measured 306 s to the first window, so the control carrier
         # gets a 480 s budget; every later case reuses that process (warm reuse measured 11 s/case).
-        $ctl = @($docL | Where-Object { $_.Name -eq 'ctl_pen12.docx' })[0]
+        $ctl = @($docL | Where-Object { $_.Name -like 'ctl_*' })[0]
+        if (-not $ctl) { throw "no ctl_* control carrier in corpus\docx" }
         Set-Content -Path $ctl.FullName -Stream Zone.Identifier -Value "[ZoneTransfer]`r`nZoneId=3" -Encoding ASCII
         $t0 = Get-Date
         Start-Process -FilePath $ww -ArgumentList ('"' + $ctl.FullName + '"') | Out-Null
-        $r0 = Wait-Case 'ctl_pen12' 96 5 ((DumpList).Count)
-        $cold = "COLD ctl_pen12.docx state=$($r0.state) verifier=$(VerOn) s=$([int]((Get-Date)-$t0).TotalSeconds) title=$($r0.title)"
+        $r0 = Wait-Case $ctl.BaseName 96 5 ((DumpList).Count)
+        $cold = "COLD $ctl.Name state=$($r0.state) verifier=$(VerOn) s=$([int]((Get-Date)-$t0).TotalSeconds) title=$($r0.title)"
         $cold | Tee-Object -FilePath $log
-        if ($r0.state -ne 'ok') { throw "cold control ctl_pen12.docx never produced a window ($($r0.state)): instrument blind" }
+        if ($r0.state -ne 'ok') { throw "cold control $ctl.Name never produced a window ($($r0.state)): instrument blind" }
         if ((VerOn) -ne 1) { throw "verifier.dll not loaded in the warm WINWORD: page heap not in effect" }
         [WX]::Close($r0.hwnd); Start-Sleep -Seconds 4
 
-        $files = @($docL | Where-Object { $_.Name -ne 'ctl_pen12.docx' } | Select-Object -Skip $skip -First $cap)
+        $files = @($docL | Where-Object { $_.Name -notlike 'ctl_*' } | Select-Object -Skip $skip -First $cap)
         "cases=$($files.Count)" | Add-Content -Path $log
         $rows = @(); $notfound = @(); $died = 0; $restarts = 0
         foreach ($f in $files) {
           if (@(WwProcs).Count -eq 0) {
             $restarts++
             Start-Process -FilePath $ww -ArgumentList ('"' + $ctl.FullName + '"') | Out-Null
-            $rr = Wait-Case 'ctl_pen12' 96 5 ((DumpList).Count)
+            $rr = Wait-Case $ctl.BaseName 96 5 ((DumpList).Count)
             "RESTART state=$($rr.state) title=$($rr.title)" | Tee-Object -FilePath $log -Append
             if ($rr.state -ne 'ok') { throw "WINWORD could not be restarted: instrument blind after row $($rows.Count)" }
             [WX]::Close($rr.hwnd); Start-Sleep -Seconds 4
