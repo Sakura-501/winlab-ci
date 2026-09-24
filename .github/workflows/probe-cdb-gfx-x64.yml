@@ -1,0 +1,50 @@
+name: probe-cdb-gfx-x64
+'on': {workflow_dispatch: {}}
+jobs:
+  t:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+    - name: probe debuggers dir and office module versions
+      shell: pwsh
+      run: |
+        New-Item -ItemType Directory -Force -Path out | Out-Null
+        $d='C:\Program Files (x86)\Windows Kits\10\Debuggers\x64'
+        "dbg_dir_exists=$(Test-Path $d)" | Tee-Object out\probe.txt
+        if (Test-Path $d) { (Get-ChildItem $d -Filter *.exe | ForEach-Object { $_.Name }) -join ',' | Tee-Object -Append out\probe.txt }
+        "gflags=$(Test-Path (Join-Path $d 'gflags.exe')) cdb=$(Test-Path (Join-Path $d 'cdb.exe')) ntvdm=$(Test-Path (Join-Path $d 'ntsd.exe'))" | Tee-Object -Append out\probe.txt
+        (Get-Command cdb.exe -EA SilentlyContinue).Source | Tee-Object -Append out\probe.txt
+        "office_root=$(Test-Path 'C:\Program Files\Microsoft Office\root\Office16')" | Tee-Object -Append out\probe.txt
+        Get-ChildItem 'C:\Program Files\Microsoft Office\root\Office16' -Filter *.dll -EA SilentlyContinue | Where-Object { $_.Name -in 'gfx.dll','mso.dll','wwlib.dll','oart.dll' } | ForEach-Object { "MOD $($_.Name) $($_.VersionInfo.FileVersion) $($_.Length)" } | Tee-Object -Append out\probe.txt
+    - name: fetch the PDBs the same way the offline flow does
+      shell: pwsh
+      run: |
+        New-Item -ItemType Directory -Force -Path pdb | Out-Null
+        foreach ($m in 'gfx','mso') {
+          $dll = "C:\Program Files\Microsoft Office\root\Office16\$m.dll"
+          if (-not (Test-Path $dll)) { "no $dll" | Add-Content out\probe.txt; continue }
+          $bytes = [IO.File]::ReadAllBytes($dll)
+          $pe = [BitConverter]::ToInt32($bytes, 0x3c)
+          $nsec = [BitConverter]::ToUInt16($bytes, $pe+6)
+          $sizopt = [BitConverter]::ToUInt16($bytes, $pe+20)
+          $opt = $pe+24
+          $ddoff = $opt + 112
+          $dbgRva = [BitConverter]::ToInt32($bytes, $ddoff+16); $dbgSz=[BitConverter]::ToInt32($bytes, $ddoff+20)
+          $sb = $opt + $sizopt
+          $off = $dbgRva
+          for ($i=0; $i -lt $nsec; $i++) {
+            $o = $sb + $i*40
+            $va=[BitConverter]::ToUInt32($bytes,$o+12); $vs=[BitConverter]::ToUInt32($bytes,$o+8)
+            $rawsz=[BitConverter]::ToUInt32($bytes,$o+16); $praw=[BitConverter]::ToUInt32($bytes,$o+20)
+            if ($dbgRva -ge $va -and $dbgRva -lt ($va+[Math]::Max($vs,$rawsz))) { $off = $praw + ($dbgRva-$va); break }
+          }
+          if ($off -le 0 -or $off+28 -gt $bytes.Length) { "no debug dir for $m" | Add-Content out\probe.txt; continue }
+          $sig=[BitConverter]::ToInt32($bytes,$off)
+          $guid=($bytes[($off+4)..($off+19)] | ForEach-Object { $_.ToString('x2') })
+          $g=('{0:x2}{1:x2}{2:x2}{3:x2}-{4:x2}{5:x2}-{6:x2}{7:x2}-{8:x2}{9:x2}-{10:x2}{11:x2}{12:x2}{13:x2}{14:x2}{15:x2}' -f $bytes[$off+4],$bytes[$off+5],$bytes[$off+6],$bytes[$off+7],$bytes[$off+8],$bytes[$off+9],$bytes[$off+10],$bytes[$off+11],$bytes[$off+12],$bytes[$off+13],$bytes[$off+14],$bytes[$off+15],$bytes[$off+16],$bytes[$off+17],$bytes[$off+18],$bytes[$off+19]).ToUpper()
+          $age=[BitConverter]::ToInt32($bytes,$off+20)
+          "RSDS $m sig=$sig guid=$g age=$age" | Tee-Object -Append out\probe.txt
+        }
+    - uses: actions/upload-artifact@v4
+      if: always()
+      with: { name: probe-cdb-gfx-x64, path: out }
