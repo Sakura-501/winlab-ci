@@ -17,19 +17,10 @@
 #include <stdlib.h>
 #include <string.h>
 
-typedef struct tagSTATSTG {
-    wchar_t *pwcsName; DWORD type; LARGE_INTEGER cbSize; LARGE_INTEGER mtime;
-    LARGE_INTEGER ctime; LARGE_INTEGER atime; DWORD grfMode; DWORD grfLocksSupported;
-    DWORD clsid_low; DWORD clsid_mid; DWORD clsid_hi1; DWORD clsid_hi2;
-    DWORD grfStateBits; DWORD reserved;
-} STATSTG;
+/* objidlbase.h (pulled in by windows.h) already declares STATSTG and LPSTREAM; redeclaring
+ * them is a C2011/C2371 on 10.0.26100 headers (run 36062072487). */
 
-typedef void *LPSTREAM;
 typedef LPSTREAM (WINAPI *PSCREATEMEMSTREAM)(const void *, DWORD);
-
-typedef HRESULT (WINAPI *PSTREAMREAD)(LPSTREAM, void *, unsigned long, unsigned long *);
-typedef HRESULT (WINAPI *PSTREAMSTAT)(LPSTREAM, STATSTG *, unsigned long);
-typedef HRESULT (WINAPI *PSTREAMSEEK)(LPSTREAM, LARGE_INTEGER, DWORD, ULARGE_INTEGER *);
 
 /* CreateSVGImage1Proxy(void **outObj, IStream *src) per mso 0x180b74de0 */
 typedef HRESULT (WINAPI *PCREATESVG)(void **, LPSTREAM);
