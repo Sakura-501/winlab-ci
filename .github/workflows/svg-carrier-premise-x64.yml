@@ -1,0 +1,180 @@
+name: svg-carrier-premise-x64
+# Does a MOTW .docx with an svgBlip actually reach msosvg.dll inside WINWORD, before any click?
+# wave 10 runs ~1.5 h, so answer the carrier premise first with two carriers and a module census:
+#   ctl_ok.docx      template picture + word/media/image1.svg + asvg:svgBlip extension
+#   ctl_no_svg.docx  the same container with no svg part at all (the single-variable control)
+# Each carrier is opened twice: with Mark-of-the-Web (the real delivery condition) and without it.
+# The row records ProtectedViewWindows.Count, the window title, whether msosvg.dll / gfx.dll appear
+# in the WINWORD module list, and the process's verifier state.
+on:
+  workflow_dispatch:
+    inputs:
+      heap:
+        description: '1 = full page heap on WINWORD'
+        required: false
+        default: '0'
+      blob:
+        description: 'data/ file holding the two carriers'
+        required: false
+        default: 'svgprem.b64'
+
+jobs:
+  t:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download ODT
+        shell: pwsh
+        run: |
+          $page = (Invoke-WebRequest -Uri "https://www.microsoft.com/en-us/download/details.aspx?id=49117" -UseBasicParsing).Content
+          if ($page -match 'href="(https://download\.microsoft\.com/download/[^"]+officedeploymenttool[^"]*\.exe)"') {
+            Invoke-WebRequest -Uri $Matches[1] -OutFile odt.exe
+          } else { throw "odt link not found" }
+          Start-Process -Wait -FilePath .\odt.exe -ArgumentList "/extract:odtx /quiet"
+
+      - name: Install Word only (x64)
+        shell: pwsh
+        run: |
+          $xml = '<Configuration><Add OfficeClientEdition="64" Channel="CurrentChannel"><Product ID="O365ProPlusRetail"><Language ID="en-us" /><ExcludeApp ID="Excel" /><ExcludeApp ID="PowerPoint" /><ExcludeApp ID="Outlook" /><ExcludeApp ID="OneDrive" /><ExcludeApp ID="OneNote" /><ExcludeApp ID="Access" /><ExcludeApp ID="Publisher" /><ExcludeApp ID="Lync" /><ExcludeApp ID="Bing" /></Product></Add><Display Level="None" AcceptEULA="TRUE" /><Updates Enabled="FALSE" /></Configuration>'
+          Set-Content -Path cfg.xml -Value $xml
+          Start-Process -Wait -FilePath .\odtx\setup.exe -ArgumentList "/configure","cfg.xml"
+          $w = Get-Item "C:\Program Files\Microsoft Office\root\Office16\WINWORD.EXE" -EA SilentlyContinue
+          if (-not $w) { throw "install failed" }
+          "winword v=$($w.VersionInfo.FileVersion)" | Tee-Object ver.txt
+          $ms = Get-Item "C:\Program Files\Microsoft Office\root\Office16\msosvg.dll" -EA SilentlyContinue
+          "msosvg=$(if ($ms) { $ms.VersionInfo.FileVersion } else { 'ABSENT' })" | Tee-Object -Append ver.txt
+
+      - name: Unpack the two carriers
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path out | Out-Null
+          $blob = '${{ github.event.inputs.blob }}'
+          if ($blob -notmatch '^[a-z0-9]+\.b64$') { throw "bad blob '$blob'" }
+          [IO.File]::WriteAllBytes("carriers.gz", [Convert]::FromBase64String((Get-Content ('data\' + $blob) -Raw).Trim()))
+          tar -xzf carriers.gz -C .
+          $n = @(Get-ChildItem carriers -Filter *.docx | Where-Object { $_.Name -notlike '._*' })
+          "carriers=$($n.Count) names=$(($n.Name | Sort-Object) -join ',')" | Tee-Object -FilePath out\setup.txt
+          if ($n.Count -lt 2) { throw "both carriers required" }
+
+      - name: Module census per carrier and per MOTW state
+        shell: pwsh
+        run: |
+          $ww = "C:\Program Files\Microsoft Office\root\Office16\WINWORD.EXE"
+          Add-Type @"
+          using System;
+          using System.Text;
+          using System.Runtime.InteropServices;
+          public class W {
+            [DllImport("user32.dll")] public static extern bool EnumWindows(EnumWindowsProc cb, IntPtr l);
+            public delegate bool EnumWindowsProc(IntPtr h, IntPtr l);
+            [DllImport("user32.dll")] public static extern int GetWindowTextW(IntPtr h, StringBuilder s, int n);
+            [DllImport("user32.dll")] public static extern int GetClassNameW(IntPtr h, StringBuilder s, int n);
+            [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
+            public static string Title(IntPtr h) { var s = new StringBuilder(512); GetWindowTextW(h, s, 512); return s.ToString(); }
+            public static string Class(IntPtr h) { var s = new StringBuilder(256); GetClassNameW(h, s, 256); return s.ToString(); }
+          }
+          "@
+          function WinTitles {
+            $acc = New-Object 'System.Collections.Generic.List[string]'
+            [void][W]::EnumWindows({ param($h, $l)
+              if ([W]::IsWindowVisible($h)) {
+                $c = [W]::Class($h)
+                if ($c -eq 'OpusApp' -or $c -eq 'Frame GDI' -or $c -like '#32770*') {
+                  $acc.Add(('{0}|{1}' -f $c, [W]::Title($h)))
+                }
+              }
+              return $true }, [IntPtr]::Zero) | Out-Null
+            return $acc
+          }
+          function Modules {
+            param($pr)
+            # PS7 dropped Get-Process -Module, so read the property and swallow the access-denied case
+            try { return @($pr.Modules | ForEach-Object { [IO.Path]::GetFileName($_.FileName) }) }
+            catch { return @() }
+          }
+          function Census($file, $withMotw, $tag) {
+            Stop-Process -Name WINWORD -Force -EA SilentlyContinue
+            Start-Sleep -Seconds 3
+            $src = "work\$tag-$file"
+            New-Item -ItemType Directory -Force -Path (Split-Path $src) | Out-Null
+            Copy-Item "carriers\$file" "$src.docx" -Force
+            $path = (Resolve-Path "$src.docx").Path
+            $motw = ''
+            if ($withMotw -eq 1) {
+              Set-Content -Path $path -Stream Zone.Identifier -Value "[ZoneTransfer]`r`nZoneId=3" -Encoding ASCII
+              $motw = ((Get-Content $path -Stream Zone.Identifier -EA SilentlyContinue) -join '/')
+            } else {
+              Remove-Item -Path $path -Stream Zone.Identifier -EA SilentlyContinue
+              $motw = 'none'
+            }
+            $verify = 'n/a'
+            $proc = Start-Process -FilePath $ww -ArgumentList ('"' + $path + '"') -PassThru
+            $deadline = (Get-Date).AddSeconds(240)
+            $titles = @()
+            $found = $false
+            while ((Get-Date) -lt $deadline) {
+              Start-Sleep -Seconds 5
+              $w2 = @(Get-Process WINWORD -EA SilentlyContinue)
+              if (-not $w2) { continue }
+              $titles = @(WinTitles)
+              if (@($titles | Where-Object { $_ -like "*$([IO.Path]::GetFileNameWithoutExtension($path))*" }).Count) { $found = $true; break }
+            }
+            $mods = @()
+            foreach ($pr in @(Get-Process WINWORD -EA SilentlyContinue)) { $mods += @(Modules $pr) }
+            $mods = @($mods | Sort-Object -Unique)
+            $row = 'CENSUS file={0} motw={1} tag={2} found={3} msosvg={4} gfx={5} mso={6} shlwapi={7} modules={8} pv={9} wins=[{10}]' -f `
+              $file, $withMotw, $tag, $found, `
+              (@($mods -contains 'msosvg.dll')), (@($mods -contains 'gfx.dll')), (@($mods -contains 'mso.dll')), `
+              (@($mods -contains 'shlwapi.dll')), $mods.Count, `
+              ( (@($titles | Where-Object { $_ -match 'Protected View|受保护的视图' }).Count) ), `
+              (($titles | ForEach-Object { $_ -replace '\|', '§' }) -join ' ;; ')
+            $row | Tee-Object -FilePath out\census.txt -Append
+            Stop-Process -Name WINWORD -Force -EA SilentlyContinue
+            Start-Sleep -Seconds 3
+          }
+          foreach ($f in @('ctl_ok.docx', 'ctl_no_svg.docx')) {
+            Census $f 1 'motw'
+            Census $f 0 'bare'
+          }
+          Get-Content out\census.txt
+
+      - name: Same census through a real double-click (ShellExecute) path
+        shell: pwsh
+        run: |
+          # Start-Process and ShellExecute differ in which verb and which integrity level the file is
+          # opened at, so confirm the svg module also appears on the ShellExecute path used by wave 10.
+          $ww = "C:\Program Files\Microsoft Office\root\Office16\WINWORD.EXE"
+          Stop-Process -Name WINWORD -Force -EA SilentlyContinue
+          $path = (Resolve-Path "carriers\ctl_ok.docx").Path
+          Set-Content -Path $path -Stream Zone.Identifier -Value "[ZoneTransfer]`r`nZoneId=3" -Encoding ASCII
+          $sh = New-Object -ComObject WScript.Shell
+          [void]$sh.Run(""""$path""", 1, $false)
+          $deadline = (Get-Date).AddSeconds(240)
+          $mods = @()
+          while ((Get-Date) -lt $deadline) {
+            Start-Sleep -Seconds 5
+            foreach ($pr in @(Get-Process WINWORD -EA SilentlyContinue)) {
+              try { $mods += @($pr.Modules | ForEach-Object { [IO.Path]::GetFileName($_.FileName) }) } catch {}
+            }
+            $mods = @($mods | Sort-Object -Unique)
+            if ($mods -contains 'msosvg.dll') { break }
+          }
+          $r = 'SHELLEXEC motw=1 msosvg={0} gfx={1} modules={2}' -f ($mods -contains 'msosvg.dll'), ($mods -contains 'gfx.dll'), $mods.Count
+          $r | Tee-Object -FilePath out\shellexec.txt -Append
+          foreach ($pr in @(Get-Process WINWORD -EA SilentlyContinue)) {
+            try { $pr.Modules | Where-Object { $_.ModuleName -match 'svg|gfx|msxml' } |
+                   ForEach-Object { ("  hit " + $_.ModuleName) } | Tee-Object -FilePath out\shellexec.txt -Append }
+            catch { ("  modules_unreadable " + $_.Exception.Message) | Tee-Object -FilePath out\shellexec.txt -Append }
+          }
+          Stop-Process -Name WINWORD -Force -EA SilentlyContinue
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: svg-premise
+          path: |
+            out
+            ver.txt
+          if-no-files-found: ignore
