@@ -9,7 +9,7 @@ name: emfplus-carrier4-x64
 jobs:
   t:
     runs-on: windows-latest
-    timeout-minutes: 180
+    timeout-minutes: 340
     steps:
     - uses: actions/checkout@v4
 
