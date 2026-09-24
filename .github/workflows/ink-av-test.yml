@@ -12,9 +12,9 @@ jobs:
       - name: Compile
         shell: pwsh
         run: |
-          $csc = "C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
+          $fw = "C:\Windows\Microsoft.NET\Framework64\v4.0.30319"
           $wmd = "C:\Windows\System32\WinMetadata"
-          & $csc /nologo /target:exe /out:isfuzz.exe /r:System.Runtime.WindowsRuntime.dll /r:"$wmd\Windows.Foundation.winmd" /r:"$wmd\Windows.UI.winmd" /r:"$wmd\Windows.Storage.winmd" isfuzz_source.cs
+          & "$fw\csc.exe" /nologo /target:exe /out:isfuzz.exe /r:"$fw\System.Runtime.WindowsRuntime.dll" /r:"$fw\System.Runtime.dll" /r:"$wmd\Windows.Foundation.winmd" /r:"$wmd\Windows.UI.winmd" /r:"$wmd\Windows.Storage.winmd" isfuzz_source.cs
       - name: Run PoC
         shell: pwsh
         run: |
