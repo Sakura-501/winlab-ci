@@ -1,3 +1,9 @@
+sxi ld
+sxi unld
+sxi e06d7363
+sxi 40080201
+sxi c000041d
+sxi c000001d
 bp ppcore+0x788e8 "k 3; g"
 bp ppcore+0x780b0 "k 3; g"
 bp ppcore+0x1f74cc "k 3; g"
