@@ -1,0 +1,85 @@
+name: emfplus-cdb-one-x64
+# Attribution run for a single carrier: open it inside cdb, stop on the access violation, and print
+# the exception record, the faulting instruction, the module that owns it, and 16 stack frames.
+# This is the channel that does not depend on WER (whose dump/event path has never been lit by a
+# positive control on the runner - see carrier-probe-20260924/STATE.md §56).
+'on':
+  workflow_dispatch:
+    inputs:
+      blob: { description: 'data/ payload holding the corpus', required: false, default: 'emfdocx3.b64' }
+      which: { description: 'carrier file name (without .docx) or ALL for every carrier', required: false, default: 'ctl_pen12' }
+      poll: { description: 'seconds per carrier', required: false, default: '240' }
+jobs:
+  t:
+    runs-on: windows-latest
+    timeout-minutes: 180
+    steps:
+    - uses: actions/checkout@v4
+    - name: Download ODT
+      shell: pwsh
+      run: |
+        $page = (Invoke-WebRequest -Uri "https://www.microsoft.com/en-us/download/details.aspx?id=49117" -UseBasicParsing).Content
+        if ($page -match 'href="(https://download\.microsoft\.com/download/[^"]+officedeploymenttool[^"]*\.exe)"') { Invoke-WebRequest -Uri $Matches[1] -OutFile odt.exe } else { throw "odt link not found" }
+        Start-Process -Wait -FilePath .\odt.exe -ArgumentList "/extract:odtx /quiet"
+    - name: Install x64 Office
+      shell: pwsh
+      run: |
+        $xml = '<Configuration><Add OfficeClientEdition="64" Channel="CurrentChannel"><Product ID="O365ProPlusRetail"><Language ID="en-us" /><ExcludeApp ID="OneDrive" /><ExcludeApp ID="Bing" /></Product></Add><Display Level="None" AcceptEULA="TRUE" /><Updates Enabled="FALSE" /></Configuration>'
+        Set-Content -Path cfg.xml -Value $xml
+        Start-Process -Wait -FilePath .\odtx\setup.exe -ArgumentList "/configure","cfg.xml"
+        $w = Get-Item "C:\Program Files\Microsoft Office\root\Office16\WINWORD.EXE" -EA SilentlyContinue
+        if (-not $w) { throw "office install failed" }
+        "winword v=$($w.VersionInfo.FileVersion)" | Tee-Object ver.txt
+        (Get-Item "C:\Program Files\Microsoft Office\root\Office16\gfx.dll").VersionInfo.FileVersion | Tee-Object -Append ver.txt
+        (Get-Item "C:\Program Files\Microsoft Office\root\Office16\mso.dll").VersionInfo.FileVersion | Tee-Object -Append ver.txt
+    - name: Materialize and pick carriers
+      shell: pwsh
+      run: |
+        New-Item -ItemType Directory -Force -Path out, corpus | Out-Null
+        $blob = '${{ github.event.inputs.blob }}'
+        if ($blob -notmatch '^[a-z0-9]+\.b64$') { throw "bad blob" }
+        [IO.File]::WriteAllBytes("c.gz", [Convert]::FromBase64String((Get-Content ('data\' + $blob) -Raw).Trim()))
+        tar -xzf c.gz -C corpus
+        python corpus\pack_all.py corpus\emf corpus\template.docx corpus\docx > out\manifest.tsv 2> out\pack_err.txt
+        "pack_rc=$LASTEXITCODE" | Tee-Object out\pick.txt
+        $which = '${{ github.event.inputs.which }}'
+        $all = @(Get-ChildItem corpus\docx | Where-Object { $_.Extension -eq '.docx' } | Sort-Object Name -Unique)
+        if ($which -eq 'ALL') { $all | ForEach-Object { $_.BaseName } | Set-Content out\pick.txt -Encoding ASCII }
+        else { if (-not ($all | Where-Object { $_.BaseName -eq $which })) { throw "carrier $which not in corpus (n=$($all.Count))" } ; $which | Set-Content out\pick.txt -Encoding ASCII }
+        "picked=$(Get-Content out\pick.txt -Raw).Trim().Length names, corpus=$($all.Count)" | Tee-Object -Append out\pick.txt
+    - name: Run under the debugger
+      shell: pwsh
+      run: |
+        $cdb = 'C:\Program Files (x86)\Windows Kits\10\Debuggers\x64\cdb.exe'
+        $ww = 'C:\Program Files\Microsoft Office\root\Office16\WINWORD.EXE'
+        $poll = [int]('${{ github.event.inputs.poll }}'); if ($poll -le 0) { $poll = 240 }
+        $names = @(Get-Content out\pick.txt | Where-Object { $_ })
+        foreach ($n in $names) {
+          $f = Get-Item ("corpus\docx\" + $n + ".docx")
+          Set-Content -Path $f.FullName -Stream Zone.Identifier -Value "[ZoneTransfer]`r`nZoneId=3" -Encoding ASCII
+          $motw = ((Get-Content $f.FullName -Stream Zone.Identifier -EA SilentlyContinue) -join '/')
+          $cmds = @('.sympath srv*C:\sym*https://msdl.microsoft.com/download/symbols',
+                    'sxe ld:gfx', 'g', '.reload',
+                    'sxe -c ".echo ===AV===; r; .ecxr; k 20; lmvm gfx; lmvm mso; lmvm winword; .dump /ma C:\pm\av.dmp; q" av',
+                    'g')
+          $cf = 'one_' + $n + '.txt'
+          Set-Content -Path $cf -Value $cmds -Encoding ASCII
+          $lg = 'out\cdb_' + $n + '.txt'
+          Remove-Item $lg -Force -EA SilentlyContinue
+          $q = '"' + $f.FullName + '"'
+          $p = Start-Process -FilePath $cdb -ArgumentList '-cf',$cf,'-logo',$lg,$ww,$q -PassThru -WindowStyle Hidden
+          $sw = [Diagnostics.Stopwatch]::StartNew()
+          while (-not $p.HasExited -and $sw.Elapsed.TotalSeconds -lt $poll) { Start-Sleep 4 }
+          Stop-Process -Name WINWORD,cdb -Force -EA SilentlyContinue
+          Start-Sleep 2
+          $txt = if (Test-Path $lg) { Get-Content $lg -Raw } else { '' }
+          $av = @($txt -split "`r?`n" | Where-Object { $_ -match '===AV===|Access violation|ExceptionCode|FAULTING_IP|^\s+\S+!|ModLoad.*gfx\.dll' }).Count
+          "{0,-30} av_lines={1} motw=[{2}] log_bytes={3}" -f $n, $av, $motw, $txt.Length | Tee-Object -FilePath out\cdb_log.txt -Append
+          if (Test-Path C:\pm\av.dmp) { Copy-Item C:\pm\av.dmp ("out\av_" + $n + ".dmp") -Force -EA SilentlyContinue; Remove-Item C:\pm\av.dmp -Force }
+          ($txt -split "`r?`n" | Where-Object { $_ -match '===AV===|Access violation|ExceptionAddress|ExceptionCode|Failed to replay|^\S+!\S+' } | Select-Object -First 30) | Add-Content -Path ('out\avsum_' + $n + '.txt')
+          Get-Process cdb,WINWORD -EA SilentlyContinue | Stop-Process -Force -EA SilentlyContinue
+        }
+    - name: Upload
+      if: always()
+      uses: actions/upload-artifact@v4
+      with: { name: emfplus-cdb-one-x64, path: out }
