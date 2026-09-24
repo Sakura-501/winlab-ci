@@ -1,0 +1,110 @@
+name: office-window-diag-x64
+'on':
+  workflow_dispatch:
+    inputs:
+      app:
+        description: 'WINWORD, EXCEL or BOTH'
+        required: false
+        default: 'BOTH'
+jobs:
+  t:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Download ODT
+      shell: pwsh
+      run: |
+        $page = (Invoke-WebRequest -Uri "https://www.microsoft.com/en-us/download/details.aspx?id=49117" -UseBasicParsing).Content
+        if ($page -match 'href="(https://download\.microsoft\.com/download/[^"]+officedeploymenttool[^"]*\.exe)"') {
+          Invoke-WebRequest -Uri $Matches[1] -OutFile odt.exe
+        } else { throw "odt link not found" }
+        Start-Process -Wait -FilePath .\odt.exe -ArgumentList "/extract:odtx /quiet"
+
+    - name: Install x64 Office
+      shell: pwsh
+      run: |
+        $xml = '<Configuration><Add OfficeClientEdition="64" Channel="CurrentChannel"><Product ID="O365ProPlusRetail"><Language ID="en-us" /><ExcludeApp ID="OneDrive" /><ExcludeApp ID="Bing" /></Product></Add><Display Level="None" AcceptEULA="TRUE" /><Updates Enabled="FALSE" /></Configuration>'
+        Set-Content -Path cfg.xml -Value $xml
+        Start-Process -Wait -FilePath .\odtx\setup.exe -ArgumentList "/configure","cfg.xml"
+        $w = Get-Item "C:\Program Files\Microsoft Office\root\Office16\WINWORD.EXE" -EA SilentlyContinue
+        $e = Get-Item "C:\Program Files\Microsoft Office\root\Office16\EXCEL.EXE" -EA SilentlyContinue
+        "winword=$($w.VersionInfo.FileVersion) excel=$($e.VersionInfo.FileVersion)" | Tee-Object ver.txt
+
+    - name: Session and desktop facts
+      shell: pwsh
+      run: |
+        New-Item -ItemType Directory -Force -Path out, corpus | Out-Null
+        $sid = (Get-Process -Id $PID).SessionId
+        "agent_session=$sid" | Tee-Object out\diag0.txt
+        "sessionlist:" | Add-Content out\diag0.txt
+        query session 2>&1 | Add-Content out\diag0.txt
+        "winstations:" | Add-Content out\diag0.txt
+        (Get-ChildItem 'Registry::HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\WindowStations' -EA SilentlyContinue).PSChildName | Add-Content out\diag0.txt
+        "console_owner=$((Get-Process -EA SilentlyContinue | Where-Object { $_.ProcessName -eq 'LogonUI' }).Count) logonui" | Add-Content out\diag0.txt
+
+    - name: Build control documents
+      shell: pwsh
+      run: |
+        [IO.File]::WriteAllBytes("corpus\doc.gz", [Convert]::FromBase64String((Get-Content data\emfcarriers.b64 -Raw).Trim()))
+        tar -xzf corpus\doc.gz -C corpus
+        "rtf=" + (@(Get-ChildItem corpus\rtf -Filter *.rtf -EA SilentlyContinue).Count)
+        "eml=" + (@(Get-ChildItem corpus\eml -Filter *.eml -EA SilentlyContinue).Count)
+        Set-Content -Path corpus\ctl_excel.csv -Value "a,b`r`n1,2`r`n" -Encoding ASCII
+
+    - name: Launch and watch the window appear
+      shell: pwsh
+      run: |
+        Add-Type -AssemblyName System.Windows.Forms,System.Drawing
+        $src = Get-Content tools\ow_titles.ps1 -Raw; Invoke-Expression $src
+        $O16 = "C:\Program Files\Microsoft Office\root\Office16"
+        $log = "out\diag.txt"
+        function Watch($exeName, $file, $label, $rounds) {
+          $exe = Join-Path $O16 ($exeName + '.EXE')
+          $p = Start-Process -FilePath $exe -ArgumentList ('"' + $file + '"') -PassThru
+          "$label pid=$($p.Id) started=$([DateTime]::Now.ToString('HH:mm:ss'))" | Tee-Object -FilePath $log -Append
+          for ($i = 0; $i -lt $rounds; $i++) {
+            Start-Sleep -Seconds 15
+            $procs = @(Get-Process $exeName -EA SilentlyContinue)
+            $all = @([OW]::Titles(0))
+            $mine = @()
+            foreach ($q in $procs) { $mine += @([OW]::Titles([uint32]$q.Id)) }
+            $exited = 'unknown'
+            try { $exited = $p.HasExited } catch { }
+            $line = '{0} t={1}s nproc={2} exited={3} wins_all={4} wins_mine={5} titles=[{6}]' -f `
+                    $label, (($i + 1) * 15), $procs.Count, $exited, $all.Count, $mine.Count, (($mine | Select-Object -First 3) -join ' ;; ')
+            $line | Tee-Object -FilePath $log -Append
+            if ($mine.Count -gt 0) {
+              $png = "out\shot_$label.png"
+              $b = [System.Windows.Forms.SystemInformation]::VirtualScreen
+              $bmp = New-Object System.Drawing.Bitmap($b.Width, $b.Height)
+              $g = [System.Drawing.Graphics]::FromImage($bmp)
+              $g.CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size)
+              $bmp.Save($png); $g.Dispose(); $bmp.Dispose()
+              "$label SHOT_SAVED $png" | Tee-Object -FilePath $log -Append
+              break
+            }
+            if ($procs.Count -eq 0) { "$label process gone at t=$(($i+1)*15)s" | Tee-Object -FilePath $log -Append; break }
+          }
+        }
+        $which = '${{ github.event.inputs.app }}'
+        if ($which -eq 'BOTH' -or $which -eq 'EXCEL') {
+          Watch 'EXCEL' ((Resolve-Path corpus\ctl_excel.csv).Path) 'EXCEL' 40
+          Get-Process EXCEL -EA SilentlyContinue | Stop-Process -Force -EA SilentlyContinue
+        }
+        if ($which -eq 'BOTH' -or $which -eq 'WINWORD') {
+          Watch 'WINWORD' ((Resolve-Path corpus\rtf\ctl_pen.rtf).Path) 'WINWORD' 40
+          Get-Process WINWORD -EA SilentlyContinue | Stop-Process -Force -EA SilentlyContinue
+        }
+        "DIAG_DONE" | Tee-Object -FilePath $log -Append
+        Get-Content $log | Select-Object -Last 8
+
+    - name: Upload evidence
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: office-window-diag
+        path: |
+          out
+          ver.txt
