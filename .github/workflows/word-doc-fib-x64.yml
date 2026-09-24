@@ -69,7 +69,10 @@ jobs:
         $docL = @(Get-ChildItem corpus\doc | Where-Object { $_.Extension -eq '.doc' -and $_.Name -notlike '._*' } | Sort-Object Name -Unique)
         $nd = $docL.Count
         "doc=$nd" | Tee-Object -FilePath out\setup_log.txt
-        if ($nd -lt 100) { throw "doc corpus not materialized (n=$nd)" }
+        # gate lowered from the inherited 100: the small .doc families (bit flips, layout
+        # selectors) are 72-82 carriers by design, and the .docx parent workflow's 100-minimum
+        # killed three of those runs with "doc corpus not materialized (n=81)".
+        if ($nd -lt 40) { throw "doc corpus not materialized (n=$nd)" }
         if (-not (Test-Path 'corpus\doc\ctl_freeform.doc')) { throw "control carrier corpus/doc/ctl_freeform.doc missing" }
 
     - name: Arm page heap and local dumps
