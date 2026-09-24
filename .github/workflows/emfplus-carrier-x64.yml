@@ -68,12 +68,36 @@ jobs:
         $src = Get-Content tools\ow_titles.ps1 -Raw; Invoke-Expression $src
         $O16 = "C:\Program Files\Microsoft Office\root\Office16"
         $log = "out\sweep_log.txt"
-        function Shot($path) {
+        Add-Type @"
+using System; using System.Runtime.InteropServices;
+public class FG {
+  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
+  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
+  [DllImport("user32.dll")] public static extern IntPtr FindWindowW(string c, string t);
+  public struct RECT { public int Left, Top, Right, Bottom; }
+}
+"@
+        function Shot($path, $hwnd) {
+          # Count red inside the document window only: the desktop and other Office windows carry red
+          # chrome of their own, and a whole-screen count was measured red on a blank desktop.
           $b = [System.Windows.Forms.SystemInformation]::VirtualScreen
-          $bmp = New-Object System.Drawing.Bitmap($b.Width, $b.Height)
-          $g = [System.Drawing.Graphics]::FromImage($bmp)
+          $full = New-Object System.Drawing.Bitmap($b.Width, $b.Height)
+          $g = [System.Drawing.Graphics]::FromImage($full)
           $g.CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size)
-          $bmp.Save($path); $g.Dispose(); $bmp.Dispose()
+          if ($hwnd -ne [IntPtr]::Zero) {
+            $r = New-Object FG+RECT
+            if ([FG]::GetWindowRect($hwnd, [ref]$r)) {
+              $x = [Math]::Max(0, $r.Left); $y = [Math]::Max(0, $r.Top)
+              $w = [Math]::Min($r.Right, $b.Width - 1) - $x
+              $h = [Math]::Min($r.Bottom, $b.Height - 1) - $y
+              if ($w -gt 40 -and $h -gt 40) {
+                $crop = $full.Clone([System.Drawing.Rectangle]::new($x, $y, $w, $h), [System.Drawing.Imaging.PixelFormat]::Format24bppRgb)
+                $crop.Save($path); $crop.Dispose()
+                $g.Dispose(); $full.Dispose(); return
+              }
+            }
+          }
+          $full.Save($path); $g.Dispose(); $full.Dispose()
         }
         function RedCount($png) {
           if (-not (Test-Path $png)) { return -1 }
@@ -122,8 +146,12 @@ jobs:
             if (((DumpList).Count -gt $before) -or ($found -and $i -ge 8)) { break }
           }
           Start-Sleep -Seconds 4
+          $hwnd = [IntPtr]::Zero
+          $q = Get-Process $exeName -EA SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1
+          if ($q) { $hwnd = $q.MainWindowHandle; try { [FG]::SetForegroundWindow($hwnd) | Out-Null } catch { } }
+          Start-Sleep -Seconds 2
           $png = "out\shot_" + $f.BaseName + ".png"
-          if ($f.Name -like 'ctl_*' -or $f.Name -like '*broken*' -or $f.Name -like '*.eml') { Shot $png } else { $png = '' }
+          if ($f.Name -like 'ctl_*' -or $f.Name -like '*broken*' -or $f.Name -like '*.eml') { Shot $png $hwnd } else { $png = '' }
           $red = RedCount $png
           $new = @((DumpList) | Where-Object { $before -notcontains $_ })
           $r = '{0,-34} app={1,-8} found={2} alive={3} verifier={4} red={5} dumps={6} exit={7} s={8} pv={9} title={10}' -f `
