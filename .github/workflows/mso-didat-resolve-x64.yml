@@ -82,4 +82,8 @@ jobs:
     - name: Upload
       if: always()
       uses: actions/upload-artifact@v4
-      with: { name: mso-didat-resolve-x64, path: [out, ver.txt] }
+      with:
+        name: mso-didat-resolve-x64
+        path: |
+          out
+          ver.txt
