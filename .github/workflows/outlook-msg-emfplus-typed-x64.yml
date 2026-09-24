@@ -37,17 +37,35 @@ jobs:
       shell: pwsh
       run: |
         New-Item -ItemType Directory -Force -Path out, C:\dumps, corpus | Out-Null
-        # `& exe` waits for the process to exit, and /regserver only returns once Outlook is past its
-        # first-run UI - on a fresh runner that never happens.  Start it detached, give it a bounded
-        # window, then kill it so the step cannot hang.
-        Start-Process -FilePath "C:\Program Files\Microsoft Office\root\Office16\OUTLOOK.EXE" -ArgumentList '/regserver' | Out-Null
-        for ($i = 0; $i -lt 20; $i++) {
+        $exe = "C:\Program Files\Microsoft Office\root\Office16\OUTLOOK.EXE"
+        # The first-run UI has to be finished before anything can open an inspector: on a fresh
+        # runner the only visible windows are two #32770 dialogs titled "Microsoft Outlook"
+        # (run 35988896928 out/control.txt), and WM_CLOSE on them does not dismiss the wizard.
+        # Order that matters: write the Setup keys first, then /quiet (create profile, skip the
+        # welcome experience), then /regserver for the .msg association.  All detached + bounded.
+        $sf = "HKCU:\SOFTWARE\Microsoft\Office\16.0\Outlook\Setup"
+        New-Item -Path $sf -Force | Out-Null
+        Set-ItemProperty -Path $sf -Name DisableWelcomePage -Value 1 -Type DWord
+        Set-ItemProperty -Path $sf -Name DisableFirstRunCustomize -Value 1 -Type DWord
+        Start-Process -FilePath $exe -ArgumentList '/quiet' | Out-Null
+        for ($i = 0; $i -lt 60; $i++) {
           Start-Sleep -Seconds 3
-          if (-not @(Get-Process OUTLOOK -EA SilentlyContinue)) { break }
+          $t = @(Get-Process OUTLOOK -EA SilentlyContinue)
+          if ($t.Count -eq 0) { break }
+          if (@($t | Where-Object { $_.MainWindowTitle -and $_.MainWindowTitle -notlike 'Microsoft Outlook' }).Count) { break }
         }
+        "quiet_phase windows=$((@(Get-Process OUTLOOK -EA SilentlyContinue).Count))" | Out-File out\regserver.txt
         Get-Process OUTLOOK -EA SilentlyContinue | Stop-Process -Force -EA SilentlyContinue
-        Start-Sleep -Seconds 3
-        "regserver_done" | Out-File out\regserver.txt
+        Start-Sleep -Seconds 4
+        Remove-Item 'HKCU:\SOFTWARE\Microsoft\Office\16.0\Outlook\Resiliency' -Recurse -Force -EA SilentlyContinue
+        Start-Process -FilePath $exe -ArgumentList '/regserver' | Out-Null
+        for ($i = 0; $i -lt 40; $i++) {
+          Start-Sleep -Seconds 3
+          if (@(Get-Process OUTLOOK -EA SilentlyContinue).Count -eq 0) { break }
+        }
+        "regserver_done" | Add-Content out\regserver.txt
+        Get-Process OUTLOOK -EA SilentlyContinue | Stop-Process -Force -EA SilentlyContinue
+        Start-Sleep -Seconds 4
         $b64 = (Get-Content data\msgemfplus_typed.b64 -Raw).Trim()
         [IO.File]::WriteAllBytes("$PWD\m15.tgz", [Convert]::FromBase64String($b64))
         tar -xzf m15.tgz -C corpus
