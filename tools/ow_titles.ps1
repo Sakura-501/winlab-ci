@@ -3,7 +3,7 @@ using System; using System.Text; using System.Runtime.InteropServices; using Sys
 public class OW {
   delegate bool EnumProc(IntPtr h, IntPtr l);
   [DllImport("user32.dll")] static extern bool EnumWindows(EnumProc cb, IntPtr l);
-  [DllImport("user32.dll")] static extern int GetWindowTextW(IntPtr h, StringBuilder s, int n);
+  [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern int GetWindowTextW(IntPtr h, StringBuilder s, int n);
   [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
   [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint p);
   public static List<string> Titles(uint only) {
