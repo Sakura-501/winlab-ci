@@ -1,0 +1,137 @@
+name: emfplus-covprobe-x64
+# Decode-coverage oracle on the shipping x64 build.
+#
+# Why this exists: the crash waves read "dumps=0" and that number only means something if the
+# mutated bytes actually reached the parser. Painting is not a decode proof (the layout-differential
+# wave showed a Word-native \pngblip leaves no visual trace either), so this workflow asks the
+# loader directly: enumerate gfx.dll's parse entry points by symbol from msdl, put a counting
+# breakpoint on each, open the carrier, and print which routines ran. The carrier set deliberately
+# mixes .docx media (breakpoint-proven in the accepted package) with the .rtf carriers the earlier
+# waves used, so those waves' premise is measured on the same instrument.
+'on':
+  workflow_dispatch:
+    inputs:
+      poll:
+        description: 'seconds to watch each carrier'
+        required: false
+        default: '150'
+jobs:
+  t:
+    runs-on: windows-latest
+    timeout-minutes: 150
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Download ODT
+      shell: pwsh
+      run: |
+        $page = (Invoke-WebRequest -Uri "https://www.microsoft.com/en-us/download/details.aspx?id=49117" -UseBasicParsing).Content
+        if ($page -match 'href="(https://download\.microsoft\.com/download/[^"]+officedeploymenttool[^"]*\.exe)"') {
+          Invoke-WebRequest -Uri $Matches[1] -OutFile odt.exe
+        } else { throw "odt link not found" }
+        Start-Process -Wait -FilePath .\odt.exe -ArgumentList "/extract:odtx /quiet"
+
+    - name: Install x64 Office
+      shell: pwsh
+      run: |
+        $xml = '<Configuration><Add OfficeClientEdition="64" Channel="CurrentChannel"><Product ID="O365ProPlusRetail"><Language ID="en-us" /><ExcludeApp ID="OneDrive" /><ExcludeApp ID="Bing" /></Product></Add><Display Level="None" AcceptEULA="TRUE" /><Updates Enabled="FALSE" /></Configuration>'
+        Set-Content -Path cfg.xml -Value $xml
+        Start-Process -Wait -FilePath .\odtx\setup.exe -ArgumentList "/configure","cfg.xml"
+        $w = Get-Item "C:\Program Files\Microsoft Office\root\Office16\WINWORD.EXE" -EA SilentlyContinue
+        if (-not $w) { throw "office install failed" }
+        "winword v=$($w.VersionInfo.FileVersion)" | Tee-Object ver.txt
+        (Get-Item "C:\Program Files\Microsoft Office\root\Office16\gfx.dll").VersionInfo.FileVersion | Tee-Object -Append ver.txt
+
+    - name: Materialize carriers
+      shell: pwsh
+      run: |
+        New-Item -ItemType Directory -Force -Path out, corpus | Out-Null
+        [IO.File]::WriteAllBytes("cov.gz", [Convert]::FromBase64String((Get-Content data\covprobe.b64 -Raw).Trim()))
+        tar -xzf cov.gz -C corpus
+        $nd = @(Get-ChildItem corpus\docx | Where-Object { $_.Extension -eq '.docx' }).Count
+        $nr = @(Get-ChildItem corpus\rtf | Where-Object { $_.Extension -eq '.rtf' }).Count
+        "docx=$nd rtf=$nr" | Tee-Object out\setup_log.txt
+        if ($nd -lt 6 -or $nr -lt 1) { throw "carriers not materialized docx=$nd rtf=$nr" }
+
+    - name: Phase 1 - enumerate gfx.dll parse symbols through the debugger
+      shell: pwsh
+      run: |
+        $cdb = 'C:\Program Files (x86)\Windows Kits\10\Debuggers\x64\cdb.exe'
+        if (-not (Test-Path $cdb)) { throw "cdb not present at $cdb" }
+        $ww = 'C:\Program Files\Microsoft Office\root\Office16\WINWORD.EXE'
+        $cmds = @(
+          '.sympath srv*C:\sym*https://msdl.microsoft.com/download/symbols',
+          'sxe ld:gfx',
+          'g',
+          '.reload',
+          'x gfx!*',
+          'lmvm gfx',
+          'q'
+        )
+        Set-Content -Path p1cmds.txt -Value $cmds -Encoding ASCII
+        $p = Start-Process -FilePath $cdb -ArgumentList '-cf','p1cmds.txt','-logo','out\phase1_raw.txt',$ww,'/n' -PassThru -WindowStyle Hidden
+        $sw = [Diagnostics.Stopwatch]::StartNew()
+        while (-not $p.HasExited -and $sw.Elapsed.TotalSeconds -lt 240) { Start-Sleep 3 }
+        if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force -EA SilentlyContinue }
+        Get-Process WINWORD,cdb -EA SilentlyContinue | Stop-Process -Force -EA SilentlyContinue
+        Start-Sleep 2
+        $raw = Get-Content out\phase1_raw.txt -Raw -EA SilentlyContinue
+        if (-not $raw) { throw "phase1 produced no log: instrument blind" }
+        # Keep only parse-ish entry points without template characters so the breakpoint lines stay parseable.
+        # 'x' prints "addr mod!name = <no type information>", so match the name token and drop
+        # anything with template/overload punctuation (cdb cannot take those as breakpoints).
+        $syms = @($raw -split "`r?`n" | ForEach-Object {
+            if ($_ -match '^\s*[0-9a-f`]+\s+(gfx!\S+)') {
+              $n = $matches[1]
+              if ($n -match '(HrParse|Parse|HrInit|Read|Decode|Convert|Disassembl)' -and $n -notmatch '[<>()]') { $n }
+            } } | Select-Object -Unique)
+        "phase1_lines=$(($raw -split "`n").Count) gfx_syms_seen=$(@($raw -split "`n" | Where-Object { $_ -match '^\s*[0-9a-f`]+\s+gfx!' }).Count) parse_syms=$($syms.Count)" | Tee-Object out\phase2_gate.txt
+        ($syms | Select-Object -First 60) | Add-Content -Path out\phase2_gate.txt
+        if ($syms.Count -eq 0) { throw "no gfx parse symbols resolved: symbols not loadable" }
+        ($syms | Select-Object -First 40) | Set-Content out\syms.txt -Encoding ASCII
+
+    - name: Phase 2 - count decode entries per carrier
+      shell: pwsh
+      run: |
+        $cdb = 'C:\Program Files (x86)\Windows Kits\10\Debuggers\x64\cdb.exe'
+        $ww = 'C:\Program Files\Microsoft Office\root\Office16\WINWORD.EXE'
+        $poll = [int]('${{ github.event.inputs.poll }}'); if ($poll -le 0) { $poll = 150 }
+        $syms = @(Get-Content out\syms.txt | Where-Object { $_ -match '^gfx!' })
+        $rows = @()
+        $files = @(Get-ChildItem corpus\docx, corpus\rtf | Sort-Object Name)
+        foreach ($f in $files) {
+          Set-Content -Path $f.FullName -Stream Zone.Identifier -Value "[ZoneTransfer]`r`nZoneId=3" -Encoding ASCII
+          $motw = ((Get-Content $f.FullName -Stream Zone.Identifier -EA SilentlyContinue) -join '/')
+          $cmds = @('.sympath srv*C:\sym*https://msdl.microsoft.com/download/symbols', 'sxe ld:gfx', 'g', '.reload')
+          $i = 0
+          foreach ($s in $syms) {
+            $i++
+            $cmds += ('bp ' + $s + ' ".printf \"HIT_' + $i + ' ' + ($s -replace '[^A-Za-z0-9]','_') + '\\n\"; g"')
+          }
+          $cmds += 'g'
+          $cf = 'c_' + $f.BaseName + '.txt'
+          Set-Content -Path $cf -Value $cmds -Encoding ASCII
+          $lg = 'out\cov_' + $f.BaseName + '.txt'
+          Remove-Item $lg -Force -EA SilentlyContinue
+          $p = Start-Process -FilePath $cdb -ArgumentList '-cf',$cf,'-logo',$lg,$ww,'"' + $f.FullName + '"' -PassThru -WindowStyle Hidden
+          $sw = [Diagnostics.Stopwatch]::StartNew()
+          while (-not $p.HasExited -and $sw.Elapsed.TotalSeconds -lt $poll) { Start-Sleep 3 }
+          Stop-Process -Name WINWORD,cdb -Force -EA SilentlyContinue
+          Start-Sleep 2
+          $txt = if (Test-Path $lg) { Get-Content $lg -Raw } else { '' }
+          $hits = @($txt -split "`r?`n" | Where-Object { $_ -match 'HIT_\d+ ' } | ForEach-Object { ($_ -split ' ')[-1] } | Group-Object | ForEach-Object { $_.Name + 'x' + $_.Count })
+          $row = '{0,-34} motw=[{1}] bp={2} hitlines={3} distinct={4}' -f $f.Name, $motw, $syms.Count, @($txt -split "`r?`n" | Where-Object { $_ -match 'HIT_\d+ ' }).Count, (@($hits) -join ',')
+          $row | Tee-Object -FilePath out\cov_log.txt -Append
+          $rows += $row
+          ($txt -split "`r?`n" | Where-Object { $_ -match 'HIT_\d+ ' } | Select-Object -First 40) | Add-Content -Path ('out\hits_' + $f.BaseName + '.txt')
+        }
+        "SUMMARY carriers=$($files.Count) with_hits=$(($rows | Where-Object { $_ -match 'hitlines=[1-9]' }).Count)" | Tee-Object -FilePath out\cov_log.txt -Append
+
+    - name: Upload evidence
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: emfplus-covprobe-x64
+        path: |
+          out
+          ver.txt
