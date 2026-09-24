@@ -1,0 +1,149 @@
+name: excel-slkwindow-pageheap-x64
+'on':
+  workflow_dispatch:
+    inputs:
+      cap:
+        description: 'max carriers'
+        required: false
+        default: '200'
+jobs:
+  t:
+    runs-on: windows-latest
+    timeout-minutes: 220
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Download ODT
+      shell: pwsh
+      run: |
+        $page = (Invoke-WebRequest -Uri "https://www.microsoft.com/en-us/download/details.aspx?id=49117" -UseBasicParsing).Content
+        if ($page -match 'href="(https://download\.microsoft\.com/download/[^"]+officedeploymenttool[^"]*\.exe)"') {
+          Invoke-WebRequest -Uri $Matches[1] -OutFile odt.exe
+        } else { throw "odt link not found" }
+        Start-Process -Wait -FilePath .\odt.exe -ArgumentList "/extract:odtx /quiet"
+
+    - name: Install x64 Office (Excel needed)
+      shell: pwsh
+      run: |
+        $xml = '<Configuration><Add OfficeClientEdition="64" Channel="CurrentChannel"><Product ID="O365ProPlusRetail"><Language ID="en-us" /><ExcludeApp ID="OneDrive" /><ExcludeApp ID="Lync" /><ExcludeApp ID="Bing" /></Product></Add><Display Level="None" AcceptEULA="TRUE" /><Updates Enabled="FALSE" /></Configuration>'
+        Set-Content -Path cfg.xml -Value $xml
+        Start-Process -Wait -FilePath .\odtx\setup.exe -ArgumentList "/configure","cfg.xml"
+        $e = Get-Item "C:\Program Files\Microsoft Office\root\Office16\EXCEL.EXE" -ErrorAction SilentlyContinue
+        if (-not $e) { throw "excel install failed" }
+        "excel: $($e.Length) bytes v=$($e.VersionInfo.FileVersion)"
+        $e.VersionInfo.FileVersion | Out-File ver.txt
+
+    - name: Page heap for EXCEL plus WER full dumps
+      shell: pwsh
+      run: |
+        $log = "out\setup_log.txt"
+        New-Item -ItemType Directory -Force -Path out, C:\dumps, tools, corpus | Out-Null
+        $gfs = @(Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\Debuggers" -Recurse -Include gflags.exe -EA SilentlyContinue)
+        $gf = @($gfs | Where-Object { $_.FullName -match '\\x64\\' } | Select-Object -First 1)
+        if (-not $gf) { $gf = @($gfs | Select-Object -First 1) }
+        if ($gf) {
+          try { & $gf.FullName /p /enable EXCEL.EXE /full | Out-Null; "gflags_path=$($gf.FullName)" | Add-Content $log }
+          catch { "gflags_unusable=$($gf.FullName) -> registry page heap only" | Add-Content $log }
+        }
+        $k = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\EXCEL.EXE"
+        New-Item -Path $k -Force | Out-Null
+        Set-ItemProperty -Path $k -Name GlobalFlag -Value 0x02000000 -Type DWord
+        Set-ItemProperty -Path $k -Name EnableVerifier -Value 1 -Type DWord
+        Set-ItemProperty -Path $k -Name VerifierFlags -Value 0 -Type DWord
+        Set-ItemProperty -Path $k -Name PageHeapFlags -Value 0x3 -Type DWord
+        $ld = "HKLM:\SOFTWARE\Microsoft\Windows Error Reporting\LocalDumps"
+        New-Item -Path $ld -Force | Out-Null
+        Set-ItemProperty -Path $ld -Name DumpFolder -Value "C:\dumps" -Type ExpandString
+        Set-ItemProperty -Path $ld -Name DumpType -Value 2 -Type DWord
+        Set-ItemProperty -Path $ld -Name DumpCount -Value 40 -Type DWord
+        "pageheap GlobalFlag=$((Get-ItemProperty $k).GlobalFlag) verifier=$((Get-ItemProperty $k).EnableVerifier)" | Tee-Object -FilePath $log -Append
+
+    - name: Build carriers
+      shell: pwsh
+      run: |
+        python tools\mk_slk_window_corpus.py corpus
+        "carriers_in_corpus=" + (@(Get-ChildItem corpus -EA SilentlyContinue).Count)
+        (Get-ChildItem corpus | Measure-Object).Count
+
+    - name: Positive control - page heap must be loaded in EXCEL
+      shell: pwsh
+      run: |
+        $exe = "C:\Program Files\Microsoft Office\root\Office16\EXCEL.EXE"
+        Set-Content -Path corpus\ctrl_plain.csv -Value "a,b`r`n1,=1+1`r`n" -Encoding ASCII
+        $k2 = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\EXCEL.EXE"
+        $p = Start-Process -FilePath $exe -ArgumentList '"corpus\ctrl_plain.csv"' -PassThru
+        $ver = 0
+        for ($i = 0; $i -lt 30; $i++) {
+          Start-Sleep -Seconds 2
+          try {
+            $mods = @($p.Modules | ForEach-Object { $_.ModuleName.ToLower() })
+            if ($mods -contains 'verifier.dll') { $ver = 1; break }
+          } catch { }
+          if ($p.HasExited) { break }
+        }
+        "CONTROL verifier_loaded=$ver title=$($p.MainWindowTitle)" | Tee-Object -FilePath out\control.txt
+        Get-Process EXCEL -EA SilentlyContinue | Stop-Process -Force
+        "CONTROL readback GlobalFlag=$((Get-ItemProperty $k2).GlobalFlag) PageHeapFlags=$((Get-ItemProperty $k2).PageHeapFlags) EnableVerifier=$((Get-ItemProperty $k2).EnableVerifier)" | Add-Content out\control.txt
+        if ($ver -ne 1) { "NOTE page heap not observed in the control run; sweep continues on WER-dump detection only" | Add-Content out\control.txt }
+
+    - name: Open every carrier, watch for faults
+      shell: pwsh
+      run: |
+        $exe = "C:\Program Files\Microsoft Office\root\Office16\EXCEL.EXE"
+        $log = "out\sweep_log.txt"
+        $cap = [int]('${{ github.event.inputs.cap }}')
+        if ($cap -le 0) { $cap = 130 }
+        function DumpList { @(Get-ChildItem C:\dumps -EA SilentlyContinue | ForEach-Object { $_.Name }) }
+        $files = @(Get-ChildItem corpus | Where-Object { $_.Name -notlike 'ctrl_*' } | Sort-Object Name | Select-Object -First $cap)
+        "cases=$($files.Count)" | Tee-Object -FilePath $log
+        # A sweep that opens nothing must never read as "no faults": the generator wrote to a
+        # different directory than the loop globbed once, and the job was green with cases=0.
+        if ($files.Count -lt 50) { throw "corpus not materialized in corpus\ (cases=$($files.Count))" }
+        $bad = @()
+        $unopened = @()
+        foreach ($f in $files) {
+          $before = DumpList
+          Set-Content -Path ($f.FullName + ':Zone.Identifier') -Value "[ZoneTransfer]`r`nZoneId=3" -Encoding ASCII
+          $t0 = Get-Date
+          $p = Start-Process -FilePath $exe -ArgumentList ('"' + $f.FullName + '"') -PassThru
+          $alive = 1; $opened = 0; $ver = 0; $exit = ''; $title = ''; $shot = 0
+          for ($i = 0; $i -lt 25; $i++) {
+            Start-Sleep -Seconds 2
+            try { if ($p.HasExited) { $alive = 0; $exit = '0x' + ('{0:X8}' -f $p.ExitCode); break } } catch { $alive = 0; break }
+            try { if (@($p.Modules | Where-Object { $_.ModuleName -ieq 'verifier.dll' }).Count) { $ver = 1 } } catch { }
+            $tt = @(Get-Process EXCEL -EA SilentlyContinue | ForEach-Object { $_.MainWindowTitle } | Where-Object { $_ })
+            $title = ($tt | Where-Object { $_ -like ('*' + $f.BaseName + '*') }) | Select-Object -First 1
+            if ($title) { $opened = 1; if (-not $shot) { $shot = 1; try { Add-Type -AssemblyName System.Windows.Forms,System.Drawing; $b = [System.Windows.Forms.SystemInformation]::VirtualScreen; $bmp = New-Object System.Drawing.Bitmap $b.Width, $b.Height; $g = [System.Drawing.Graphics]::FromImage($bmp); $g.CopyFromScreen($b.X, $b.Y, 0, 0, $bmp.Size); New-Item -ItemType Directory -Force -Path out\shots | Out-Null; $bmp.Save(('out\shots\' + $f.BaseName + '.png')); $g.Dispose(); $bmp.Dispose() } catch { "shot_failed " + $_.Exception.Message | Add-Content out\sweep_extra.txt } } }
+            if ((DumpList).Count -gt $before.Count) { break }
+          }
+          $after = DumpList
+          $new = @($after | Where-Object { $before -notcontains $_ })
+          $line = '{0,-24} alive={1} opened={2} verifier={3} dumps={4} exit={5} s={6} title={7}' -f $f.Name, $alive, $opened, $ver, $new.Count, $exit, [int]((Get-Date) - $t0).TotalSeconds, $title
+          $line | Tee-Object -FilePath $log -Append
+          if (-not $opened) { $unopened += $f.Name }
+          if ($new.Count -or ($alive -eq 0 -and $opened -eq 0)) {
+            $bad += $f.Name
+            New-Item -ItemType Directory -Force -Path out\bad | Out-Null
+            Copy-Item $f.FullName ('out\bad\CRASH_' + $f.Name) -Force -EA SilentlyContinue
+            foreach ($d in $new) { Copy-Item ('C:\dumps\' + $d) ('out\bad\' + $d) -Force -EA SilentlyContinue }
+          }
+          Get-Process EXCEL -EA SilentlyContinue | Stop-Process -Force -EA SilentlyContinue
+          Remove-Item 'HKCU:\SOFTWARE\Microsoft\Office\16.0\excel\Resiliency' -Recurse -Force -EA SilentlyContinue
+          for ($i = 0; $i -lt 40; $i++) { if (-not (Get-Process EXCEL -EA SilentlyContinue)) { break }; Start-Sleep -Milliseconds 500 }
+        }
+        "SUMMARY cases=$($files.Count) flagged=$($bad.Count) [$($bad -join ' ')]" | Tee-Object -FilePath $log -Append
+        "unopened=$($unopened.Count) [$($unopened -join ' ')]" | Tee-Object -FilePath $log -Append
+        if ($unopened.Count * 20 -gt $files.Count) { throw "$($unopened.Count)/$($files.Count) carriers never opened: the sweep would read as clean without covering them (first: $($unopened[0]))" }
+        "dumps_total=$((DumpList).Count)" | Tee-Object -FilePath $log -Append
+        $bad -join "`r`n" | Out-File out\bad.txt
+        if ($bad.Count) { throw "flagged carriers: $($bad -join ', ')" }
+
+    - name: Upload evidence
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: excel-slkwindow-pageheap
+        path: |
+          out
+          ver.txt
+          corpus
