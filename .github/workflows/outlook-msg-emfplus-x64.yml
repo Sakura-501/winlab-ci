@@ -37,8 +37,17 @@ jobs:
       shell: pwsh
       run: |
         New-Item -ItemType Directory -Force -Path out, C:\dumps, corpus | Out-Null
-        & "C:\Program Files\Microsoft Office\root\Office16\OUTLOOK.EXE" /regserver | Out-Null
-        Start-Sleep -Seconds 8
+        # `& exe` waits for the process to exit, and /regserver only returns once Outlook is past its
+        # first-run UI - on a fresh runner that never happens.  Start it detached, give it a bounded
+        # window, then kill it so the step cannot hang.
+        Start-Process -FilePath "C:\Program Files\Microsoft Office\root\Office16\OUTLOOK.EXE" -ArgumentList '/regserver' | Out-Null
+        for ($i = 0; $i -lt 20; $i++) {
+          Start-Sleep -Seconds 3
+          if (-not @(Get-Process OUTLOOK -EA SilentlyContinue)) { break }
+        }
+        Get-Process OUTLOOK -EA SilentlyContinue | Stop-Process -Force -EA SilentlyContinue
+        Start-Sleep -Seconds 3
+        "regserver_done" | Out-File out\regserver.txt
         $b64 = (Get-Content data\msgemfplus.b64 -Raw).Trim()
         [IO.File]::WriteAllBytes("$PWD\m15.tgz", [Convert]::FromBase64String($b64))
         tar -xzf m15.tgz -C corpus
