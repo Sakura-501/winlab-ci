@@ -76,6 +76,12 @@ jobs:
         $nd = $docL.Count
         "docx=$nd" | Tee-Object -FilePath out\setup_log.txt -Append
         if ($rc -ne 0 -or $nd -ne $ne) { throw "docx packing incomplete rc=$rc emf=$ne docx=$nd" }
+        # Blobs built by a pure mutator carry no benign twin, so the control is the untouched
+        # template (its embedded EMF+ is the same pen object the earlier ctl_pen12 carriers used).
+        if (-not (Test-Path corpus\docx\ctl_pen12.docx)) {
+          Copy-Item corpus\template.docx corpus\docx\ctl_pen12.docx
+          "control=template.docx copy" | Tee-Object -FilePath out\setup_log.txt -Append
+        }
         if (-not (Test-Path corpus\docx\ctl_pen12.docx)) { throw "control carrier corpus\docx\ctl_pen12.docx missing" }
 
     - name: Arm page heap and local dumps
