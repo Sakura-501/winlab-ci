@@ -120,9 +120,9 @@ jobs:
         $cap = [int]('${{ github.event.inputs.cap }}'); if ($cap -le 0) { $cap = 60 }
         $rows = @()
         $files = @()
-        $files += @(Get-ChildItem corpus\rtf -Filter ctl_*.rtf | Sort-Object Name)
-        $files += @(Get-ChildItem corpus\rtf -Filter ec_*.rtf | Sort-Object Name | Select-Object -First $cap)
-        $files += @(Get-ChildItem corpus\eml -Filter *.eml | Sort-Object Name)
+        $files += @(Get-ChildItem corpus\rtf -Filter ctl_*.rtf | Where-Object { $_.Name -notlike '._*' } | Sort-Object Name)
+        $files += @(Get-ChildItem corpus\rtf -Filter ec_*.rtf | Where-Object { $_.Name -notlike '._*' } | Sort-Object Name | Select-Object -First $cap)
+        $files += @(Get-ChildItem corpus\eml -Filter *.eml | Where-Object { $_.Name -notlike '._*' } | Sort-Object Name)
         "cases=$($files.Count)" | Tee-Object -FilePath $log
         foreach ($f in $files) {
           $isEml = $f.Extension -eq '.eml'
@@ -136,8 +136,8 @@ jobs:
           $p = Start-Process -FilePath $exe -ArgumentList $argl -PassThru
           $t0 = Get-Date; $found = 0; $ver = 0; $title = ''; $alive = 1; $exit = ''
           $mark = if ($isEml) { ($f.BaseName -replace '[^A-Za-z0-9]','') } else { $f.BaseName }
-          for ($i = 0; $i -lt 26; $i++) {
-            Start-Sleep -Seconds 3
+          for ($i = 0; $i -lt 60; $i++) {
+            Start-Sleep -Seconds 4
             try { if ($p.HasExited) { $alive = 0; $exit = '0x' + ('{0:X8}' -f $p.ExitCode); break } } catch { $alive = 0; break }
             try { if (@($p.Modules | Where-Object { $_.ModuleName -ieq 'verifier.dll' }).Count) { $ver = 1 } } catch { }
             $ts = @([OW]::Titles([uint32]$p.Id))
@@ -154,9 +154,10 @@ jobs:
           if ($f.Name -like 'ctl_*' -or $f.Name -like '*broken*' -or $f.Name -like '*.eml') { Shot $png $hwnd } else { $png = '' }
           $red = RedCount $png
           $new = @((DumpList) | Where-Object { $before -notcontains $_ })
+          $allv = @([OW]::Titles(0))
           $r = '{0,-34} app={1,-8} found={2} alive={3} verifier={4} red={5} dumps={6} exit={7} s={8} pv={9} title={10}' -f `
                $f.Name, $exeName, $found, $alive, $ver, $red, $new.Count, $exit, [int]((Get-Date) - $t0).TotalSeconds, `
-               $(if ($title -match 'PROTECTED|Protected') { 1 } else { 0 }), $title
+               $(if ($title -match 'PROTECTED|Protected') { 1 } else { 0 }), $title, $allv.Count
           $r | Tee-Object -FilePath $log -Append
           $rows += $r
           foreach ($dd in $new) { Copy-Item ('C:\dumps\' + $dd) ('out\' + $f.BaseName + '_' + $dd) -Force -EA SilentlyContinue }
