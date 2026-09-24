@@ -124,7 +124,27 @@ def write(name, data):
     return p
 
 
+def main_wrap():
+    """`python mk_slk_window_corpus.py <out> wrap` - carriers whose `W;N` entry count straddles
+    2^26, the point where the consumer's `lsl w1, w8, #6` (STATE office-mem-lifetime-20260922
+    \u00a731) wraps the allocation size to 0 while the filling loop still runs `count` times
+    at 64 bytes per iteration.  A 2^26-entry record line is ~134 MB of text; the loader is known
+    to accept single lines well past its 16,590-byte window (sw_wi_033186.slk opened on the VM,
+    STATE \u00a732), so the count is reachable from the file."""
+    os.makedirs(OUT, exist_ok=True)
+    made = 0
+    for k in (1 << 24, 1 << 25, (1 << 26) - 1, 1 << 26, (1 << 26) + 1, (1 << 26) + 1024):
+        write('sw_wrap_%09d.slk' % k, mk_wic(k))
+        made += 1
+        print('wrote sw_wrap_%09d.slk bytes=%d' % (k, os.path.getsize(os.path.join(OUT, 'sw_wrap_%09d.slk' % k))))
+    print('carriers=%d bytes=%d mode=wrap out=%s'
+          % (made, sum(os.path.getsize(os.path.join(OUT, f)) for f in os.listdir(OUT)), OUT))
+
+
 def main():
+    if len(sys.argv) > 2 and sys.argv[2] == 'wrap':
+        main_wrap()
+        return
     os.makedirs(OUT, exist_ok=True)
     made = 0
     for n in sorted(set(ladder_ansi + ladder_coarse)):
