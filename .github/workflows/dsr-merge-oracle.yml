@@ -38,8 +38,9 @@ jobs:
       run: |
         New-Item -ItemType Directory -Force -Path C:\Users\nonoge\Documents\encobj | Out-Null
         Copy-Item t.c, t.obj, t_evil.obj C:\Users\nonoge\Documents\encobj\ -Force
-        Copy-Item fixtures\vm_t.pdb .\vm_t.pdb -Force
-        Get-ChildItem C:\Users\nonoge\Documents\encobj
+        if (Test-Path "$PWD\fixtures\vm_t.pdb") { Copy-Item "$PWD\fixtures\vm_t.pdb" "$PWD\vm_t.pdb" -Force; "vm pdb staged" } else { "vm_t.pdb MISSING in fixtures" }
+        "PWD=$PWD"
+        Get-ChildItem . -Filter *.pdb | ForEach-Object { $_.Name }
     - name: Build host (x64)
       shell: cmd
       run: |
@@ -67,7 +68,10 @@ jobs:
         $combos += @{ dll = (Get-ChildItem dsr_*.dll | Where-Object Name -match 'x64' | Select-Object -First 1).FullName; tag = 'B_36250'; rva = 'BFBF0' }
         foreach ($c in $combos) {
           foreach ($obj in @('t','t_evil','vm_t_pdb')) {
-          if ($obj -eq 'vm_t_pdb') { Copy-Item vm_t.pdb t.pdb -Force }
+          if ($obj -eq 'vm_t_pdb') {
+            if (-not (Test-Path "$PWD\vm_t.pdb")) { "vm_t.pdb absent - skip"; continue }
+            Copy-Item "$PWD\vm_t.pdb" "$PWD\t.pdb" -Force
+          }
             if ($obj -ne 't') { Copy-Item "$obj.obj" t.obj -Force }
             $o = & .\mo11.exe t.pdb $c.dll $c.rva 2>&1 | Out-String
             "=== dll=$($c.tag) obj=$obj exit=$LASTEXITCODE ===" | Tee-Object -FilePath "out\log_$($c.tag)_$obj.txt"
