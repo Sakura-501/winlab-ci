@@ -1,0 +1,63 @@
+name: ppcore-ppt-pageheap-x64
+# Screening net for the PowerPoint 97-2003 record parser (ppcore.dll).
+# Reachability was measured on the in-service build: writing ZoneId=3 and opening a .ppt puts
+# ppcore.dll in the process module list at the first poll (STATE: office-sep2026-fixsurface-20260913).
+# Carriers are record-header mutations (recLen vs payload the handler walks), produced on the
+# runner from the committed seed by ppt_rec_mutate.py, so no binary payload is embedded here.
+on: [workflow_dispatch]
+jobs:
+  s:
+    runs-on: windows-latest
+    timeout-minutes: 170
+    steps:
+    - uses: actions/checkout@v4
+    - name: Download ODT
+      shell: pwsh
+      run: |
+        $page = (Invoke-WebRequest -Uri "https://www.microsoft.com/en-us/download/details.aspx?id=49117" -UseBasicParsing).Content
+        if ($page -match 'href=\"(https://download\.microsoft\.com/download/[^\"]+officedeploymenttool[^\"]*\.exe)\"') {
+          Invoke-WebRequest -Uri $Matches[1] -OutFile odt.exe
+        } else { throw 'odt link not found' }
+        Start-Process -Wait -FilePath .\odt.exe -ArgumentList "/extract:odtx /quiet"
+    - name: Install CurrentPreview PowerPoint (x64)
+      shell: pwsh
+      run: |
+        $xml = '<Configuration><Add OfficeClientEdition="64" Channel="CurrentChannelPreview"><Product ID="O365ProPlusRetail"><Language ID="en-us" /><ExcludeApp ID="Word" /><ExcludeApp ID="Excel" /><ExcludeApp ID="Outlook" /><ExcludeApp ID="OneNote" /><ExcludeApp ID="Access" /><ExcludeApp ID="Publisher" /><ExcludeApp ID="Teams" /><ExcludeApp ID="SharePointDesigner" /><ExcludeApp ID="FormConverter" /></Product></Add></Configuration>'
+        Set-Content -Path cfg.xml -Value $xml
+        Start-Process -Wait -FilePath .\odtx\setup.exe -ArgumentList "/configure","cfg.xml"
+        $p = Get-Item "C:\Program Files\Microsoft Office\root\Office16\ppcore.dll" -EA SilentlyContinue
+        if (-not $p) { throw "ppcore missing" }
+        "ppcore v{0} size={1}" -f $p.VersionInfo.FileVersion, $p.Length
+        $p.VersionInfo.FileVersion | Out-File ver.txt
+    - name: Build record-header carriers
+      shell: pwsh
+      run: |
+        python -m pip install --quiet olefile
+        python ppseed\ppt_rec_mutate.py ppseed\img_ppt.ppt carriers --depth 0,1,2 --limit 120
+        $n = @(Get-ChildItem carriers -File -Filter *.ppt).Count
+        "carriers=$n"
+        if ($n -lt 10) { throw "carrier generation failed ($n)" }
+        "ppcore size on disk = " + (Get-Item "C:\Program Files\Microsoft Office\root\Office16\ppcore.dll").Length
+    - name: Sweep under full page heap
+      shell: pwsh
+      run: |
+        pwsh -NoProfile -ExecutionPolicy Bypass -File ppseed\ppt_sweep.ps1 -Dir carriers -Tag pptrec -Base (Get-Location).Path -WaitSec 70
+        Get-Content out\pptrec_log.txt | Select-Object -Last 130
+    - name: Report
+      shell: pwsh
+      run: |
+        $d = @(Get-ChildItem dumps -Filter *.dmp -EA SilentlyContinue)
+        "SUMMARY cases=" + @(Get-ChildItem carriers -File -Filter *.ppt).Count + " dumps=" + $d.Count
+        ($d | ForEach-Object { $_.Name + ":" + $_.Length }) -join " "
+        $idx = Get-Content out\pptrec_index.txt -EA SilentlyContinue
+        "opened=" + @($idx | Select-String "state=opened").Count + " exited=" + @($idx | Select-String "state=exited").Count + " dumpstate=" + @($idx | Select-String "state=dump").Count + " timeout=" + @($idx | Select-String "state=timeout").Count
+    - uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: pptrec-out
+        path: |
+          out/
+          ver.txt
+          dumps/
+        if-no-files-found: warn
+        retention-days: 30
