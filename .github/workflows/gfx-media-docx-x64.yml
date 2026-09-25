@@ -215,13 +215,18 @@ jobs:
             if ($rr.state -ne 'ok') { throw "WINWORD could not be restarted: instrument blind after row $($rows.Count)" }
             [WX]::Close($rr.hwnd); Start-Sleep -Seconds 4
           }
+          # A windowless WINWORD lingers after the last Protected-View window is closed; handing the next
+          # file to that instance never produces a window (run 36058219723: 118/118 st=timeout, restarts=0,
+          # because the process was alive so the restart branch never fired). Each case gets a fresh instance.
+          Stop-Process -Name WINWORD -Force -EA SilentlyContinue
+          Start-Sleep -Seconds 3
           Set-Content -Path $f.FullName -Stream Zone.Identifier -Value "[ZoneTransfer]`r`nZoneId=3" -Encoding ASCII
           $motw = ((Get-Content $f.FullName -Stream Zone.Identifier -EA SilentlyContinue) -join '/')
           $before = (DumpList).Count
           $werBefore = @(Get-WinEvent -FilterHashtable @{LogName='Application'} -MaxEvents 400 -EA SilentlyContinue | Where-Object { $_.ProviderName -in 'Application Error','Windows Error Reporting' }).Count
           $t = Get-Date
           Start-Process -FilePath $ww -ArgumentList ('"' + $f.FullName + '"') | Out-Null
-          $r = Wait-Case $f.BaseName 45 2 $before
+          $r = Wait-Case $f.BaseName 48 5 $before
           $ink = -1; $red = -1; $dlg = 0
           if ($r.state -eq 'ok') {
             Start-Sleep -Seconds 4
@@ -231,6 +236,7 @@ jobs:
             $ink = $m[0]; $red = $m[1]
             $dlg = @([WX]::Info(0) | Where-Object { $_ -match '\|#32770\|' }).Count
           }
+          if ($r.state -eq 'ok' -and [int64]$r.hwnd -ne 0) { try { [WX]::Close($r.hwnd) } catch { } }
           if ($r.state -eq 'died') { $died++ }
           $new = @((DumpList) | Where-Object { $before -notcontains $_ })
           $ev = @(Get-WinEvent -FilterHashtable @{LogName='Application'} -MaxEvents 400 -EA SilentlyContinue |
