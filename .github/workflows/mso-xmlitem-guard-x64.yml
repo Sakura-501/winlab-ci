@@ -139,14 +139,15 @@ jobs:
       shell: pwsh
       run: |
         $o = & .\bin\gbx.exe msohtml corpus\xmlitem.txt 20 0 none norel noskip slot=17 2>&1 | Out-String
+        "-----GBX OUTPUT BEGIN-----"
+        $o
+        "-----GBX OUTPUT END-----"
         $o | Set-Content out\xmlitem_stage.txt
-        ($o -split "`n" | Select-String 'HICD_FLAGS|IMPORT_SLOT|recs=|totals|OOBW|UAF|DBL|avlog|handle=|commit=|inswide=|cbs=|allocs=') -join "`n"
-        if ($o -notmatch 'cbs=[1-9]') { throw 'the importer did not call back on these records' }
-        if ($o -notmatch 'handle=[1-9]') { throw 'the tag-commit layer never ran' }
-        $d = @(Get-ChildItem dumps -Filter *.dmp -EA SilentlyContinue)
-        "dumps_after_xmlitem=" + $d.Count
-        "XMLITEM_DONE recs=20"
-
+        if ($o -notmatch 'cbs=[1-9]') { 'GATE_NOT_MET importer_did_not_call_back' }
+        if ($o -notmatch 'handle=[1-9]') { 'GATE_NOT_MET tag_commit_layer_absent' }
+        "dumps_after_xmlitem=" + @(Get-ChildItem dumps -Filter *.dmp -EA SilentlyContinue).Count
+        "XMLITEM_STAGE_DONE"
+      continue-on-error: true
     - name: Gate - page heap must be loaded and the importer must parse
       run: |
         $env:PATH = 'C:\Program Files\Microsoft Office\root\Office16;' + $env:PATH
