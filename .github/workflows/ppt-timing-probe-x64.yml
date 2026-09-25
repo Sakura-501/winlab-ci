@@ -32,9 +32,11 @@ jobs:
       run: |
         python -m pip install --quiet python-pptx
         python ppseed\ppt_timing_mutate.py carriers_t
-        $n = @(Get-ChildItem carriers_t -File -Filter *.pptx).Count
+        $env:WITH_PPSX = '1'
+        python ppseed\ppt_timing_mutate.py carriers_t
+        $n = @(Get-ChildItem carriers_t -File).Count
         "carriers=$n"
-        if ($n -lt 8) { throw "carrier generation failed ($n)" }
+        if ($n -lt 24) { throw "carrier generation failed ($n)" }
         "timing variants built"
     - name: Sweep under full page heap
       shell: pwsh
@@ -44,12 +46,12 @@ jobs:
     - name: Measure the timing validator under cdb
       shell: pwsh
       run: |
-        pwsh -NoProfile -ExecutionPolicy Bypass -File ppseed\ppt_timing_probe.ps1 -Dir carriers_t -Tag ppttime -Base (Get-Location).Path -WaitSec 100 -Show
+        pwsh -NoProfile -ExecutionPolicy Bypass -File ppseed\ppt_timing_probe.ps1 -Dir carriers_t -Ext '.pptx,.ppsx' -Tag ppttime -Base (Get-Location).Path -WaitSec 100 -Show
     - name: Report
       shell: pwsh
       run: |
         $d = @(Get-ChildItem dumps -Filter *.dmp -EA SilentlyContinue)
-        "SUMMARY cases=" + @(Get-ChildItem carriers_t -File -Filter *.pptx).Count + " dumps=" + $d.Count
+        "SUMMARY cases=" + @(Get-ChildItem carriers_t -File).Count + " dumps=" + $d.Count
         ($d | ForEach-Object { $_.Name + ":" + $_.Length }) -join " "
         $idx = Get-Content out\ppttime_index.txt -EA SilentlyContinue
         "opened=" + @($idx | Select-String "state=opened").Count + " exited=" + @($idx | Select-String "state=exited").Count + " dumpstate=" + @($idx | Select-String "state=dump").Count + " timeout=" + @($idx | Select-String "state=timeout").Count

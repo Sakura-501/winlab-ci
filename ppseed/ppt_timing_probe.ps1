@@ -12,6 +12,7 @@
 # Skeletons reused: ppcore-oracle-20260925/runner/ppt_sweep.ps1 (page heap / WER / MOTW / state poll)
 # and excel-textimport-tabcol-oobwrite-20260925/tools/find_anchor.ps1 (Latin-1 IndexOf signature scan).
 param([string]$Dir = 'carriers_t',
+      [string]$Ext = '.pptx',
       [string]$Tag = 'ppttime',
       [string]$Base = '.',
       [int]$WaitSec = 110,
@@ -70,7 +71,8 @@ New-ItemProperty -Path $k -Name DumpType -Value 2 -PropertyType DWord -Force | O
 New-ItemProperty -Path $k -Name DumpCount -Value 40 -PropertyType DWord -Force | Out-Null
 
 $dumpsDir = Join-Path $base 'dumps'
-$files = @(Get-ChildItem $Dir -File -Filter *.pptx | Sort-Object Name)
+$ExtA = @($Ext.Split(','))
+$files = @(Get-ChildItem $Dir -File | Where-Object { $_.Extension -in $ExtA } | Sort-Object Name)
 "cases=$($files.Count)" | Add-Content $log
 foreach ($f in $files) {
   Set-Content -Path $f.FullName -Stream Zone.Identifier -Value "[ZoneTransfer]`r`nZoneId=3" -Encoding ASCII
@@ -79,7 +81,7 @@ foreach ($f in $files) {
   Get-Process POWERPNT -EA SilentlyContinue | Stop-Process -Force -EA SilentlyContinue
   Start-Sleep -Seconds 2
   $modes = @('open')
-  if ($Show) { $modes += 'show' }
+  if ($Show -and $f.Extension -ne '.ppsx') { $modes += 'show' }   # a .ppsx already launches the show on open
   foreach ($m in $modes) {
     $cmdf = Join-Path $base ('out\' + $f.BaseName + '_' + $m + '.cdb')
     $c = @('.sympath()')

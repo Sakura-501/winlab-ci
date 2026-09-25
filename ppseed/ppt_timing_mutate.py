@@ -211,6 +211,26 @@ def build(outdir):
         prs.save(path)
         n += 1
         print("wrote %s shapes=%s" % (path, spids))
+        if os.environ.get("WITH_PPSX"):
+            # same package re-labelled as a slideshow: double-click starts the show with no click
+            import shutil
+            spath = os.path.join(outdir, name + "_show.ppsx")
+            shutil.copyfile(path, spath)
+            import zipfile as zf
+            tmp = spath + ".tmp"
+            zin = zf.ZipFile(path, "r")
+            zout = zf.ZipFile(tmp, "w", zf.ZIP_DEFLATED)
+            for it in zin.namelist():
+                blob = zin.read(it)
+                if it == "[Content_Types].xml":
+                    blob = blob.replace(
+                        b"presentationml.presentation.main+xml",
+                        b"presentationml.slideshow.main+xml")
+                zout.writestr(it, blob)
+            zin.close(); zout.close()
+            os.replace(tmp, spath)
+            n += 1
+            print("wrote %s" % spath)
     print("carriers=%d" % n)
 
 
