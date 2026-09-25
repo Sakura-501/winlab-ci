@@ -140,6 +140,21 @@ jobs:
                  '</head><body><div class=Slide><span>h</span></div></body></html>'
           $recs += ,$bag
         }
+        # The `<xml>` trees above sat inside conditional comments, so TkLexHtml never lexed them as XML
+        # tags: the arm that calls FProcessOpenXmlTag is selected on the token kind, so the element has
+        # to be bare markup. These records carry real <xml>...</xml> trees (and a bare processing
+        # instruction) with the (n1, n2) length pairs on attribute values and on element text.
+        $xs = '<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:v="urn:schemas-microsoft-com:vml" xmlns:w="urn:schemas-microsoft-com:office:word" xmlns="http://www.w3.org/TR/REC-html40"><head><title>xs</title></head><body>'
+        foreach ($p in $pairs) {
+          $n1 = [int]$p[0]; $n2 = [int]$p[1]
+          $recs += ,($xs + '<xml><o:tag a:attr="' + ('P' * $n1) + '"><o:sub>' + ('Q' * $n2) + '</o:sub></o:tag>' +
+                     '<o:t2 b:attr="' + ('R' * $n2) + '"/></xml><div class=Slide><span>s</span></div></body></html>')
+          $recs += ,($xs + '<?xml namespace="' + ('S' * $n1) + '"?><?xml namespace="' + ('T' * $n2) + '"?>' +
+                     '<xml><v:group o:gfxdata="' + ('U' * $n1) + '"/><v:shape o:spid="' + ('V' * $n2) + '"/></xml>' +
+                     '<p>tail</p></body></html>')
+          $recs += ,($xs + '<xml><w:el x="' + ('W' * $n1) + '"/><w:el x="' + ('X' * $n2) + '"/>' +
+                     '<w:el2 y="' + ('Y' * ($n1 + 16)) + '"/></xml><p>end</p></body></html>')
+        }
         $recs += ,('<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns="http://www.w3.org/TR/REC-html40">' +
                    '<?xml namespace="urn:s"?><?xml namespace="urn:s' + ('H' * 60) + '"?>' +
                    '<head><title>pi</title></head><body><div class=Slide><span>q</span></div></body></html>')
