@@ -244,7 +244,27 @@ jobs:
         )
         Set-Content -LiteralPath $cf -Value $lines -Encoding ASCII
         Get-Content $cf
-        $o = & $cdb -cf $cf .\bin\gbx.exe msohtml corpus\xmlitem.txt 300 0 none life noskip slot=17 2>&1 | Out-String
+        # Neither FCommitDivSpanCore nor FObtainXmlItemString was entered under the default HICD control
+        # dword, with all 105 records fed and all six anchors bound (run 36137594450: recs=105 cbs=5769,
+        # 0 hits). The importer's tag-commit flavour is selected by that dword (mso HICD+0x60), which the
+        # harness takes from GBFLAGS, so the corpus is replayed per value and each value's anchor hits are
+        # counted. A non-zero fds/req row is what unlocks the (n, capacity) / negative-count measurements.
+        $flagList = @(0x1,0x4,0x8,0x10,0x20,0x40,0x80,0x100,0x400,0x1000,0x20000,0x20001d1,0xffffffff)
+        $all = @()
+        foreach ($fl in $flagList) {
+          $env:GBFLAGS = '0x{0:X}' -f $fl
+          $one = & $cdb -cf $cf .\bin\gbx.exe msohtml corpus\xmlitem.txt 300 0 none life noskip slot=17 2>&1 | Out-String
+          $row = 'FLAGS=0x{0:X8} fds={1} neg={2} cpy={3} req={4} grown={5} ' -f $fl,
+            ([regex]::Matches($one, '(?m)^FDS$')).Count, ([regex]::Matches($one, '(?m)^NEG$')).Count,
+            ([regex]::Matches($one, '(?m)^CPY$')).Count, ([regex]::Matches($one, '(?m)^REQ$')).Count,
+            ([regex]::Matches($one, '(?m)^GROWN$')).Count
+          $mm = [regex]::Match($one, '(?m)^MSOHTML totals (.*)$'); $row += ($mm.Groups[1].Value -replace "\s+", ' ')
+          $row
+          $row | Add-Content out\flag_sweep.txt
+          $all += $one
+        }
+        Remove-Item Env:GBFLAGS -EA SilentlyContinue
+        $o = $all -join "\n"
         $o | Set-Content out\xin_cdb.txt
         # Walk the marker blocks: each XIN block holds one `r` dump (rdx = the requested character count,
         # r9 = &capacitySlot) followed by the qword read through r9 (low dword = the capacity in bytes).
