@@ -35,7 +35,7 @@ jobs:
           foreach ($cp in $msoCand) { $t = Get-Item $cp -EA SilentlyContinue; if ($t) { $m = $t; break } }
           if (-not $m) { $m = Get-ChildItem 'C:\Program Files\Microsoft Office\root' -Recurse -Filter mso.dll -EA SilentlyContinue | Sort-Object Length -Descending | Select-Object -First 1 }
           if ($m) {
-            "mso v{0} size={1}" -f $m.VersionInfo.FileVersion, $m.Length
+            "mso v{0} size={1} path={2}" -f $m.VersionInfo.FileVersion, $m.Length, $m.FullName
             ("{0} {1}" -f $ch, $m.VersionInfo.FileVersion) | Out-File ver.txt
             break
           }
@@ -62,10 +62,12 @@ jobs:
         "carriers=$n"
         if ($n -lt 12) { throw "carrier generation failed ($n)" }
     - name: Probe the div/span length path in PowerPoint
+      continue-on-error: true
       shell: pwsh
       run: |
         pwsh -NoProfile -ExecutionPolicy Bypass -File ppseed\mso_html_len_probe.ps1 -Dir carriers_h -Tag htmllenpp -App POWERPNT.EXE -Base (Get-Location).Path -WaitSec 90
     - name: Probe the div/span length path in Word
+      continue-on-error: true
       shell: pwsh
       run: |
         pwsh -NoProfile -ExecutionPolicy Bypass -File ppseed\mso_html_len_probe.ps1 -Dir carriers_h -Tag htmllenwd -App WINWORD.EXE -Base (Get-Location).Path -WaitSec 90
@@ -76,7 +78,7 @@ jobs:
         foreach ($t in @('htmllenpp','htmllenwd')) {
           $f = "out\$($t)_log.txt"
           "##### $t"
-          if (Test-Path $f) { Get-Content $f | Select-String 'SIG |state=|ANCHOR|NO_CDB|dump_total|GlobalFlag|cases=' } else { "missing" }
+          if (Test-Path $f) { Get-Content $f | Select-String 'SIG |TRY |state=|ANCHOR|NO_CDB|dump_total|GlobalFlag|cases=|msoPath|DUMP_CHANNEL' } else { "missing" }
         }
         "dumps=" + @(Get-ChildItem dumps -Filter *.dmp -EA SilentlyContinue).Count
         (Get-ChildItem dumps -Filter *.dmp -EA SilentlyContinue | ForEach-Object { $_.Name + ":" + $_.Length }) -join " "
