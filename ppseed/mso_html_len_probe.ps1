@@ -201,6 +201,29 @@ function Take-Shot([string]$path) {
   } catch { 'SHOT_FAIL ' + $_.Exception.Message | Add-Content $log; return $false }
 }
 
+# First-run/onboarding suppression.  Both smoke cases of 2026-09-25 10:50Z ended with
+# `Last event: Exit process 0:<pid>, code ffffffff` and a window titled
+# "Microsoft PowerPoint" / "Welcome to Microsoft Outlook 2016", i.e. the process handed the document
+# exited during the first-run experience while another instance stayed up.  The keys below are the
+# documented telemetry/first-run switches; the warm-up that follows is what actually completes the
+# one-time state, these only reduce what it wants to show.
+$frKeys = @(
+  @{k='HKCU:\SOFTWARE\Microsoft\Office\16.0\Common\General'; n='PtarDisable'; v=1},
+  @{k='HKCU:\SOFTWARE\Microsoft\Office\16.0\Common\OSM'; n='Enablelogging'; v=0},
+  @{k='HKCU:\SOFTWARE\Microsoft\Office\16.0\Common\OSM'; n='EnableFileCollection'; v=0},
+  @{k='HKCU:\SOFTWARE\Microsoft\Office\16.0\Common\Research'; n='DisableConnectToOffice'; v=1},
+  @{k='HKCU:\SOFTWARE\Microsoft\Office\16.0\Outlook\Setup'; n='DisableFirstRunCheck'; v=1},
+  @{k='HKCU:\SOFTWARE\Microsoft\Office\16.0\Outlook\Setup'; n='DisableAccountCreation'; v=1},
+  @{k='HKCU:\SOFTWARE\Microsoft\Office\16.0\PowerPoint\Options'; n='DisableReportAProblem'; v=1},
+  @{k='HKCU:\SOFTWARE\Microsoft\Office\16.0\common\general'; n='qfeupdate'; v=''},
+  @{k='HKCU:\SOFTWARE\Microsoft\Office\16.0\common\general'; n='oemupdate'; v=''}
+)
+foreach ($fr in $frKeys) {
+  New-Item -Path $fr.k -Force -EA SilentlyContinue | Out-Null
+  New-ItemProperty -Path $fr.k -Name $fr.n -Value $fr.v -PropertyType DWord -Force -EA SilentlyContinue | Out-Null
+}
+"FIRST_RUN_KEYS=$($frKeys.Count) written=$(Get-Date -Format HH:mm:ss)" | Add-Content $log
+
 # Warm-up: a fresh install can take a first-run path that relaunches the process, and a relaunched
 # office host drops the document argument it was handed.  The smoke round of 2026-09-25 10:39Z saw the
 # debugged POWERPNT exit while an instance with a bare "Microsoft PowerPoint" title stayed alive, so
