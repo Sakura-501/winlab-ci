@@ -54,7 +54,11 @@ foreach ($f in $files) {
         if ($now.Count -gt $before.Count) { $state = 'dump'; break }
     }
     $d = @(Get-ChildItem $dumps -Filter *.dmp -EA SilentlyContinue | Where-Object { $_.LastWriteTime -gt $t0 } | ForEach-Object { $_.Name + ':' + $_.Length })
-    ('{0,-30} state={1,-8} title={2} dumps={3} motw={4}' -f $f.Name, $state, $title, ($d -join ','), $z) | Add-Content $log
+    $pv = if ($title -match 'Protected View|受保护的视图') { 'PV=1' } else { 'PV=0' }
+    $mods = ''
+    try { $m = @(Get-Process -Id $p.Id -Module -EA SilentlyContinue | ForEach-Object { $_.ModuleName.ToLower() })
+          $mods = ('nmod=' + $m.Count + ' ppcore=' + [int]($m -contains 'ppcore.dll') + ' mso=' + [int]($m -contains 'mso.dll')) } catch { $mods = 'modprobe_fail' }
+    ('{0,-30} state={1,-8} {2} {3} title={4} dumps={5} motw={6}' -f $f.Name, $state, $pv, $mods, $title, ($d -join ','), $z) | Add-Content $log
     ('SUMMARY {0} state={1} dumps={2}' -f $f.Name, $state, $d.Count) | Add-Content (Join-Path $base ('out\' + $Tag + '_index.txt'))
     Get-Process -Id $p.Id -EA SilentlyContinue | Stop-Process -Force -EA SilentlyContinue
 }
