@@ -213,8 +213,9 @@ foreach ($f in $files) {
   $big = ([regex]::Matches($txt, '(?m)^r8=([89ABCDEF][0-9A-F]{15}|[1-9][0-9A-F]{15})')).Count
   $av  = ([regex]::Matches($txt, 'Access violation')).Count
   $titles = (@(Get-Process $exe -EA SilentlyContinue | ForEach-Object { $_.MainWindowTitle }) -join ' | ')
+  $flat = ($titles -replace '\s', '')
   $tm = 0
-  if ($titles -replace '\s' '' | Select-String -SimpleMatch ($f.BaseName) -Quiet) { $tm = 1 }
+  if ($flat -and $flat.IndexOf($f.BaseName, [StringComparison]::OrdinalIgnoreCase) -ge 0) { $tm = 1 }
   ('{0,-26} state={1,-11} FDS={2} NEG={3} CPY={4} r8big={5} av={6} dumps={7} titlematch={8} npp={9} titles={10}' -f `
     $f.Name, $st, $fds, $neg, $cpy, $big, $av, (@(Get-ChildItem $dumpsDir -Filter *.dmp -EA SilentlyContinue | Where-Object { $_.LastWriteTime -gt $t0 }).Count), `
     $tm, (@(Get-Process $exe -EA SilentlyContinue).Count), $titles) | Add-Content $log
