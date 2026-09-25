@@ -72,7 +72,9 @@ jobs:
             if (-not (Test-Path "$PWD\vm_t.pdb")) { "vm_t.pdb absent - skip"; continue }
             Copy-Item "$PWD\vm_t.pdb" "$PWD\t.pdb" -Force
           }
+          } else {
             if ($obj -ne 't') { Copy-Item "$obj.obj" t.obj -Force }
+          }
             $o = & .\mo11.exe t.pdb $c.dll $c.rva 2>&1 | Out-String
             "=== dll=$($c.tag) obj=$obj exit=$LASTEXITCODE ===" | Tee-Object -FilePath "out\log_$($c.tag)_$obj.txt"
             $o | Tee-Object -FilePath "out\log_$($c.tag)_$obj.txt" -Append
