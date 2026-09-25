@@ -56,8 +56,10 @@ if (-not $cdb) { 'NO_CDB - falling back to a plain launch sweep (no breakpoint c
 # ---- signature anchors (x64) ----
 $SIG = [ordered]@{
   FVAL   = '48895C2418885424105556574154415541564157488DAC24'
-  TVCTOR = '4533C9C6411801488D05A6D459014C894908488901448AC2'
-  DROP   = '4883C120E9E7E576009090909090909090909090488BC448'
+  # `??` = any byte: the lea's rip displacement is link-order dependent.
+  TVCTOR = '4533C9C6411801488D05????????4C894908488901448AC2'
+  # thunk: `add rcx,0x20` then jmp <shared removal routine> (target = rel32, wildcarded)
+  DROP   = '4883C120E9????????909090909090909090909090488BC448'
   ONT    = '40555356574154415541564157488BEC4883EC584C8BFA4C'
 }
 $bytes = [IO.File]::ReadAllBytes($pcd)
@@ -72,15 +74,34 @@ for ($i = 0; $i -lt [BitConverter]::ToInt16($bytes, $peOff + 6); $i++) {
 }
 $latin = [Text.Encoding]::GetEncoding(28591).GetString($bytes)
 $rv = @{}
+function Find-Sig([string]$hexstr) {
+  $bts = @()
+  for ($j = 0; $j -lt $hexstr.Length; $j += 2) {
+    $pair = $hexstr.Substring($j, 2)
+    if ($pair -eq '??') { $bts += -1 } else { $bts += [Convert]::ToInt32($pair, 16) }
+  }
+  $lit = ''
+  foreach ($v in $bts) { if ($v -lt 0) { break }; $lit += [char]$v }
+  $from = 0
+  while ($true) {
+    $c = $script:latin.IndexOf($lit, $from, [StringComparison]::Ordinal)
+    if ($c -lt 0) { return -1 }
+    $ok = $true
+    for ($m = 0; $m -lt $bts.Count; $m++) {
+      if ($bts[$m] -ge 0 -and [int][byte]$script:bytes[$c + $m] -ne $bts[$m]) { $ok = $false; break }
+    }
+    if ($ok) { return $c }
+    $from = $c + 1
+  }
+}
 foreach ($k in $SIG.Keys) {
-  $pat = ''
-  for ($j = 0; $j -lt $SIG[$k].Length; $j += 2) { $pat += [char][Convert]::ToInt32($SIG[$k].Substring($j, 2), 16) }
-  $idx = $latin.IndexOf($pat, [StringComparison]::Ordinal)
+  $idx = Find-Sig $SIG[$k]
   if ($idx -lt 0) { "SIGMISS $k" | Add-Content $log; continue }
   $rv[$k] = $textVa + ($idx - $textRaw)
   ("SIG {0} fileoff=0x{1:X} rva=0x{2:X}" -f $k, $idx, $rv[$k]) | Add-Content $log
 }
-if ($rv.Count -lt 2) { 'ANCHOR_FAIL' | Add-Content $log; exit 1 }
+"armed=$($rv.Keys -join ',')" | Add-Content $log
+if (-not $rv.ContainsKey('FVAL')) { 'ANCHOR_FAIL (validator entry itself not anchored)' | Add-Content $log; Get-Content $log; exit 1 }
 
 # ---- page heap + WER dumps ----
 $g = @('C:\Program Files (x86)\Windows Kits\10\Debuggers\x64\gflags.exe') + @((Get-ChildItem 'C:\Program Files (x86)\Windows Kits\10\Debuggers' -Recurse -Filter gflags.exe -EA SilentlyContinue | ForEach-Object FullName)) | Where-Object { Test-Path $_ } | Select-Object -First 1
