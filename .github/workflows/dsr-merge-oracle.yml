@@ -27,7 +27,7 @@ jobs:
         (echo int data_x=7;)> t.c
         (echo int __declspec(noinline^) tiny(int p^){ return p + data_x; })>> t.c
         cl /nologo /FS /Zi /Gy /O2 /c t.c
-dir t.pdb
+        dir t.pdb
     - name: Patch evil variant
       shell: pwsh
       run: |
