@@ -68,6 +68,10 @@ jobs:
         $n = @(Get-ChildItem carriers_h -File).Count
         "carriers=$n"
         if ($n -lt 12) { throw "carrier generation failed ($n)" }
+        python ppseed\eml_from_htm.py carriers_h carriers_e
+        $e = @(Get-ChildItem carriers_e -Filter *.eml -File).Count
+        "eml_carriers=$e"
+        if ($e -ne $n) { throw "eml wrapping lost files ($e of $n)" }
     - name: Probe the div/span length path in PowerPoint
       continue-on-error: true
       shell: pwsh
@@ -78,11 +82,16 @@ jobs:
       shell: pwsh
       run: |
         pwsh -NoProfile -ExecutionPolicy Bypass -File ppseed\mso_html_len_probe.ps1 -Dir carriers_h -Tag htmllenwd -App WINWORD.EXE -Base (Get-Location).Path -WaitSec 200 -NameFilter "^(h01_plain|h1[2-9].*|h2[0-9].*|h3[0-7].*)$" -MaxCases 8
+    - name: Probe the same HTML bodies as an inbound message (.eml, no Protected View)
+      continue-on-error: true
+      shell: pwsh
+      run: |
+        pwsh -NoProfile -ExecutionPolicy Bypass -File ppseed\mso_html_len_probe.ps1 -Dir carriers_e -Ext .eml -Tag htmllenol -App OUTLOOK.EXE -Base (Get-Location).Path -WaitSec 200 -NameFilter "^(h01_plain|h1[2-9].*|h2[0-9].*|h3[0-7].*)$" -MaxCases 10
     - name: Report
       shell: pwsh
       if: always()
       run: |
-        foreach ($t in @('htmllenpp','htmllenwd')) {
+        foreach ($t in @('htmllenpp','htmllenwd','htmllenol')) {
           $f = "out\$($t)_log.txt"
           "##### $t"
           if (Test-Path $f) { Get-Content $f | Select-String 'SIG |TRY |state=|ANCHOR|NO_CDB|dump_total|GlobalFlag|cases=|msoPath|DUMP_CHANNEL|INSTRUMENT' } else { "missing" }

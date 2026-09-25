@@ -19,7 +19,8 @@ param([string]$Dir = 'carriers_h',
       [string]$App = 'POWERPNT.EXE',
       [int]$WaitSec = 110,
       [int]$MaxCases = 0,
-      [string]$NameFilter = '')
+      [string]$NameFilter = '',
+      [string]$Ext = '.htm,.html,.mht,.mhtml')
 $ErrorActionPreference = 'Continue'
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $root = 'C:\Program Files\Microsoft Office\root\Office16'
@@ -166,7 +167,8 @@ Start-Process -FilePath 'C:\Program Files\PowerShell\7\pwsh.exe' -ArgumentList '
 "GlobalFlag=$((Get-ItemProperty $k -Name GlobalFlag -EA SilentlyContinue).GlobalFlag)" | Add-Content $log
 
 if (-not [IO.Path]::IsPathRooted($Dir)) { $Dir = Join-Path $base $Dir }
-$files = @(Get-ChildItem $Dir -File -EA SilentlyContinue | Where-Object { $_.Extension -in '.htm','.html','.mht','.mhtml' } | Sort-Object Name)
+$exts = @($Ext.Split(',') | ForEach-Object { $_.Trim() })
+$files = @(Get-ChildItem $Dir -File -EA SilentlyContinue | Where-Object { $exts -contains $_.Extension } | Sort-Object Name)
 if ($NameFilter) { $files = @($files | Where-Object { $_.BaseName -match $NameFilter }) }
 "cases=$($files.Count) dir=$Dir pwd=$((Get-Location).Path)" | Add-Content $log
 if ($MaxCases -gt 0 -and $files.Count -gt $MaxCases) {
@@ -221,7 +223,12 @@ foreach ($f in $files) {
   # switch the network source off.
   $symLocal = Join-Path $env:TEMP ('sym_' + $Tag)
   New-Item -ItemType Directory -Force -Path $symLocal | Out-Null
-  $cdbArgs = @('-y', $symLocal, '-cf', $cmdf, $appPath, ('"' + $f.FullName + '"'))
+  # `.eml` has no Office default association on a fresh install; the registered handler is
+  # HKCR:\Outlook.File.eml.15\shell\open\command = OUTLOOK.EXE /eml "%1", so the wave passes that verb
+  # explicitly (AGENTS 61: name the application when the association is absent) rather than ShellExecute.
+  $caseArg = '"' + $f.FullName + '"'
+  if ($exe -eq 'OUTLOOK') { $caseArg = '/eml "' + $f.FullName + '"' }
+  $cdbArgs = @('-y', $symLocal, '-cf', $cmdf, $appPath, $caseArg)
   $p = Start-Process -FilePath $cdbExe -ArgumentList $cdbArgs -PassThru -WindowStyle Hidden `
        -RedirectStandardOutput $stdout -RedirectStandardError ($stdout + '.err')
   $st = 'timeout'

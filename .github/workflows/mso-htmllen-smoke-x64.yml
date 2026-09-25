@@ -69,16 +69,23 @@ jobs:
         $n = @(Get-ChildItem carriers_h -File).Count
         "carriers=$n"
         if ($n -lt 12) { throw "carrier generation failed ($n)" }
+        python ppseed\eml_from_htm.py carriers_h carriers_e
+        "eml_carriers=" + @(Get-ChildItem carriers_e -Filter *.eml -File).Count
     - name: Probe the div/span length path in PowerPoint
       continue-on-error: true
       shell: pwsh
       run: |
         pwsh -NoProfile -ExecutionPolicy Bypass -File ppseed\mso_html_len_probe.ps1 -Dir carriers_h -Tag htmllenpp -App POWERPNT.EXE -Base (Get-Location).Path -WaitSec 240 -NameFilter "^h01_plain$"
+    - name: Probe one message through Outlook
+      continue-on-error: true
+      shell: pwsh
+      run: |
+        pwsh -NoProfile -ExecutionPolicy Bypass -File ppseed\mso_html_len_probe.ps1 -Dir carriers_e -Ext .eml -Tag htmllenol -App OUTLOOK.EXE -Base (Get-Location).Path -WaitSec 240 -NameFilter "^h01_plain$"
     - name: Report
       shell: pwsh
       if: always()
       run: |
-        foreach ($t in @('htmllenpp','htmllenwd')) {
+        foreach ($t in @('htmllenpp','htmllenol')) {
           $f = "out\$($t)_log.txt"
           "##### $t"
           if (Test-Path $f) { Get-Content $f | Select-String 'SIG |TRY |state=|ANCHOR|NO_CDB|dump_total|GlobalFlag|cases=|msoPath|DUMP_CHANNEL|INSTRUMENT|cdb=|PARSE' } else { "missing" }
