@@ -127,6 +127,22 @@ jobs:
         $many = $xh + '<div class=Slide>'
         foreach ($k in 1..12) { $many += '<a:itx a:val="' + ('C' * (40 + 16 * $k)) + '"></a:itx>' }
         $recs += ,($many + '</div></body></html>')
+        # FCommitDivSpanCore needs a <span> inside the <div> it commits, so the length-pair records now
+        # also come in a div+span shape, and the xml-item slots are fed by OOXML property bags
+        # (`<xml>...<o:tag o:attr="...">`), not by HTML attributes -- both families are added.
+        foreach ($p in $pairs) {
+          $n1 = [int]$p[0]; $n2 = [int]$p[1]
+          $recs += ,($xh + '<div class=Slide><span style="mso-ansi-font-size:10pt">' + ('D' * $n1) + '</span></div>' +
+                     '<div class=Slide><span>' + ('E' * $n2) + '</span></div></body></html>')
+          $bag = '<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word" xmlns="http://www.w3.org/TR/REC-html40"><head>' +
+                 '<!--[if gte mso 9]><xml><w:WordDocument><w:View>a</w:View><w:Val>' + ('F' * $n1) + '</w:Val></w:WordDocument></xml><![endif]-->' +
+                 '<!--[if gte mso 9]><xml><w:WordDocument><w:Zoom>100</w:Zoom><w:Val>' + ('G' * $n2) + '</w:Val></w:WordDocument></xml><![endif]-->' +
+                 '</head><body><div class=Slide><span>h</span></div></body></html>'
+          $recs += ,$bag
+        }
+        $recs += ,('<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns="http://www.w3.org/TR/REC-html40">' +
+                   '<?xml namespace="urn:s"?><?xml namespace="urn:s' + ('H' * 60) + '"?>' +
+                   '<head><title>pi</title></head><body><div class=Slide><span>q</span></div></body></html>')
         $fs = [IO.File]::Create("$PWD\corpus\xmlitem.txt")
         $nrec = 0
         foreach ($body in $recs) {
@@ -135,7 +151,7 @@ jobs:
           $fs.Write($l, 0, $l.Length); $fs.Write($b, 0, $b.Length); $nrec++
         }
         $fs.Close()
-        "xmlitem_records=$nrec bytes=" + (Get-Item corpus\xmlitem.txt).Length
+                "xmlitem_records=$nrec bytes=" + (Get-Item corpus\xmlitem.txt).Length
         if ($nrec -lt 18) { throw "xml-item corpus not materialized ($nrec)" }
         if ((Get-Item corpus\mime25.txt).Length -lt 100000) { throw 'MIME tail family not materialized' }
 
@@ -197,6 +213,12 @@ jobs:
           'bu mso98win32client+0x1e9a2f ".echo REQ;r;dq @r9 l1;g"',
           'bu mso98win32client+0x1e9a32 ".echo AFTERGATE;r;dq @r9 l1;g"',
           'bu mso98win32client+0x1e9aa8 ".echo GROWN;r;g"',
+          'bu mso+0x3E95E8 ".echo FDS;g"',
+          'bu mso+0x3E975A ".echo NEG;r;g"',
+          'bu mso+0x3E97D0 ".echo CPY;r;g"',
+          'sxe ld:mso.dll',
+          'g',
+          '.echo ====MSO_MAPPED',
           'bl',
           'g',
           '.echo ====XIN_END',
