@@ -122,7 +122,12 @@ foreach ($f in $files) {
   Set-Content -Path $f.FullName -Stream Zone.Identifier -Value "[ZoneTransfer]`r`nZoneId=3" -Encoding ASCII
   # runner is single-tenant: clear every POWERPNT instance so the document cannot be relayed to a
   # surviving instance (measured 2026-09-25 run 36103535396: 8/10 cases reported another case's title)
-  Get-Process POWERPNT -EA SilentlyContinue | Stop-Process -Force -EA SilentlyContinue
+  # Instance recycling: a forced kill marks the next launch as a failed startup (Office then takes
+  # the Resiliency path), and the previous document's window title otherwise leaks into this row.
+  Get-Process POWERPNT -EA SilentlyContinue | ForEach-Object { [void]$_.CloseMainWindow() }
+  Start-Sleep -Seconds 3
+  Get-Process POWERPNT -EA SilentlyContinue | Where-Object { $_.StartTime -lt (Get-Date).AddSeconds(-5) } | Stop-Process -Force -EA SilentlyContinue
+  Remove-Item 'HKCU:\SOFTWARE\Microsoft\Office\16.0\PowerPoint\Resiliency' -Recurse -Force -EA SilentlyContinue
   Start-Sleep -Seconds 2
   $modes = @('open')
   if ($Show -and $f.Extension -ne '.ppsx') { $modes += 'show' }   # a .ppsx already launches the show on open
@@ -176,6 +181,10 @@ foreach ($f in $files) {
     $newd = @(Get-ChildItem $dumpsDir -Filter *.dmp -EA SilentlyContinue | Where-Object { $_.LastWriteTime -gt $t0 } | ForEach-Object { $_.Name })
     ('{0,-24} mode={1,-5} state={2,-11} FVAL={3} TVCTOR={4} DROP={5} ONT={6} dl0={7} av={8} dumps={9}' -f `
         $f.Name, $m, $st, $cnt['FVAL'], $cnt['TVCTOR'], $cnt['DROP'], $cnt['ONT'], $dl0, $av, ($newd -join ',')) | Add-Content $log
+    $t2 = (@(Get-Process POWERPNT -EA SilentlyContinue | ForEach-Object { $_.MainWindowTitle }) -join ' | ') -replace '\s',''
+    $tm2 = 0
+    if ($t2 -and $t2.IndexOf($f.BaseName, [StringComparison]::OrdinalIgnoreCase) -ge 0) { $tm2 = 1 }
+    ('{0,-24} mode={1,-5} attribution npp={2} titlematch={3} titles={4}' -f $f.Name, $mode, (@(Get-Process POWERPNT -EA SilentlyContinue).Count), $tm2, $t2) | Add-Content $log
   }
 }
 if ($g) { & $g /p /disable POWERPNT.EXE | Out-Null }
