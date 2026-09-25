@@ -185,6 +185,18 @@ foreach ($f in $files) {
   Get-Process $exe -EA SilentlyContinue | Where-Object { $_.StartTime -gt $t0.AddSeconds(-3) } | Stop-Process -Force -EA SilentlyContinue
   Start-Sleep -Seconds 1
   Get-Process -Id $p.Id -EA SilentlyContinue | Stop-Process -Force -EA SilentlyContinue
+  # Screen capture per case (AGENTS 58): a "no hit" reading is meaningless if the document never
+  # actually opened and rendered, so the frame is archived next to the counter line.
+  try {
+    Add-Type -AssemblyName System.Windows.Forms,System.Drawing -EA SilentlyContinue
+    $bnd = [System.Windows.Forms.SystemInformation]::VirtualScreen
+    $bmp = New-Object System.Drawing.Bitmap $bnd.Width, $bnd.Height
+    $gg = [System.Drawing.Graphics]::FromImage($bmp)
+    $gg.CopyFromScreen($bnd.Location, [System.Drawing.Point]::Empty, $bnd.Size)
+    $shot = Join-Path $base ('out\shot_' + $Tag + '_' + $f.BaseName + '.png')
+    $bmp.Save($shot, [System.Drawing.Imaging.ImageFormat]::Png)
+    $gg.Dispose(); $bmp.Dispose()
+  } catch { 'SHOT_FAIL ' + $_.Exception.Message | Add-Content $log }
   $txt = ''
   if (Test-Path $stdout) { $txt = Get-Content $stdout -Raw }
   $fds = ([regex]::Matches($txt, '(?m)^FDS')).Count
