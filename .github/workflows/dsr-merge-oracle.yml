@@ -71,7 +71,7 @@ jobs:
         )
         $dll = "$PWD\dsr_x64_B.dll"
         foreach ($c in $cases) {
-          Copy-Item $c.objfile t.obj -Force
+          if ($c.objfile -ne (Join-Path $PWD "t.obj")) { Copy-Item $c.objfile t.obj -Force }
           Copy-Item $c.pdb t_use.pdb -Force
           $o = & "$PWD\mo11.exe" "$PWD\t_use.pdb" $dll 'BFBF0' 2>&1 | Out-String
           $line = "=== case=$($c.obj) exit=$LASTEXITCODE ==="
