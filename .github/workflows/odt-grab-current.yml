@@ -30,7 +30,7 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path pack | Out-Null
-          foreach ($m in @('wwlib.dll','Wordcnv.dll','excel.exe','oart.dll','CHART.DLL','mso.dll','ppcore.dll','MSOSPECTRE.DLL','OLMAPI32.DLL','onmain.DLL','VVIEWER.DLL')) {
+          foreach ($m in @('wwlib.dll','Wordcnv.dll','excel.exe','oart.dll','CHART.DLL','mso.dll','ppcore.dll','MSOSPECTRE.DLL','OLMAPI32.DLL','onmain.DLL','VVIEWER.DLL','Mso98win32client.dll','Mso20win32client.dll','GFX.dll')) {
             $src = "C:\Program Files\Microsoft Office\root\Office16\$m"
             if (-not (Test-Path $src)) { $src = Get-ChildItem "C:\Program Files\Microsoft Office\root\vfs\ProgramFilesCommonX64" -Recurse -Filter $m -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName }
             if ($src -and (Test-Path $src)) { Copy-Item $src "pack\$m" -Force }
