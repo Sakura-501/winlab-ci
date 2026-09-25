@@ -21,7 +21,8 @@ param([string]$Dir = 'carriers_h',
       [int]$MaxCases = 0,
       [string]$NameFilter = '',
       [string]$Ext = '.htm,.html,.mht,.mhtml',
-      [switch]$NoCdb)
+      [switch]$NoCdb,
+      [int]$Stops = 400)
 $ErrorActionPreference = 'Continue'
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $root = 'C:\Program Files\Microsoft Office\root\Office16'
@@ -456,7 +457,11 @@ foreach ($f in $files) {
   # "No runnable debuggees" from the first stop onward, i.e. the debugged POWERPNT had exited.
   # `.lastevent` on each stop records which event ended the run (exit code vs breakpoint vs exception)
   # so an early exit cannot be read as "the code path was not reached".
-  for ($i = 0; $i -lt 8; $i++) { $c += '.echo ====STOP'; $c += '.lastevent'; $c += 'g' }
+  # `q` at the end of the command file terminates the debuggee, so the resume ladder has to be long
+  # enough to outlast the whole document open.  Run 36154668572 exhausted 8 lines while WINWORD had
+  # already mapped mso (`loaded=1`) but had not parsed the carrier yet (`TAGS=0 LEX=0`, and the process
+  # was gone by the sample point: `npp=0`), which made every zero an instrument-side zero.
+  for ($i = 0; $i -lt $Stops; $i++) { $c += '.echo ====STOP'; $c += '.lastevent'; $c += 'g' }
   $c += '.echo ====LADDER_END'
   $c += 'bl'
   # The xml-item reuse gate: armed last, and deferred (`bu`) so it resolves whenever that module is
@@ -470,7 +475,7 @@ foreach ($f in $files) {
     $c += ("bu {1}+0x{0:X} `".echo GROWN;r;g`"" -f $rvX['XGROWN'], $modTokX)
     $c += 'bl'
     $c += 'g'
-    for ($i = 0; $i -lt 8; $i++) { $c += '.echo ====XSTOP'; $c += '.lastevent'; $c += 'g' }
+    for ($i = 0; $i -lt $Stops; $i++) { $c += '.echo ====XSTOP'; $c += '.lastevent'; $c += 'g' }
     $c += '.echo ====XML_END'
     $c += 'bl'
   }
