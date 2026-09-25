@@ -85,6 +85,11 @@ jobs:
         python ppseed\eml_from_htm.py carriers_x carriers_xe
         "xcarriers=" + @(Get-ChildItem carriers_x -Filter *.htm).Count + " eml=" + @(Get-ChildItem carriers_xe -Filter *.eml).Count
         pwsh -NoProfile -ExecutionPolicy Bypass -File ppseed\mso_html_len_probe.ps1 -Dir carriers_x -Ext .htm -Tag passivex -App POWERPNT.EXE -Base (Get-Location).Path -WaitSec 120 -NoCdb
+    - name: Open the length pairs in Word (Protected View state recorded, mechanism only)
+      continue-on-error: true
+      shell: pwsh
+      run: |
+        pwsh -NoProfile -ExecutionPolicy Bypass -File ppseed\mso_html_len_probe.ps1 -Dir carriers_x -Ext .htm -Tag passivewd -App WINWORD.EXE -Base (Get-Location).Path -WaitSec 120 -NoCdb
     - name: Open the same bodies as an inbound message, page heap only
       continue-on-error: true
       shell: pwsh
@@ -94,7 +99,7 @@ jobs:
       shell: pwsh
       if: always()
       run: |
-        foreach ($t in @('passivex','passiveol')) {
+        foreach ($t in @('passivex','passiveol','passivewd')) {
           $f = "out\$($t)_log.txt"
           "##### $t"
           if (Test-Path $f) { Get-Content $f | Select-String 'SIG |TRY |state=|ANCHOR|NO_CDB|dump_total|GlobalFlag|cases=|msoPath|DUMP_CHANNEL|INSTRUMENT|cdb=|PARSE' } else { "missing" }
