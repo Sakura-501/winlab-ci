@@ -188,7 +188,13 @@ foreach ($f in $files) {
   Set-Content -LiteralPath $cmdf -Value $c -Encoding ASCII
   $t0 = Get-Date
   $stdout = Join-Path $base ('out\' + $f.BaseName + '.log')
-  $p = Start-Process -FilePath $cdbExe -ArgumentList @('-cf', $cmdf, $appPath, ('"' + $f.FullName + '"')) -PassThru -WindowStyle Hidden `
+  # The shipped default symbol path on the runner is `srv*`; a network symbol probe at every module
+  # load is what left cdb sitting before the initial breakpoint.  Point it at an empty local dir and
+  # switch the network source off.
+  $symLocal = Join-Path $env:TEMP ('sym_' + $Tag)
+  New-Item -ItemType Directory -Force -Path $symLocal | Out-Null
+  $cdbArgs = @('-y', $symLocal, '-netsrc:0', '-cf', $cmdf, $appPath, ('"' + $f.FullName + '"'))
+  $p = Start-Process -FilePath $cdbExe -ArgumentList $cdbArgs -PassThru -WindowStyle Hidden `
        -RedirectStandardOutput $stdout -RedirectStandardError ($stdout + '.err')
   $st = 'timeout'
   for ($i = 0; $i * 3 -lt $WaitSec; $i++) {
