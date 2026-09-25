@@ -72,12 +72,12 @@ jobs:
       continue-on-error: true
       shell: pwsh
       run: |
-        pwsh -NoProfile -ExecutionPolicy Bypass -File ppseed\mso_html_len_probe.ps1 -Dir carriers_h -Tag htmllenpp -App POWERPNT.EXE -Base (Get-Location).Path -WaitSec 200 -NameFilter "^(h01_plain|h1[2-9]|h2[0-9]|h3[0-7])$"
+        pwsh -NoProfile -ExecutionPolicy Bypass -File ppseed\mso_html_len_probe.ps1 -Dir carriers_h -Tag htmllenpp -App POWERPNT.EXE -Base (Get-Location).Path -WaitSec 200 -NameFilter "^(h01_plain|h1[2-9].*|h2[0-9].*|h3[0-7].*)$"
     - name: Probe the div/span length path in Word
       continue-on-error: true
       shell: pwsh
       run: |
-        pwsh -NoProfile -ExecutionPolicy Bypass -File ppseed\mso_html_len_probe.ps1 -Dir carriers_h -Tag htmllenwd -App WINWORD.EXE -Base (Get-Location).Path -WaitSec 200 -NameFilter "^(h01_plain|h1[2-9]|h2[0-9]|h3[0-7])$" -MaxCases 8
+        pwsh -NoProfile -ExecutionPolicy Bypass -File ppseed\mso_html_len_probe.ps1 -Dir carriers_h -Tag htmllenwd -App WINWORD.EXE -Base (Get-Location).Path -WaitSec 200 -NameFilter "^(h01_plain|h1[2-9].*|h2[0-9].*|h3[0-7].*)$" -MaxCases 8
     - name: Report
       shell: pwsh
       if: always()
