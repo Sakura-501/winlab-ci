@@ -74,6 +74,9 @@ def timing_xml(spids, bad=99001, opts=()):
 
     cond_tgt = '<p:tgtEl><p:spTgt spid="%d"/></p:tgtEl>' % bad if "bad_cond" in opts else "<p:tgtEl><p:sldTgt/></p:tgtEl>"
     sub = ""
+    if "sub" in opts:
+        kind = opts["sub"]
+        sub = '<p:subTnLst><p:par>%s</p:par></p:subTnLst>' % sub_par_inner(kind, good, bad)
     if "subTnLst" in opts:
         sub = '<p:subTnLst><p:par><p:cTn id="40" fill="hold"><p:stCondLst><p:cond delay="0"/></p:stCondLst><p:childTnLst>%s</p:childTnLst></p:cTn></p:par></p:subTnLst>' % behavior_set(41, bad)
 
@@ -106,7 +109,53 @@ def add_shapes(prs, n=2, dup=False):
     return ids
 
 
+def _cond(i, delay="0"):
+    return '<p:cTn id="%d" fill="hold"><p:stCondLst><p:cond delay="%s"/></p:stCondLst>' % (i, delay)
+
+
+def sub_par_inner(kind, good, bad):
+    """Sub-effect body matching the branches where the visitor calls TLTimeNode::Delete(node, nullptr)."""
+    if kind == "empty":
+        # sub-effect with no media and no behaviour anywhere below it (assert tag 406238)
+        return _cond(61) + "<p:childTnLst/></p:cTn>"
+    if kind == "wrongbhvr":
+        # effect on a live target whose behaviour is a call command (assert tag 406239)
+        return (_cond(62) + "<p:childTnLst>"
+                '<p:cmd type="call" cmd="jumpToURL"><p:cBhvr>'
+                '<p:cTn id="63" dur="1"><p:stCondLst><p:cond delay="0"/></p:stCondLst></p:cTn>'
+                '<p:tgtEl><p:spTgt spid="%d"/></p:tgtEl>'
+                "<p:attrNameLst><p:attrName>cUM</p:attrName></p:attrNameLst>"
+                "</p:cBhvr></p:cmd></p:childTnLst></p:cTn>") % good
+    if kind == "media":
+        # media node whose target shape id exists but carries no media part (FIsValidMedia false)
+        return (_cond(64) + "<p:childTnLst>"
+                "<p:video><p:cMediaNode vol=\"80000\">"
+                '<p:cTn id="65" fill="hold" display="0"><p:stCondLst><p:cond delay="indefinite"/></p:stCondLst></p:cTn>'
+                '<p:tgtEl><p:spTgt spid="%d"/></p:tgtEl></p:cMediaNode></p:video>'
+                "</p:childTnLst></p:cTn>") % bad
+    if kind == "dangling_sub":
+        # sub-effect whose own behaviour target id resolves to nothing (assert tags 406240/406241)
+        return (_cond(66) + "<p:childTnLst>"
+                '<p:set><p:cBhvr><p:cTn id="67" dur="1" fill="hold">'
+                '<p:stCondLst><p:cond delay="0"/></p:stCondLst></p:cTn>'
+                '<p:tgtEl><p:spTgt spid="%d"/></p:tgtEl>'
+                "<p:attrNameLst><p:attrName>style.visibility</p:attrName></p:attrNameLst>"
+                "</p:cBhvr><p:to><p:strVal val=\"visible\"/></p:to></p:set>"
+                "</p:childTnLst></p:cTn>") % bad
+    return '<p:cTn id="68" fill="hold"/>'
+
+
+VARIANT_KINDS = ("empty", "wrongbhvr", "media", "dangling_sub")
+
 VARIANTS = {
+    "t11_sub_empty": {"sub": "empty"},
+    "t12_sub_wrongbhvr": {"sub": "wrongbhvr"},
+    "t13_sub_media": {"sub": "media"},
+    "t14_sub_dangling": {"sub": "dangling_sub"},
+    "t15_sub_empty_deep": {"sub": "empty", "deep": 1},
+    "t16_sub_empty_autostart": {"sub": "empty", "autostart": 1},
+    "t17_sub_dangling_autostart": {"sub": "dangling_sub", "autostart": 1},
+    "t18_sub_media_autostart": {"sub": "media", "autostart": 1},
     "t01_ctl_valid": {},
     "t02_bad_beh": {"bad_beh": 1},
     "t03_bad_beh_deep": {"bad_beh": 1, "deep": 1},
