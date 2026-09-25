@@ -142,6 +142,31 @@ def build(outdir):
     files["h30_div_in_div_in_li.htm"] = deck([[('<li><div class=Slide><div>' + li("d") +
                                                 '</div>' + li("e") + '</div></li>')], [li("h")]])
 
+    # ---- cross-commit nesting: the div/span commit loop consumes tokens itself, so a nested
+    # element that has its OWN commit routine (applet / script / webbot / object / xml PI) advancing
+    # the same lexer is the shape most likely to make the outer loop's saved position stale.
+    files["h31_div_applet_text.htm"] = deck([[('<div class=Slide>' + run("before") +
+                                               '<applet code="X.class" width="10" height="10">a</applet>' +
+                                               run("after applet") + '</div>' + li("tail"))], [li("t1")]])
+    files["h32_div_script_text.htm"] = deck([[('<div class=Slide>' + run("pre") +
+                                               '<script type="text/javascript">var x=1;</script>' +
+                                               run("after script") + '</div>')], [li("t2")]])
+    files["h33_div_webbot_text.htm"] = deck([[('<div class=Slide>' + run("prewb") +
+                                               '<webbot bot="HTMLForm" startspan --><input name=x>' +
+                                               '<webbot bot="HTMLForm" endspan i-checksum="0">' +
+                                               run("after webbot") + '</div>')], [li("t3")]])
+    files["h34_div_object_text.htm"] = deck([[('<div class=Slide>' + run("preobj") +
+                                               '<object classid="clsid:00021A01-0000-0000-C000-000000000046"></object>' +
+                                               run("after object") + '</div>')], [li("t4")]])
+    files["h35_div_xmlpi_text.htm"] = deck([[('<div class=Slide><?xml namespace="urn:s"?>' +
+                                              run("after pi") + '</div>')], [li("t5")]])
+    files["h36_applet_in_div_in_div.htm"] = deck([[('<div class=Slide><div>' + run("inner") +
+                                                    '<applet code="Y.class"></applet>' + run("inner2") +
+                                                    '</div>' + run("outer2") + '</div>')], [li("t6")]])
+    files["h37_div_script_in_li.htm"] = deck([[('<li><div class=Slide>' + run("a") +
+                                                '<script>var y=2;</script>' + run("b") + '</div></li>')],
+                                              [li("t7")]])
+
     many = [li("item %d" % k, 1 + (k % 4)) for k in range(40)]
     files["h10_many_items.htm"] = deck([many, [li("end")]])
 
