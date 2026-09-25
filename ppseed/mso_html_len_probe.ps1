@@ -15,7 +15,7 @@ param([string]$Dir = 'carriers_h',
 $ErrorActionPreference = 'Continue'
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $root = 'C:\Program Files\Microsoft Office\root\Office16'
-$app  = Join-Path $root $App
+$appPath = Join-Path $root $App
 # mso.dll is not under root\Office16: C2R lays the shared core down under the virtualized
 # ProgramFilesCommon view, so resolve it by candidate path first and then by a bounded search.
 $msoCand = @(
@@ -33,7 +33,10 @@ if (-not $mso) {
          Sort-Object Length -Descending | Select-Object -First 1
 }
 $msoPath = if ($mso) { $mso.FullName } else { 'missing' }
-if ($App -notmatch '\.EXE$') { $app = Get-ChildItem $root -Filter $App -EA SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName }
+# PowerShell variable names are case-insensitive: `$app` and the `$App` parameter were the same
+# variable, so the bare exe name got replaced by its full path and every downstream use
+# (gflags target, IFEO/WER key, Stop-Process image name) silently received a path instead.
+if ($App -notmatch '\.EXE$') { $appPath = Get-ChildItem $root -Filter $App -EA SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName }
 $base = (Resolve-Path $Base).Path
 New-Item -ItemType Directory -Force -Path (Join-Path $base 'out'), (Join-Path $base 'dumps') | Out-Null
 $log = Join-Path $base ('out\' + $Tag + '_log.txt')
@@ -122,8 +125,12 @@ Copy-Item $cdb (Join-Path $priv 'cdb.exe') -Force
 Get-ChildItem (Split-Path $cdb) -Filter *.dll -EA SilentlyContinue | Copy-Item -Destination $priv -Force
 $cdbExe = Join-Path $priv 'cdb.exe'
 
-$g = Get-ChildItem 'C:\Program Files (x86)\Windows Kits\10\Debuggers' -Recurse -Filter gflags.exe -EA SilentlyContinue | Select-Object -First 1
-if ($g) { & $g.FullName /p /enable $App /full | Out-Null }
+$g = Get-ChildItem 'C:\Program Files (x86)\Windows Kits\10\Debuggers' -Recurse -Filter gflags.exe -EA SilentlyContinue |
+     Where-Object { $_.DirectoryName -match '\\(x64|amd64)$' } | Select-Object -First 1
+if (-not $g) { $g = Get-ChildItem 'C:\Program Files\Windows Kits\10\Debuggers' -Recurse -Filter gflags.exe -EA SilentlyContinue |
+     Where-Object { $_.DirectoryName -match '\\(x64|amd64)$' } | Select-Object -First 1 }
+if ($g) { & $g.FullName /p /enable $App /full | Out-Null; "gflags=$($g.FullName)" | Add-Content $log }
+else { 'GFLAGS_FAIL (page heap not armed; WER dumps still active)' | Add-Content $log }
 # WER owns LocalDumps; the IFEO copy is kept too because images differ, and the control below shows
 # which one actually produced a dump on this host.  Without that control a dumps=0 reading is
 # meaningless.
@@ -165,7 +172,7 @@ foreach ($f in $files) {
   Set-Content -LiteralPath $cmdf -Value $c -Encoding ASCII
   $t0 = Get-Date
   $stdout = Join-Path $base ('out\' + $f.BaseName + '.log')
-  $p = Start-Process -FilePath $cdbExe -ArgumentList @('-cf', $cmdf, $app, ('"' + $f.FullName + '"')) -PassThru -WindowStyle Hidden `
+  $p = Start-Process -FilePath $cdbExe -ArgumentList @('-cf', $cmdf, $appPath, ('"' + $f.FullName + '"')) -PassThru -WindowStyle Hidden `
        -RedirectStandardOutput $stdout -RedirectStandardError ($stdout + '.err')
   $st = 'timeout'
   for ($i = 0; $i * 3 -lt $WaitSec; $i++) {
