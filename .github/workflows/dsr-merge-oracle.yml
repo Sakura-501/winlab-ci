@@ -17,9 +17,11 @@ jobs:
       shell: pwsh
       run: |
         $vs = Get-ChildItem "C:\Program Files\Microsoft Visual Studio" -Recurse -Filter vcvarsall.bat -EA SilentlyContinue | Select-Object -First 1
-        "VCVARS=$($vs.FullName)" | Tee-Object env.txt
         $dia = Get-ChildItem "C:\Program Files\Microsoft Visual Studio" -Recurse -Filter dia2.h -EA SilentlyContinue | Select-Object -First 1
-        "DIAINC=$($dia.DirectoryName)" | Tee-Object -Append env.txt
+        Add-Content $env:GITHUB_ENV "VCVARS=$($vs.FullName)"
+        Add-Content $env:GITHUB_ENV "DIAINC=$($dia.DirectoryName)"
+        Write-Host "vcvars=$($vs.FullName)"
+        Write-Host "diainc=$($dia.DirectoryName)"
     - name: Compile object (cross ARM64, small section + relocs)
       shell: cmd
       run: |
