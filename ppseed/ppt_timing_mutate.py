@@ -59,10 +59,18 @@ def timing_xml(spids, bad=99001, opts=()):
     inner = behavior_set(6, tgt_for_behaviors) + behavior_anim(7, tgt_for_behaviors)
     if "bad_bld_only" in opts:
         inner = behavior_set(6, good) + behavior_anim(7, good)
-    node = '<p:cTn id="5" presetID="10" presetClass="entr" presetSubtype="0" fill="hold" grpId="0" nodeType="%s">%s<p:childTnLst>%s</p:childTnLst></p:cTn>' % (
+    insub = ""
+    if "inside_sub" in opts:
+        n = int(opts["inside_sub"])
+        insub = "<p:subTnLst>" + "".join(
+            '<p:par><p:cTn id="%d" fill="hold"><p:stCondLst><p:cond delay="0"/></p:stCondLst>'
+            '<p:childTnLst>%s</p:childTnLst></p:cTn></p:par>' % (200 + 3 * k, behavior_set(201 + 3 * k, bad + k))
+            for k in range(n)) + "</p:subTnLst>"
+    node = '<p:cTn id="5" presetID="10" presetClass="entr" presetSubtype="0" fill="hold" grpId="0" nodeType="%s">%s<p:childTnLst>%s</p:childTnLst>%s</p:cTn>' % (
         "afterEffect" if "autostart" in opts else "clickEffect",
         '<p:stCondLst><p:cond delay="0"/></p:stCondLst>',
         inner,
+        insub,
     )
     # nest the effect chain `depth` par levels deep
     cur = node
@@ -155,6 +163,9 @@ def sub_par_inner(kind, good, bad):
 VARIANT_KINDS = ("empty", "wrongbhvr", "media", "dangling_sub")
 
 VARIANTS = {
+    "t23_insub_dangling2": {"inside_sub": 2},
+    "t24_insub_dangling6": {"inside_sub": 6},
+    "t25_insub_dangling6_auto": {"inside_sub": 6, "autostart": 1},
     "t19_many_dangling8": {"many": 8},
     "t20_many_dangling16": {"many": 16},
     "t21_many_dangling3": {"many": 3},
