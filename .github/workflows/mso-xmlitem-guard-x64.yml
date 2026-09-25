@@ -173,13 +173,22 @@ jobs:
         $cdb = (Get-ChildItem 'C:\Program Files (x86)\Windows Kits\10\Debuggers\x64\cdb.exe','C:\Program Files\Windows Kits\10\Debuggers\x64\cdb.exe' -EA SilentlyContinue | Select-Object -First 1).FullName
         if (-not $cdb) { 'NO_CDB_ON_RUNNER'; exit 0 }
         $cf = Join-Path $PWD 'out\xin.cdb'
+        # `bl` printed `eu` in run 36133664347 because the anchors were queued before mso was mapped, so
+        # a zero-hit reading could not be told from an unbound instrument.  Stop on the module load first,
+        # arm the anchors with the module present, and print `bl` again; FDS (FCommitDivSpanCore's prologue,
+        # which bound in every earlier wave on this build) is the binding control.
         $lines = @(
           '.sympath()',
           'sxi e06d7363',
+          'sxi c004f013',
           'sxn av',
-          'bu mso+0x7f0b64 ".printf \"XIN n=%d C=%d\\n\", @edx, poi(@r9); g"',
-          'bu mso+0x7f0c72 ".printf \"XIN2 n=%d C=%d\\n\", @edx, poi(@r9); g"',
-          'bu mso+0x7f0cbe ".printf \"XIN3 n=%d C=%d\\n\", @edx, poi(@r9); g"',
+          'sxe ld:mso.dll',
+          'g',
+          '.echo ====MSO_MAPPED',
+          'bu mso+0x3E95E8 ".echo FDS; g"',
+          'bu mso+0x7f0b64 ".printf \\"XIN n=%d C=%d\\\\n\\", @edx, poi(@r9); g"',
+          'bu mso+0x7f0c72 ".printf \\"XIN2 n=%d C=%d\\\\n\\", @edx, poi(@r9); g"',
+          'bu mso+0x7f0cbe ".printf \\"XIN3 n=%d C=%d\\\\n\\", @edx, poi(@r9); g"',
           'bl',
           'g',
           '.echo ====XIN_END',
@@ -200,7 +209,11 @@ jobs:
         }
         "xin_reuse_decisions=$reused xin_writes_over_capacity=$bad"
         if ($o -match 'Unable to resolve') { 'CDB_ANCHOR_UNRESOLVED (readings above may be incomplete)' }
-        if ($hits.Count -eq 0) { 'XIN_NO_HITS: this caller path was not reached by these records' }
+        $fds = ([regex]::Matches($o, '(?m)^FDS')).Count
+        "fds_binding_control=" + $fds
+        if ($o -notmatch '====MSO_MAPPED') { 'CDB_NEVER_SAW_MSO_LOAD' }
+        if ($o -match 'Unable to resolve') { 'CDB_ANCHOR_UNRESOLVED_AFTER_LOAD' }
+        if ($hits.Count -eq 0) { 'XIN_NO_HITS fds=' + $fds }
         'XIN_STAGE_DONE'
       continue-on-error: true
 
