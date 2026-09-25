@@ -36,8 +36,8 @@ SLIDE = ('<div class=Slide%(extra)s><ul>'
 
 def li(text, lvl=1, style=""):
     st = (" style='%s'" % style) if style else ""
-    return ('<li style="mso-level-number-format:bullet;mso-ansi-level-percent-left:%d00%%"'
-            '%(st)s><span%(st2)s>%(t)s</span></li>') % (lvl, {"st": st, "st2": st, "t": text})
+    return ('<li style="mso-level-number-format:bullet;mso-ansi-level-percent-left:{pct}%"'
+            '{st}><span{st}>{t}</span></li>').format(pct=lvl * 100, st=st, t=text)
 
 
 def deck(items_by_slide, extra_by_slide=None):
