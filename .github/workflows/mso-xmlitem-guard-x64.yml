@@ -177,6 +177,9 @@ jobs:
         # a zero-hit reading could not be told from an unbound instrument.  Stop on the module load first,
         # arm the anchors with the module present, and print `bl` again; FDS (FCommitDivSpanCore's prologue,
         # which bound in every earlier wave on this build) is the binding control.
+        # Quote-free payloads: the \\"...\\" form was passed through verbatim and cdb rejected it as a
+        # malformed string (run 36134468010), so each payload now just echoes a marker, dumps registers
+        # and dereferences the pointer that carries the quantity of interest.
         $lines = @(
           '.sympath()',
           'sxi e06d7363',
@@ -185,10 +188,12 @@ jobs:
           'sxe ld:mso.dll',
           'g',
           '.echo ====MSO_MAPPED',
-          'bu mso+0x3E95E8 ".echo FDS; g"',
-          'bu mso+0x7f0b64 ".printf \\"XIN n=%d C=%d\\\\n\\", @edx, poi(@r9); g"',
-          'bu mso+0x7f0c72 ".printf \\"XIN2 n=%d C=%d\\\\n\\", @edx, poi(@r9); g"',
-          'bu mso+0x7f0cbe ".printf \\"XIN3 n=%d C=%d\\\\n\\", @edx, poi(@r9); g"',
+          'bu mso+0x3E95E8 ".echo FDS;g"',
+          'bu mso+0x3E975A ".echo NEG;r;g"',
+          'bu mso+0x3E97D0 ".echo CPY;r;g"',
+          'bu mso+0x7f0b64 ".echo XIN1;r;dq @r9 l1;g"',
+          'bu mso+0x7f0c72 ".echo XIN2;r;dq @r9 l1;g"',
+          'bu mso+0x7f0cbe ".echo XIN3;r;dq @r9 l1;g"',
           'bl',
           'g',
           '.echo ====XIN_END',
@@ -198,16 +203,40 @@ jobs:
         Get-Content $cf
         $o = & $cdb -cf $cf .\bin\gbx.exe msohtml corpus\xmlitem.txt 20 0 none life noskip slot=17 2>&1 | Out-String
         $o | Set-Content out\xin_cdb.txt
-        $hits = [regex]::Matches($o, 'XIN(\d)? n=(-?\d+) C=(-?\d+)')
-        "xin_records=" + $hits.Count
-        $bad = 0; $reused = 0
-        foreach ($h in $hits) {
-          $n = [int]$h.Groups[2].Value; $c = [int]$h.Groups[3].Value
-          if ($n + 1 -le $c) { $reused++ }
-          if ((2 * $n + 2) -gt $c) { $bad++ }
-          if ($bad -le 12) { "XIN_PAIR n=$n C=$c reuse_gate_passes=$($n + 1 -le $c) write_exceeds_cap=$((2 * $n + 2) -gt $c)" }
+        # Walk the marker blocks: each XIN block holds one `r` dump (rdx = the requested character count,
+        # r9 = &capacitySlot) followed by the qword read through r9 (low dword = the capacity in bytes).
+        $ln = $o -split "`n"
+        $pairs = @(); $neg = 0; $cpys = @()
+        for ($k = 0; $k -lt $ln.Count; $k++) {
+          if ($ln[$k] -notmatch '^\s*(XIN[123]|NEG|CPY|FDS)\s*$') { continue }
+          $tag = $Matches[1]
+          if ($tag -eq 'FDS') { continue }
+          $n = 0; $cap = 0
+          for ($m = $k; $m -lt [Math]::Min($k + 14, $ln.Count); $m++) {
+            if ($ln[$m] -match 'rdx=([0-9a-fA-F]+)' -and -not $n) { $n = [Convert]::ToInt64($Matches[1],16) }
+            if ($tag -like 'XIN*' -and $ln[$m] -match '^([0-9a-fA-F]+`?[0-9a-fA-F]*)\s+([0-9a-fA-F]{4,})') {
+              $cap = [Convert]::ToInt64(($Matches[2] -replace '[^0-9a-fA-F]','').Substring(0,8), 16) }
+            if ($tag -eq 'CPY' -and $ln[$m] -match 'r8=([0-9a-fA-F]+)') { $cpys += [Convert]::ToUInt64($Matches[1],16) }
+          }
+          if ($tag -eq 'NEG') { $neg++ }
+          if ($tag -like 'XIN*') { $pairs += ,@([int64]$n, [int64]$cap) }
         }
-        "xin_reuse_decisions=$reused xin_writes_over_capacity=$bad"
+        "fds_count="   + ([regex]::Matches($o, '(?m)^FDS')).Count
+        "neg_count="    + $neg
+        "cpys="         + $cpys.Count
+        "cpys_big="     + @($cpys | Where-Object { $_ -ge 0x8000000000000000 }).Count
+        "xin_requests=" + $pairs.Count
+        $bad = 0; $reuse = 0
+        foreach ($p in $pairs) {
+          $n = $p[0]; $c = $p[1]
+          $gate = ($n + 1) -le $c
+          $over = ((2 * $n + 2) -gt $c)
+          if ($gate) { $reuse++ }
+          if ($over) { $bad++ }
+          if ($bad -le 12) { "XIN_PAIR n=$n cap=$c reuse_gate_passes=$gate write2n2_exceeds_cap=$over" }
+          if ($gate -and $over) { "XIN_OOB_WINDOW n=$n cap=$c write=$((2*$n+2)) over=$((2*$n+2-$c))" }
+        }
+        "xin_reuse_decisions=$reuse xin_writes_over_capacity=$bad"
         if ($o -match 'Unable to resolve') { 'CDB_ANCHOR_UNRESOLVED (readings above may be incomplete)' }
         $fds = ([regex]::Matches($o, '(?m)^FDS')).Count
         "fds_binding_control=" + $fds
