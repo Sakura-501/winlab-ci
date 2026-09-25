@@ -209,20 +209,35 @@ else { 'GFLAGS_FAIL (page heap not armed; WER dumps still active)' | Add-Content
 # which one actually produced a dump on this host.  Without that control a dumps=0 reading is
 # meaningless.
 $exeNoExt = $App -replace '\.EXE$',''
-foreach ($k in @("HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\$exeNoExt",
-                "HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting\LocalDumps\$exeNoExt")) {
-  New-Item -Path "$k\LocalDumps" -Force | Out-Null
-  New-ItemProperty -Path "$k\LocalDumps" -Name DumpFolder -Value (Join-Path $base 'dumps') -PropertyType ExpandString -Force | Out-Null
-  New-ItemProperty -Path "$k\LocalDumps" -Name DumpType -Value 2 -PropertyType DWord -Force | Out-Null
-  New-ItemProperty -Path "$k\LocalDumps" -Name DumpCount -Value 40 -PropertyType DWord -Force | Out-Null
+# WER reads LocalDumps values **directly under** `...\LocalDumps\<image.exe>` (and the global
+# `...\LocalDumps` key); the previous revision nested a second `LocalDumps` under them, which WER
+# ignores -- that is why `DUMP_CHANNEL_CONTROL dumps=0` here was an instrument-side zero.
+New-Item -Path 'HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting\LocalDumps' -Force | Out-Null
+foreach ($k in @('HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting\LocalDumps',
+                ('HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting\LocalDumps\' + $App),
+                ('HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting\LocalDumps\' + $exeNoExt),
+                ("HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\$exeNoExt\LocalDumps"),
+                ("HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\$App\LocalDumps"))) {
+  New-Item -Path $k -Force | Out-Null
+  New-ItemProperty -Path $k -Name DumpFolder -Value (Join-Path $base 'dumps') -PropertyType ExpandString -Force | Out-Null
+  New-ItemProperty -Path $k -Name DumpType -Value 2 -PropertyType DWord -Force | Out-Null
+  New-ItemProperty -Path $k -Name DumpCount -Value 40 -PropertyType DWord -Force | Out-Null
 }
 $ctlKey = 'HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting\LocalDumps\pwsh.exe'
 New-Item -Path $ctlKey -Force | Out-Null
 New-ItemProperty -Path $ctlKey -Name DumpFolder -Value (Join-Path $base 'dumps') -PropertyType ExpandString -Force | Out-Null
 New-ItemProperty -Path $ctlKey -Name DumpType -Value 2 -PropertyType DWord -Force | Out-Null
 New-ItemProperty -Path $ctlKey -Name DumpCount -Value 5 -PropertyType DWord -Force | Out-Null
+# Two crash shapes, because a fail-fast and an access violation take different paths through WER.
 Start-Process -FilePath 'C:\Program Files\PowerShell\7\pwsh.exe' -ArgumentList '-NoProfile','-Command','[Environment]::FailFast("PC_DUMP_CHANNEL_CONTROL")' -Wait -WindowStyle Hidden -EA SilentlyContinue
-"DUMP_CHANNEL_CONTROL dumps=" + @(Get-ChildItem (Join-Path $base 'dumps') -Filter *.dmp -EA SilentlyContinue).Count | Add-Content $log
+Start-Process -FilePath 'C:\Program Files\PowerShell\7\pwsh.exe' -ArgumentList '-NoProfile','-Command','[Runtime.InteropServices.Marshal]::WriteByte([IntPtr]0x10,65)' -Wait -WindowStyle Hidden -EA SilentlyContinue
+$cdc = 0
+for ($i = 0; $i -lt 30; $i++) {
+  $cdc = @(Get-ChildItem (Join-Path $base 'dumps') -Filter *.dmp -EA SilentlyContinue).Count
+  if ($cdc) { break }
+  Start-Sleep -Seconds 2
+}
+"DUMP_CHANNEL_CONTROL dumps=$cdc after_poll (a zero here makes every per-case dumps=0 unattributable)" | Add-Content $log
 "GlobalFlag=$((Get-ItemProperty $k -Name GlobalFlag -EA SilentlyContinue).GlobalFlag)" | Add-Content $log
 
 if (-not [IO.Path]::IsPathRooted($Dir)) { $Dir = Join-Path $base $Dir }
@@ -394,6 +409,10 @@ foreach ($f in $files) {
       if (-not $ps) { $pst = 'app-exited'; break }
       $pt = (@($ps | ForEach-Object { $_.MainWindowTitle }) -join ' | ')
       if ($pt -and $pt.Replace(' ','').IndexOf($f.BaseName, [StringComparison]::OrdinalIgnoreCase) -ge 0) { $pst = 'titled'; break }
+    }
+    for ($i = 0; $i -lt 12; $i++) {
+      if (@(Get-ChildItem $dumpsDir -Filter *.dmp -EA SilentlyContinue | Where-Object { $_.LastWriteTime -gt $dp0 }).Count) { break }
+      Start-Sleep -Seconds 3
     }
     $pdn = @(Read-Dumps $dp0)
     Take-Shot (Join-Path $base ('out\shot_' + $Tag + '_' + $f.BaseName + '.png')) | Out-Null
