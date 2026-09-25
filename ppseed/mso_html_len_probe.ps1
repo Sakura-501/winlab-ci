@@ -156,10 +156,18 @@ $files = @(Get-ChildItem $Dir -File -EA SilentlyContinue | Where-Object { $_.Ext
 "cases=$($files.Count) dir=$Dir pwd=$((Get-Location).Path)" | Add-Content $log
 if ($files.Count -eq 0) { 'NO_CARRIERS (empty corpus: the 0-hit readings below would be meaningless)' | Add-Content $log; Get-Content $log; exit 1 }
 $dumpsDir = Join-Path $base 'dumps'
+$appRoot = 'HKCU:\SOFTWARE\Microsoft\Office\16.0\' + ($App -replace '\.EXE$','')
 foreach ($f in $files) {
   Set-Content -Path $f.FullName -Stream Zone.Identifier -Value "[ZoneTransfer]`r`nZoneId=3" -Encoding ASCII
-  Get-Process ($App -replace '\.EXE$','') -EA SilentlyContinue | Stop-Process -Force -EA SilentlyContinue
-  Start-Sleep -Seconds 2
+  $exe = ($App -replace '\.EXE$','')
+  # CloseMainWindow first: Stop-Process marks the next launch as a failed startup, and Office then
+  # takes the Resiliency path (observed as a "上次启动失败" notification on the desktop), which would
+  # make every later case's reading unattributable.
+  Get-Process $exe -EA SilentlyContinue | ForEach-Object { [void]$_.CloseMainWindow() }
+  Start-Sleep -Seconds 3
+  Get-Process $exe -EA SilentlyContinue | Where-Object { $_.StartTime -lt (Get-Date).AddSeconds(-5) } | Stop-Process -Force -EA SilentlyContinue
+  Remove-Item ($appRoot + '\Resiliency') -Recurse -Force -EA SilentlyContinue
+  Start-Sleep -Seconds 1
   $cmdf = Join-Path $base ('out\' + $f.BaseName + '.cdb')
   $c = @('.sympath()', '.echo ====CASE ' + $f.BaseName)
   # Register-only payloads: the NEG anchor starts *at* `neg ecx`, so a hit means the fetched count
@@ -205,8 +213,11 @@ foreach ($f in $files) {
   $big = ([regex]::Matches($txt, '(?m)^r8=([89ABCDEF][0-9A-F]{15}|[1-9][0-9A-F]{15})')).Count
   $av  = ([regex]::Matches($txt, 'Access violation')).Count
   $titles = (@(Get-Process $exe -EA SilentlyContinue | ForEach-Object { $_.MainWindowTitle }) -join ' | ')
-  ('{0,-26} state={1,-11} FDS={2} NEG={3} CPY={4} r8big={5} av={6} dumps={7} titles={8}' -f `
-    $f.Name, $st, $fds, $neg, $cpy, $big, $av, (@(Get-ChildItem $dumpsDir -Filter *.dmp -EA SilentlyContinue | Where-Object { $_.LastWriteTime -gt $t0 }).Count), $titles) | Add-Content $log
+  $tm = 0
+  if ($titles -replace '\s' '' | Select-String -SimpleMatch ($f.BaseName) -Quiet) { $tm = 1 }
+  ('{0,-26} state={1,-11} FDS={2} NEG={3} CPY={4} r8big={5} av={6} dumps={7} titlematch={8} npp={9} titles={10}' -f `
+    $f.Name, $st, $fds, $neg, $cpy, $big, $av, (@(Get-ChildItem $dumpsDir -Filter *.dmp -EA SilentlyContinue | Where-Object { $_.LastWriteTime -gt $t0 }).Count), `
+    $tm, (@(Get-Process $exe -EA SilentlyContinue).Count), $titles) | Add-Content $log
 }
 if ($g) { & $g.FullName /p /disable $App | Out-Null }
 'dump_total=' + @(Get-ChildItem $dumpsDir -Filter *.dmp -EA SilentlyContinue).Count | Add-Content $log
