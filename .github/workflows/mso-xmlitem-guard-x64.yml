@@ -158,6 +158,26 @@ jobs:
         $recs += ,('<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns="http://www.w3.org/TR/REC-html40">' +
                    '<?xml namespace="urn:s"?><?xml namespace="urn:s' + ('H' * 60) + '"?>' +
                    '<head><title>pi</title></head><body><div class=Slide><span>q</span></div></body></html>')
+        # The comment layer is what writes the importer state the XML branch is gated on
+        # ([[HISD+0x2b0]+0x10440] == 5, written by FInitComment 0x63c51a when the HICD control byte
+        # at +0x60 has bit 0x20, and by FProcessComment 0x87d4cc / TkLexHtml 0x1a918 when
+        # (HISD+8 & 0x0c000000) == 0x04000000 -- bit 0x1a is set by FInitComment and cleared by
+        # FCommitComment).  These records keep the <xml> island inside a comment in every spelling
+        # Office's own exporter emits, and put the length pair on element names as well as on
+        # attribute values and xmlns URIs, because the two slot pairs inside FProcessOpenXmlTag are
+        # fed by different item kinds (STATE SS51, SS54).
+        foreach ($p in $pairs) {
+          $n1 = [int]$p[0]; $n2 = [int]$p[1]
+          $nm1 = 'a:' + ('A' * [Math]::Max(1, $n1 - 2)); $nm2 = 'a:' + ('B' * [Math]::Max(1, $n2 - 2))
+          $recs += ,($xh + '<!-- <xml><' + $nm1 + '/><' + $nm2 + '/></xml> --><div class=Slide><span>t</span></div></body></html>')
+          $recs += ,($xh + '<!--[if gte mso 9]><xml><o:Doc><' + $nm1 + '/></o:Doc><o:Doc2><' + $nm2 + '/></o:Doc2></xml><![endif]--><div class=Slide><span>t</span></div></body></html>')
+          $recs += ,($xh + '<!--[if mso]><xml><w:WordDocument><w:' + ('C' * $n1) + '>x</w:' + ('C' * $n1) + '><w:' + ('D' * $n2) + '>y</w:' + ('D' * $n2) + '></w:WordDocument></xml><![endif]--><p>t</p></body></html>')
+          $recs += ,($xh + '<xml xmlns:a="' + ('E' * $n1) + '" xmlns:b="' + ('F' * $n2) + '"><a:e1/><b:e2/></xml><p>t</p></body></html>')
+          $recs += ,($xh + '<!-- <xml xmlns:c="' + ('G' * $n1) + '" xmlns:d="' + ('H' * $n2) + '"><c:i/><d:i/></xml> --><p>t</p></body></html>')
+          $recs += ,($xh + '<div class=Slide><span style="mso-x:' + ('I' * $n1) + '">' + ('J' * $n2) + '</span></div></body></html>')
+          $recs += ,($xh + '<?xml a="' + ('K' * $n1) + '" b="' + ('L' * $n2) + '"?><xml><v:group o:gfxdata="' + ('M' * $n1) + '"><v:shape o:spid="' + ('N' * $n2) + '"/></v:group></xml><p>t</p></body></html>')
+          $recs += ,($xh + '<!--[if gte mso 9]><xml><o:OfficeDocumentSettings><o:' + ('O' * $n1) + '/><o:' + ('P' * $n2) + '/></o:OfficeDocumentSettings></xml><![endif]--><div class=Slide><span>t</span></div></body></html>')
+        }
         $fs = [IO.File]::Create("$PWD\corpus\xmlitem.txt")
         $nrec = 0
         foreach ($body in $recs) {
@@ -167,7 +187,7 @@ jobs:
         }
         $fs.Close()
                 "xmlitem_records=$nrec bytes=" + (Get-Item corpus\xmlitem.txt).Length
-        if ($nrec -lt 18) { throw "xml-item corpus not materialized ($nrec)" }
+        if ($nrec -lt 140) { throw "xml-item corpus not materialized ($nrec)" }
         if ((Get-Item corpus\mime25.txt).Length -lt 100000) { throw 'MIME tail family not materialized' }
 
     - name: XML-item reuse-gate records under the armed heap
@@ -231,6 +251,25 @@ jobs:
           'bu mso98win32client+0x1e9a2f ".echo REQ;r;dq @r9 l1;g"',
           'bu mso98win32client+0x1e9a32 ".echo AFTERGATE;r;dq @r9 l1;g"',
           'bu mso98win32client+0x1e9aa8 ".echo GROWN;r;g"',
+          # The chain, entry to sink, on the installed 16.0.20430.20092 x64 (RVAs from msdl MSO.pdb
+          # publics): TkLexHtml 0x193b0 -> FCommitHtmlTag 0x1cccc / MsoFCommitHtmlTagLocal 0x3e94a0
+          # -> FCommitDivSpanCore (FDS/NEG/CPY) ; the comment layer FInitComment 0x63c458 /
+          # FProcessComment 0x87d450 / FCommitComment 0x3e9ad0 ; the XML-item layer
+          # FProcessOpenXmlTag 0x7f0a0c / ...Fast 0x7f1230 / FProcessCloseXmlTag 0x3e5e10 /
+          # ...Fast 0x3e706c / FUpdateXmlnsExportPrefix 0x18620 / FCollectElementAsUnknown 0xaac4a8.
+          # One-shot (bu /1) so each row is a presence/absence reading for its link in the chain.
+          'bu /1 mso+0x193b0 ".echo LEX;g"',
+          'bu /1 mso+0x1cccc ".echo HTAG;g"',
+          'bu /1 mso+0x3e94a0 ".echo HTAGLOC;g"',
+          'bu /1 mso+0x63c458 ".echo INITC;g"',
+          'bu /1 mso+0x87d450 ".echo PROCC;g"',
+          'bu /1 mso+0x3e9ad0 ".echo COMMC;g"',
+          'bu /1 mso+0x7f0a0c ".echo POXT;g"',
+          'bu /1 mso+0x7f1230 ".echo POXTF;g"',
+          'bu /1 mso+0x3e5e10 ".echo PCXT;g"',
+          'bu /1 mso+0x3e706c ".echo PCXTF;g"',
+          'bu /1 mso+0x18620 ".echo XNS;g"',
+          'bu /1 mso+0xaac4a8 ".echo UNKEL;g"',
           'bu mso+0x3E95E8 ".echo FDS;g"',
           'bu mso+0x3E975A ".echo NEG;r;g"',
           'bu mso+0x3E97D0 ".echo CPY;r;g"',
@@ -250,6 +289,7 @@ jobs:
         # harness takes from GBFLAGS, so the corpus is replayed per value and each value's anchor hits are
         # counted. A non-zero fds/req row is what unlocks the (n, capacity) / negative-count measurements.
         $flagList = @(0x1,0x4,0x8,0x10,0x20,0x40,0x80,0x100,0x400,0x1000,0x20000,0x20001d1,0xffffffff)
+        $chain = @('LEX','HTAG','HTAGLOC','INITC','PROCC','COMMC','POXT','POXTF','PCXT','PCXTF','XNS','UNKEL')
         $all = @()
         foreach ($fl in $flagList) {
           $env:GBFLAGS = '0x{0:X}' -f $fl
@@ -258,6 +298,7 @@ jobs:
             ([regex]::Matches($one, '(?m)^FDS$')).Count, ([regex]::Matches($one, '(?m)^NEG$')).Count,
             ([regex]::Matches($one, '(?m)^CPY$')).Count, ([regex]::Matches($one, '(?m)^REQ$')).Count,
             ([regex]::Matches($one, '(?m)^GROWN$')).Count
+          $row += ' chain=' + (($chain | ForEach-Object { $_ + '=' + ([regex]::Matches($one, '(?m)^' + $_ + '$')).Count }) -join ' ')
           $mm = [regex]::Match($one, '(?m)^MSOHTML totals (.*)$'); $row += ($mm.Groups[1].Value -replace "\s+", ' ')
           $row
           $row | Add-Content out\flag_sweep.txt
