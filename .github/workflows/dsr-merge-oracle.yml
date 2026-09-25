@@ -20,27 +20,25 @@ jobs:
         $dia = Get-ChildItem "C:\Program Files\Microsoft Visual Studio" -Recurse -Filter dia2.h -EA SilentlyContinue | Select-Object -First 1
         Add-Content $env:GITHUB_ENV "VCVARS=$($vs.FullName)"
         Add-Content $env:GITHUB_ENV "DIAINC=$($dia.DirectoryName)"
-        Write-Host "vcvars=$($vs.FullName)"
-        Write-Host "diainc=$($dia.DirectoryName)"
-    - name: Compile object (cross ARM64, small section + relocs)
+    - name: Compile object (cross ARM64)
       shell: cmd
       run: |
         call "%VCVARS%" x64_arm64
         (echo int data_x=7;)> t.c
         (echo int __declspec(noinline^) tiny(int p^){ return p + data_x; })>> t.c
         cl /nologo /Zi /Gy /O2 /c t.c
-        dir t.obj t.pdb
     - name: Patch evil variant
       shell: pwsh
-      run: python patch_obj.py
-    - name: Prepare VM-path fixture
+      run: |
+        python patch_obj.py
+        Copy-Item t.pdb vm_t_stub.pdb -Force
+    - name: Prepare fixtures
       shell: pwsh
       run: |
         New-Item -ItemType Directory -Force -Path C:\Users\nonoge\Documents\encobj | Out-Null
         Copy-Item t.c, t.obj, t_evil.obj C:\Users\nonoge\Documents\encobj\ -Force
-        if (Test-Path "$PWD\fixtures\vm_t.pdb") { Copy-Item "$PWD\fixtures\vm_t.pdb" "$PWD\vm_t.pdb" -Force; "vm pdb staged" } else { "vm_t.pdb MISSING in fixtures" }
-        "PWD=$PWD"
-        Get-ChildItem . -Filter *.pdb | ForEach-Object { $_.Name }
+        Copy-Item fixtures\vm_t.pdb vm_t.pdb -Force
+        Get-ChildItem vm_t.pdb
     - name: Build host (x64)
       shell: cmd
       run: |
@@ -49,36 +47,29 @@ jobs:
     - name: Fetch DSR packages
       shell: pwsh
       run: |
-        New-Item -ItemType Directory -Force -Path pkgA, pkgB | Out-Null
+        New-Item -ItemType Directory -Force -Path pkgB | Out-Null
         Invoke-WebRequest -UseBasicParsing -Uri "https://www.nuget.org/api/v2/package/Microsoft.DiaSymReader.Native/18.8.4-beta1.26356.2" -OutFile b.nupkg
         tar xf b.nupkg -C pkgB
-        try {
-          Invoke-WebRequest -UseBasicParsing -Uri "https://www.nuget.org/api/v2/package/Microsoft.DiaSymReader.Native/18.9.0-beta1.26405.2" -OutFile a.nupkg
-          tar xf a.nupkg -C pkgA
-        } catch { Write-Host "A package unavailable on nuget (unlisted after servicing) - A dynamic case skipped" }
-        Get-ChildItem -Recurse -Filter *amd64*.dll pkgA, pkgB | ForEach-Object { Copy-Item $_.FullName ("dsr_" + $_.Directory.Parent.Name + ".dll") -EA SilentlyContinue }
-        Get-ChildItem *.dll | ForEach-Object { $_.Name }
+        Get-ChildItem -Recurse -Filter *amd64*.dll pkgB | ForEach-Object { Copy-Item $_.FullName dsr_x64_B.dll }
+        Get-ChildItem dsr_*.dll | ForEach-Object { $_.Name }
     - name: Differential matrix
       shell: pwsh
       run: |
         New-Item -ItemType Directory -Force -Path out | Out-Null
-        $combos = @()
-        $aDll = (Get-ChildItem dsr_*amd64*.dll | Where-Object Name -match '26405' | Select-Object -First 1)
-        if ($aDll) { $combos += @{ dll = $aDll.FullName; tag = 'A_35738'; rva = 'A1CC0' } }
-        $combos += @{ dll = (Get-ChildItem dsr_*.dll | Where-Object Name -match 'x64' | Select-Object -First 1).FullName; tag = 'B_36250'; rva = 'BFBF0' }
-        foreach ($c in $combos) {
-          foreach ($obj in @('t','t_evil','vm_t_pdb')) {
-          if ($obj -eq 'vm_t_pdb') {
-            if (-not (Test-Path "$PWD\vm_t.pdb")) { "vm_t.pdb absent - skip"; continue }
-            Copy-Item "$PWD\vm_t.pdb" "$PWD\t.pdb" -Force
-          }
-          } else {
-            if ($obj -ne 't') { Copy-Item "$obj.obj" t.obj -Force }
-          }
-            $o = & .\mo11.exe t.pdb $c.dll $c.rva 2>&1 | Out-String
-            "=== dll=$($c.tag) obj=$obj exit=$LASTEXITCODE ===" | Tee-Object -FilePath "out\log_$($c.tag)_$obj.txt"
-            $o | Tee-Object -FilePath "out\log_$($c.tag)_$obj.txt" -Append
-          }
+        $cases = @(
+          @{ obj = 't';      objfile = 't.obj';      pdb = 't.pdb' },
+          @{ obj = 't_evil'; objfile = 't_evil.obj'; pdb = 't.pdb' },
+          @{ obj = 'vm';     objfile = 't.obj';      pdb = 'vm_t.pdb' },
+          @{ obj = 'vm_evil'; objfile = 't_evil.obj'; pdb = 'vm_t.pdb' }
+        )
+        $dll = "$PWD\dsr_x64_B.dll"
+        foreach ($c in $cases) {
+          Copy-Item $c.objfile t.obj -Force
+          Copy-Item $c.pdb t_use.pdb -Force
+          $o = & "$PWD\mo11.exe" "$PWD\t_use.pdb" $dll 'BFBF0' 2>&1 | Out-String
+          $line = "=== case=$($c.obj) exit=$LASTEXITCODE ==="
+          $line | Tee-Object -FilePath "out\log_$($c.obj).txt"
+          $o | Tee-Object -FilePath "out\log_$($c.obj).txt" -Append
         }
     - name: Upload logs
       uses: actions/upload-artifact@v4
