@@ -22,12 +22,35 @@ $ErrorActionPreference = 'Continue'
 $base = (Resolve-Path $Base).Path
 $pp   = 'C:\Program Files\Microsoft Office\root\Office16\POWERPNT.EXE'
 $pcd  = 'C:\Program Files\Microsoft Office\root\Office16\ppcore.dll'
-$cdb  = @('C:\Program Files (x86)\Windows Kits\10\Debuggers\x64\cdb.exe',
-          'C:\Program Files (x86)\Windows Kits\10\Debuggers\amd64\cdb.exe') | Where-Object { Test-Path $_ } | Select-Object -First 1
+# cdb discovery ported from .github/workflows/doc-cdb-one-x64.yml (the field-tested channel):
+# windows-latest has no SDK debuggers by default, so look in the WinDbg MSIX packages and install
+# it through winget as the last resort, then run it out of a private directory with its DLLs.
+$cdbCandidates = @('C:\Program Files (x86)\Windows Kits\10\Debuggers\x64\cdb.exe',
+                   'C:\Program Files\Windows Kits\10\Debuggers\x64\cdb.exe')
+foreach ($b in @('C:\Program Files\WindowsApps', 'C:\Users\runneradmin\AppData\Local\Microsoft\WindowsApps')) {
+  $hit = Get-ChildItem $b -Directory -Filter 'Microsoft.WinDbg*' -EA SilentlyContinue |
+         ForEach-Object { Get-ChildItem $_.FullName -Recurse -Filter cdb.exe -EA SilentlyContinue |
+                          Where-Object { $_.DirectoryName -match 'amd64|x64' } } | Select-Object -First 1
+  if ($hit) { $cdbCandidates += $hit.FullName }
+}
+$cdb = $cdbCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+if (-not $cdb) {
+  'TRY_WINGET_WINDBG' | Add-Content (Join-Path $Base ('out\' + $Tag + '_probe.txt')) -EA SilentlyContinue
+  winget install Microsoft.WinDbg --accept-source-agreements --accept-package-agreements --disable-interactivity | Out-Null
+  $hit = Get-ChildItem 'C:\Program Files\WindowsApps' -Recurse -Filter cdb.exe -EA SilentlyContinue |
+         Where-Object { $_.DirectoryName -match 'amd64|x64' } | Select-Object -First 1
+  if ($hit) {
+    $priv = 'C:\pptdbg'
+    New-Item -ItemType Directory -Force -Path $priv | Out-Null
+    Copy-Item $hit.FullName (Join-Path $priv 'cdb.exe') -Force
+    Get-ChildItem $hit.DirectoryName -Filter *.dll -EA SilentlyContinue | Copy-Item -Destination $priv -Force
+    $cdb = Join-Path $priv 'cdb.exe'
+  }
+}
 New-Item -ItemType Directory -Force -Path (Join-Path $base 'out'), (Join-Path $base 'dumps') | Out-Null
 $log = Join-Path $base ('out\' + $Tag + '_probe.txt')
 "START $(Get-Date -Format HH:mm:ss) cdb=$cdb" | Set-Content $log
-if (-not $cdb) { 'NO_CDB' | Add-Content $log; exit 1 }
+if (-not $cdb) { 'NO_CDB - falling back to a plain launch sweep (no breakpoint counters)' | Add-Content $log }
 "ppcore=$( (Get-Item $pcd).VersionInfo.FileVersion ) pp=$( (Get-Item $pp).VersionInfo.FileVersion ) session=$((Get-Process -Id $PID).SessionId)" | Add-Content $log
 
 # ---- signature anchors (x64) ----
@@ -108,8 +131,13 @@ foreach ($f in $files) {
     $args = @('-cf', $cmdf, $pp)
     if ($m -eq 'show') { $args += '/s' }
     $args += ('"' + $f.FullName + '"')
-    $p = Start-Process -FilePath $cdb -ArgumentList $args -PassThru -WindowStyle Hidden `
-         -RedirectStandardOutput $stdout -RedirectStandardError ($stdout + '.err')
+    if ($cdb) {
+      $p = Start-Process -FilePath $cdb -ArgumentList $args -PassThru -WindowStyle Hidden `
+           -RedirectStandardOutput $stdout -RedirectStandardError ($stdout + '.err')
+    } else {
+      $ppArgs = @(); if ($m -eq 'show') { $ppArgs += '/s' }; $ppArgs += ('"' + $f.FullName + '"')
+      $p = Start-Process -FilePath $pp -ArgumentList $ppArgs -PassThru
+    }
     $st = 'timeout'
     for ($i = 0; $i * 3 -lt $WaitSec; $i++) {
       Start-Sleep -Seconds 3
