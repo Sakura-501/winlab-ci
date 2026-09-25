@@ -170,6 +170,15 @@ if ($rvX['XGATE']) {
     ($rvX['XGATE'] + $XREQ_OFF), ($rvX['XGATE'] + $XREUSE_OFF), $rvX['XGROWN']) | Add-Content $log
 } else { 'XML_ANCHORS_UNRESOLVED' | Add-Content $log }
 
+# Resolve the caller-side write anchor here (not only in the cdb branch) so the passive arm's
+# dump attribution can name the xml-item write frame as well.
+$rvW = Get-Anchors $mso.FullName $SIGW
+$xwRva = 0
+if ($rvW['XREQ']) {
+  $xwRva = $rvW['XREQ'] + $XWRITE_OFF
+  ("SIGW XREQ=0x{0:X} XWRITE=0x{1:X}" -f $rvW['XREQ'], $xwRva) | Add-Content $log
+} else { 'XML_WRITE_ANCHOR_UNRESOLVED' | Add-Content $log }
+
 
 $cdb = $null
 foreach ($c in @('C:\Program Files (x86)\Windows Kits\10\Debuggers\x64\cdb.exe','C:\Program Files\Windows Kits\10\Debuggers\x64\cdb.exe')) {
@@ -332,7 +341,15 @@ function Read-Dumps([string]$since) {
     if ($rv['FDS'] -and $txt.IndexOf(('+0x{0:X}' -f $rv['FDS']), [StringComparison]::OrdinalIgnoreCase) -ge 0) { $sink = 1 }
     $cp = 0
     if ($rv['CPY'] -and $txt.IndexOf(('+0x{0:X}' -f $rv['CPY']), [StringComparison]::OrdinalIgnoreCase) -ge 0) { $cp = 1 }
-    ('DUMP {0} mso_sink_frame={1} mso_cpy_frame={2} av={3} top={4}' -f $d.Name, $sink, $cp, `
+    # The xml-item pair: `mso+0x7F0B80` is the memcpy call inside FProcessOpenXmlTag (XREQ match +0x30)
+    # and `mso98win32client+0x1e9a34` is the callee's "hand back the previous buffer" reuse return;
+    # either frame in a dump stack means the scratch block was in the faulting path.
+    $xwf = 0
+    if ($xwRva -and $txt.IndexOf(('+0x{0:X}' -f $xwRva), [StringComparison]::OrdinalIgnoreCase) -ge 0) { $xwf = 1 }
+    $xcal = 0
+    if ($rvX['XGATE'] -and $txt.IndexOf(('+0x{0:X}' -f ($rvX['XGATE'] + $XREUSE_OFF)), [StringComparison]::OrdinalIgnoreCase) -ge 0) { $xcal = 1 }
+    $xmod = ([regex]::Matches($txt, 'mso98win32client')).Count
+    ('DUMP {0} mso_sink_frame={1} mso_cpy_frame={2} xmlwrite_frame={3} xmlreuse_frame={4} w32c_frames={5} av={6} top={7}' -f $d.Name, $sink, $cp, $xwf, $xcal, $xmod, `
       ([regex]::Matches($txt, 'Access violation')).Count, $top.Substring(0, [Math]::Min(300, $top.Length))) | Add-Content $log
     $out += $d.Name
   }
@@ -354,6 +371,19 @@ foreach ($f in $files) {
   Start-Sleep -Seconds 1
   if ($NoCdb) {
     Set-Content -Path $f.FullName -Stream Zone.Identifier -Value "[ZoneTransfer]`r`nZoneId=3" -Encoding ASCII
+    # Single-instance handoff would otherwise let one long-lived instance own every document and the
+    # per-case attribution (which file produced which dump) collapses to a single window.
+    for ($k = 0; $k -lt 2; $k++) {
+      Get-Process $exe -EA SilentlyContinue | ForEach-Object { $null = $_.CloseMainWindow() }
+      for ($j = 0; $j -lt 5; $j++) {
+        if (-not @(Get-Process $exe -EA SilentlyContinue).Count) { break }
+        Start-Sleep -Seconds 2
+      }
+      if (@(Get-Process $exe -EA SilentlyContinue).Count) {
+        Get-Process $exe -EA SilentlyContinue | Stop-Process -Force
+        Start-Sleep -Seconds 2
+      }
+    }
     $dp0 = Get-Date
     $la = if ($exe -eq 'OUTLOOK') { @('/eml', ('"' + $f.FullName + '"')) } else { ('"' + $f.FullName + '"') }
     $null = Start-Process -FilePath $appPath -ArgumentList $la -WindowStyle Hidden -EA SilentlyContinue
@@ -397,12 +427,9 @@ foreach ($f in $files) {
   $c += ("bu {1}+0x{0:X} `".echo FDS;g`"" -f $rv['FDS'], $modTok)
   $c += ("bu {1}+0x{0:X} `".echo NEG;r;g`"" -f $rv['NEG'], $modTok)
   $c += ("bu {1}+0x{0:X} `".echo CPY;r;g`"" -f $rv['CPY'], $modTok)
-  $rvW = Get-Anchors $mso.FullName $SIGW
-  if ($rvW['XREQ']) {
-    ("SIGW XREQ=0x{0:X} XWRITE=0x{1:X}" -f $rvW['XREQ'], ($rvW['XREQ'] + $XWRITE_OFF)) | Add-Content $log
-    $c += ("bu {1}+0x{0:X} `".echo XWRITE;r;g`"" -f ($rvW['XREQ'] + $XWRITE_OFF), $modTok)
-    $xwRva = $rvW['XREQ'] + $XWRITE_OFF
-  } else { 'XML_WRITE_ANCHOR_UNRESOLVED' | Add-Content $log; $xwRva = 0 }
+  if ($xwRva) {
+    $c += ("bu {1}+0x{0:X} `".echo XWRITE;r;g`"" -f $xwRva, $modTok)
+  }
   $c += 'bl'
   $c += 'g'
   # The smoke round of 2026-09-25 10:35Z ended with all three breakpoints bound and enabled
