@@ -1,0 +1,44 @@
+name: edge-protocol-registration-audit
+'on':
+  workflow_dispatch: {}
+jobs:
+  audit:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+    - name: install-latest-stable-edge-msi
+      shell: pwsh
+      continue-on-error: true
+      run: |
+        $j = (Invoke-WebRequest -Uri 'https://edgeupdates.microsoft.com/api/products' -UseBasicParsing -TimeoutSec 60).Content | ConvertFrom-Json
+        $rel = $null
+        foreach ($p in $j) {
+          if ($p.Product -ne 'Stable') { continue }
+          foreach ($r in $p.Releases) {
+            if (($r.Platform -eq 'Windows' -or $r.Platform -eq 'Windows x64') -and ($r.Architecture -eq 'x64' -or -not $r.Architecture)) {
+              if (-not $rel -or [Version]$r.ProductVersion -gt [Version]$rel.ProductVersion) { $rel = $r }
+            }
+          }
+        }
+        if (-not $rel) { Write-Host 'no stable release found'; exit 0 }
+        Write-Host ('target_version=' + $rel.ProductVersion)
+        $art = $rel.Artifacts | Where-Object { $_.ArtifactName -eq 'msi' } | Select-Object -First 1
+        Invoke-WebRequest -Uri $art.Location -OutFile edge.msi -UseBasicParsing -TimeoutSec 900
+        $p = Start-Process msiexec.exe -ArgumentList '/i','edge.msi','/quiet','/norestart' -Wait -PassThru
+        Write-Host ('msiexec_exit=' + $p.ExitCode)
+    - name: dump-registrations
+      shell: pwsh
+      run: |
+        $exe = 'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe'
+        if (Test-Path $exe) { Write-Host ('msedge_fileversion=' + (Get-Item $exe).VersionInfo.FileVersion) } else { Write-Host 'msedge.exe not found' }
+        foreach ($k in @('microsoft-edge','MSEdgeHTM','MSEdgeMHT','MSEdgePDF','MSEdgeRead','http','https')) {
+          foreach ($hive in @('HKLM:\SOFTWARE\Classes','HKCU:\SOFTWARE\Classes')) {
+            $path = Join-Path $hive ($k + '\shell\open\command')
+            if (Test-Path $path) {
+              $v = (Get-ItemProperty $path).'(default)'
+              Write-Host ($hive.Split('\')[1] + ' | ' + $k + ' => ' + $v)
+            }
+          }
+        }
+        Write-Host '--- App Paths ---'
+        (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\msedge.exe' -EA SilentlyContinue).'(default)'
