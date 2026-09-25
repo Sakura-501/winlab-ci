@@ -94,8 +94,8 @@ function Get-Anchors([string]$path) {
 # The div/span commit code is expected in mso.dll, but the shared core has been split across the
 # Mso*win32client.dll modules in recent builds, so try each host and keep the one with all anchors.
 $hosts = @($mso.FullName)
-$dir = Split-Path $mso.FullName
-$hosts += @(Get-ChildItem $dir -Filter 'Mso*win32client.dll' -EA SilentlyContinue | ForEach-Object { $_.FullName })
+$msoDir = Split-Path $mso.FullName
+$hosts += @(Get-ChildItem $msoDir -Filter 'Mso*win32client.dll' -EA SilentlyContinue | ForEach-Object { $_.FullName })
 $rv = @{}; $modTok = ''
 foreach ($h in $hosts) {
   $r = Get-Anchors $h
@@ -151,8 +151,10 @@ Start-Process -FilePath 'C:\Program Files\PowerShell\7\pwsh.exe' -ArgumentList '
 "DUMP_CHANNEL_CONTROL dumps=" + @(Get-ChildItem (Join-Path $base 'dumps') -Filter *.dmp -EA SilentlyContinue).Count | Add-Content $log
 "GlobalFlag=$((Get-ItemProperty $k -Name GlobalFlag -EA SilentlyContinue).GlobalFlag)" | Add-Content $log
 
-$files = @(Get-ChildItem $Dir -File | Where-Object { $_.Extension -in '.htm','.html','.mht','.mhtml' } | Sort-Object Name)
-"cases=$($files.Count)" | Add-Content $log
+if (-not [IO.Path]::IsPathRooted($Dir)) { $Dir = Join-Path $base $Dir }
+$files = @(Get-ChildItem $Dir -File -EA SilentlyContinue | Where-Object { $_.Extension -in '.htm','.html','.mht','.mhtml' } | Sort-Object Name)
+"cases=$($files.Count) dir=$Dir pwd=$((Get-Location).Path)" | Add-Content $log
+if ($files.Count -eq 0) { 'NO_CARRIERS (empty corpus: the 0-hit readings below would be meaningless)' | Add-Content $log; Get-Content $log; exit 1 }
 $dumpsDir = Join-Path $base 'dumps'
 foreach ($f in $files) {
   Set-Content -Path $f.FullName -Stream Zone.Identifier -Value "[ZoneTransfer]`r`nZoneId=3" -Encoding ASCII
