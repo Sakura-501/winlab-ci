@@ -48,8 +48,11 @@ foreach ($f in $files) {
         Start-Sleep -Seconds 2
         $q = Get-Process -Id $p.Id -EA SilentlyContinue
         if (-not $q) { $state = 'exited'; break }
-        $title = $q.MainWindowTitle
-        if ($title -and ($title -like ('*' + $f.BaseName + '*'))) { $state = 'opened'; break }
+        # PowerPoint can hand the document to a process other than the one we launched, so the open
+        # confirmation must look at every POWERPNT window, not just the launched PID's main window.
+        $all = @(Get-Process POWERPNT -EA SilentlyContinue | ForEach-Object { $_.MainWindowTitle } | Where-Object { $_ })
+        $title = ($all -join ' | ')
+        if ($all | Where-Object { $_ -like ('*' + $f.BaseName + '*') }) { $state = 'opened'; break }
         $now = @(Get-ChildItem $dumps -Filter *.dmp -EA SilentlyContinue | ForEach-Object { $_.Name })
         if ($now.Count -gt $before.Count) { $state = 'dump'; break }
     }
@@ -58,7 +61,8 @@ foreach ($f in $files) {
     $mods = ''
     try { $m = @(Get-Process -Id $p.Id -Module -EA SilentlyContinue | ForEach-Object { $_.ModuleName.ToLower() })
           $mods = ('nmod=' + $m.Count + ' ppcore=' + [int]($m -contains 'ppcore.dll') + ' mso=' + [int]($m -contains 'mso.dll')) } catch { $mods = 'modprobe_fail' }
-    ('{0,-30} state={1,-8} {2} {3} title={4} dumps={5} motw={6}' -f $f.Name, $state, $pv, $mods, $title, ($d -join ','), $z) | Add-Content $log
+        $npp = @(Get-Process POWERPNT -EA SilentlyContinue).Count
+    ('{0,-30} state={1,-8} {2} {3} npp={4} title={5} dumps={6} motw={7}' -f $f.Name, $state, $pv, $mods, $npp, $title, ($d -join ','), $z) | Add-Content $log
     ('SUMMARY {0} state={1} dumps={2}' -f $f.Name, $state, $d.Count) | Add-Content (Join-Path $base ('out\' + $Tag + '_index.txt'))
     Get-Process -Id $p.Id -EA SilentlyContinue | Stop-Process -Force -EA SilentlyContinue
 }
