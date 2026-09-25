@@ -12,7 +12,8 @@ param([string]$Dir = 'carriers_h',
       [string]$Base = '.',
       [string]$App = 'POWERPNT.EXE',
       [int]$WaitSec = 110,
-      [int]$MaxCases = 0)
+      [int]$MaxCases = 0,
+      [string]$NameFilter = '')
 $ErrorActionPreference = 'Continue'
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $root = 'C:\Program Files\Microsoft Office\root\Office16'
@@ -154,6 +155,7 @@ Start-Process -FilePath 'C:\Program Files\PowerShell\7\pwsh.exe' -ArgumentList '
 
 if (-not [IO.Path]::IsPathRooted($Dir)) { $Dir = Join-Path $base $Dir }
 $files = @(Get-ChildItem $Dir -File -EA SilentlyContinue | Where-Object { $_.Extension -in '.htm','.html','.mht','.mhtml' } | Sort-Object Name)
+if ($NameFilter) { $files = @($files | Where-Object { $_.BaseName -match $NameFilter }) }
 "cases=$($files.Count) dir=$Dir pwd=$((Get-Location).Path)" | Add-Content $log
 if ($MaxCases -gt 0 -and $files.Count -gt $MaxCases) {
   $files = @($files | Select-Object -First $MaxCases)
@@ -173,7 +175,7 @@ foreach ($f in $files) {
   Remove-Item ($appRoot + '\Resiliency') -Recurse -Force -EA SilentlyContinue
   Start-Sleep -Seconds 1
   $cmdf = Join-Path $base ('out\' + $f.BaseName + '.cdb')
-  $c = @('.sympath()', '.echo ====CASE ' + $f.BaseName)
+  $c = @('.sympath()', ('.echo ====CASE ' + $f.BaseName))
   # Register-only payloads: the NEG anchor starts *at* `neg ecx`, so a hit means the fetched count
   # was negative (ecx = |count|, rax = used); the CPY anchor is the instruction before `call memcpy`
   # with r8 = 2*count.  Avoiding `poi(@rbp+off)` keeps the probe independent of this build's frame layout.
