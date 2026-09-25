@@ -157,6 +157,53 @@ jobs:
         "dumps_after_xmlitem=" + @(Get-ChildItem dumps -Filter *.dmp -EA SilentlyContinue).Count
         "XMLITEM_STAGE_DONE"
       continue-on-error: true
+    - name: Count xml-item reuse decisions at the caller site
+      shell: pwsh
+      run: |
+        # The caller site carries both quantities in registers at the moment of the request:
+        #   edx = n (the character count being asked for) and r9 = &capacitySlot, whose value is the
+        # byte count left by the previous growth (`2*n_prev+33`).  A reuse decision is exactly
+        # `n+1 <= C`, and the caller then writes 2n+2 bytes, so `2n+2 > C` on a reuse is the overrun
+        # window of STATE SS46-50.  RVAs are for the installed 16.0.20430.20092 x64 (symbols read from
+        # msdl MSO.pdb: ?FProcessOpenXmlTag@ = 0x7f0a0c, the FObtainXmlItemString call at +0x158 = 0x7f0b64).
+        $env:PATH = 'C:\Program Files\Microsoft Office\root\Office16;' + $env:PATH
+        $mso = Get-Item 'C:\Program Files\Common Files\Microsoft Shared\Office16\mso.dll' -EA SilentlyContinue
+        if (-not $mso) { $mso = Get-Item 'C:\Program Files\Microsoft Office\root\vfs\ProgramFilesCommonX64\Microsoft Shared\OFFICE16\mso.dll' }
+        "instrumented_mso=$($mso.FullName) v=$($mso.VersionInfo.FileVersion)"
+        $cdb = (Get-ChildItem 'C:\Program Files (x86)\Windows Kits\10\Debuggers\x64\cdb.exe','C:\Program Files\Windows Kits\10\Debuggers\x64\cdb.exe' -EA SilentlyContinue | Select-Object -First 1).FullName
+        if (-not $cdb) { 'NO_CDB_ON_RUNNER'; exit 0 }
+        $cf = Join-Path $PWD 'out\xin.cdb'
+        $lines = @(
+          '.sympath()',
+          'sxi e06d7363',
+          'sxn av',
+          'bu mso+0x7f0b64 ".printf \"XIN n=%d C=%d\\n\", @edx, poi(@r9); g"',
+          'bu mso+0x7f0c72 ".printf \"XIN2 n=%d C=%d\\n\", @edx, poi(@r9); g"',
+          'bu mso+0x7f0cbe ".printf \"XIN3 n=%d C=%d\\n\", @edx, poi(@r9); g"',
+          'bl',
+          'g',
+          '.echo ====XIN_END',
+          'q'
+        )
+        Set-Content -LiteralPath $cf -Value $lines -Encoding ASCII
+        Get-Content $cf
+        $o = & $cdb -cf $cf .\bin\gbx.exe msohtml corpus\xmlitem.txt 20 0 none life noskip slot=17 2>&1 | Out-String
+        $o | Set-Content out\xin_cdb.txt
+        $hits = [regex]::Matches($o, 'XIN(\d)? n=(-?\d+) C=(-?\d+)')
+        "xin_records=" + $hits.Count
+        $bad = 0; $reused = 0
+        foreach ($h in $hits) {
+          $n = [int]$h.Groups[2].Value; $c = [int]$h.Groups[3].Value
+          if ($n + 1 -le $c) { $reused++ }
+          if ((2 * $n + 2) -gt $c) { $bad++ }
+          if ($bad -le 12) { "XIN_PAIR n=$n C=$c reuse_gate_passes=$($n + 1 -le $c) write_exceeds_cap=$((2 * $n + 2) -gt $c)" }
+        }
+        "xin_reuse_decisions=$reused xin_writes_over_capacity=$bad"
+        if ($o -match 'Unable to resolve') { 'CDB_ANCHOR_UNRESOLVED (readings above may be incomplete)' }
+        if ($hits.Count -eq 0) { 'XIN_NO_HITS: this caller path was not reached by these records' }
+        'XIN_STAGE_DONE'
+      continue-on-error: true
+
     - name: Gate - page heap must be loaded and the importer must parse
       run: |
         $env:PATH = 'C:\Program Files\Microsoft Office\root\Office16;' + $env:PATH
