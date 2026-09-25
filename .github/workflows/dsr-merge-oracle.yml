@@ -42,20 +42,22 @@ jobs:
       shell: pwsh
       run: |
         New-Item -ItemType Directory -Force -Path pkgA, pkgB | Out-Null
-        Invoke-WebRequest -UseBasicParsing -Uri "https://www.nuget.org/api/v2/package/Microsoft.DiaSymReader.Native/18.9.0-beta1.26405.2" -OutFile a.nupkg
         Invoke-WebRequest -UseBasicParsing -Uri "https://www.nuget.org/api/v2/package/Microsoft.DiaSymReader.Native/18.8.4-beta1.26356.2" -OutFile b.nupkg
-        tar xf a.nupkg -C pkgA
         tar xf b.nupkg -C pkgB
+        try {
+          Invoke-WebRequest -UseBasicParsing -Uri "https://www.nuget.org/api/v2/package/Microsoft.DiaSymReader.Native/18.9.0-beta1.26405.2" -OutFile a.nupkg
+          tar xf a.nupkg -C pkgA
+        } catch { Write-Host "A package unavailable on nuget (unlisted after servicing) - A dynamic case skipped" }
         Get-ChildItem -Recurse -Filter *amd64*.dll pkgA, pkgB | ForEach-Object { Copy-Item $_.FullName ("dsr_" + $_.Directory.Parent.Name + ".dll") -EA SilentlyContinue }
         Get-ChildItem *.dll | ForEach-Object { $_.Name }
     - name: Differential matrix
       shell: pwsh
       run: |
         New-Item -ItemType Directory -Force -Path out | Out-Null
-        $combos = @(
-          @{ dll = (Get-ChildItem dsr_*amd64*.dll | Where-Object Name -match '26405' | Select-Object -First 1).FullName; tag = 'A_35738'; rva = 'A1CC0' },
-          @{ dll = (Get-ChildItem dsr_*amd64*.dll | Where-Object Name -match '26356' | Select-Object -First 1).FullName; tag = 'B_36250'; rva = 'BFBF0' }
-        )
+        $combos = @()
+        $aDll = (Get-ChildItem dsr_*amd64*.dll | Where-Object Name -match '26405' | Select-Object -First 1)
+        if ($aDll) { $combos += @{ dll = $aDll.FullName; tag = 'A_35738'; rva = 'A1CC0' } }
+        $combos += @{ dll = (Get-ChildItem dsr_*amd64*.dll | Where-Object Name -match '26356' | Select-Object -First 1).FullName; tag = 'B_36250'; rva = 'BFBF0' }
         foreach ($c in $combos) {
           foreach ($obj in @('t_orig','t_evil')) {
             Copy-Item "$obj.obj" t.obj -Force
