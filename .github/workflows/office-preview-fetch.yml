@@ -1,0 +1,49 @@
+name: office-preview-fetch
+# Install the LATEST Current Channel Preview x64 Office via ODT and emit a
+# version + SHA256 manifest of the bounty-scope binaries. Dispatch after a new
+# CC-Preview build is announced to snapshot the fix-diff base.
+'on':
+  workflow_dispatch: {}
+jobs:
+  t:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+    - name: Download ODT
+      shell: pwsh
+      run: |
+        $page = (Invoke-WebRequest -Uri "https://www.microsoft.com/en-us/download/details.aspx?id=49117" -UseBasicParsing).Content
+        if ($page -match 'href="(https://download\.microsoft\.com/download/[^"]+officedeploymenttool[^"]*\.exe)"') { Invoke-WebRequest -Uri $Matches[1] -OutFile odt.exe } else { throw "odt link not found" }
+        Start-Process -Wait -FilePath .\odt.exe -ArgumentList "/extract:odtx /quiet"
+    - name: Install latest Current Channel Preview x64
+      shell: pwsh
+      run: |
+        $xml = '<Configuration><Add OfficeClientEdition="64" Channel="CurrentChannelPreview"><Product ID="O365ProPlusRetail"><Language ID="en-us" /><ExcludeApp ID="OneDrive" /><ExcludeApp ID="Bing" /></Product></Add><Display Level="None" AcceptEULA="TRUE" /><Updates Enabled="FALSE" /></Configuration>'
+        Set-Content -Path cfg.xml -Value $xml
+        Start-Process -Wait -FilePath .\odtx\setup.exe -ArgumentList "/configure","cfg.xml"
+        $w = Get-Item "C:\Program Files\Microsoft Office\root\Office16\WINWORD.EXE" -EA SilentlyContinue
+        if (-not $w) { throw "office install failed" }
+    - name: Manifest (versions + sha256 of scope binaries)
+      shell: pwsh
+      run: |
+        New-Item -ItemType Directory -Force -Path out | Out-Null
+        $root = "C:\Program Files\Microsoft Office\root\Office16"
+        $targets = @("WINWORD.EXE","EXCEL.EXE","POWERPNT.EXE","OUTLOOK.EXE","ONENOTE.EXE",
+                     "onmain.dll","wwlib.dll","gfx.dll","oart.dll","oartconv.dll",
+                     "mso20win32client.dll","mso30win32client.dll","mso40uiwin32client.dll","mso98win32client.dll",
+                     "olmapi32.dll","outlmime.dll","MSIMED.DLL","emsui.dll","emsabp32.dll")
+        foreach ($t in $targets) {
+          $p = Join-Path $root $t
+          if (Test-Path $p) {
+            $v = (Get-Item $p).VersionInfo.FileVersion
+            $h = (Get-FileHash $p -Algorithm SHA256).Hash
+            "$t  v=$v  sha256=$h" | Tee-Object -FilePath out\manifest.txt -Append
+            Copy-Item $p "out\$t" -Force
+          } else {
+            "$t  ABSENT" | Tee-Object -FilePath out\manifest.txt -Append
+          }
+        }
+        "channel/build snapshot done $(Get-Date -Format o)" | Tee-Object -FilePath out\manifest.txt -Append
+    - name: Upload manifest and binaries
+      uses: actions/upload-artifact@v4
+      with: { name: cc-preview-snapshot, path: out }
