@@ -141,11 +141,12 @@ jobs:
         # The harness starts by LoadLibraryA("OLMAPI32.dll"); that only resolves when the Office16
         # directory is on PATH (run 36131021711 printed `NOMOD err=126` without it).
         $env:PATH = 'C:\Program Files\Microsoft Office\root\Office16;' + $env:PATH
-        $o = & .\bin\gbx.exe msohtml corpus\xmlitem.txt 34 0 none norel noskip slot=17 2>&1 | Out-String
+        $o = & .\bin\gbx.exe msohtml corpus\xmlitem.txt 34 0 none life noskip slot=17 2>&1 | Out-String
         "-----GBX OUTPUT BEGIN-----"
         $o
         "-----GBX OUTPUT END-----"
         $o | Set-Content out\xmlitem_stage.txt
+        ($o -split "`n" | Select-String 'rec=|MSOHTML|ARM |\[g\] ') -join "`n"
         if ($o -notmatch 'ARM verifier_dll=0*[1-9a-f]') { 'GATE_NOT_MET page_heap_not_loaded' }
         if ($o -notmatch 'cbs=[1-9]') { 'GATE_NOT_MET importer_did_not_call_back' }
         if ($o -notmatch 'handle=[1-9]') { 'GATE_NOT_MET tag_commit_layer_absent' }
