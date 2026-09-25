@@ -180,20 +180,23 @@ jobs:
         # Quote-free payloads: the \\"...\\" form was passed through verbatim and cdb rejected it as a
         # malformed string (run 36134468010), so each payload now just echoes a marker, dumps registers
         # and dereferences the pointer that carries the quantity of interest.
+        # The mso-side caller anchors bound and stayed at zero (run 36134942590: all six anchors `e`,
+        # fds/neg/cpy/xin all 0), so the callee itself is now armed: 0x1e9a2f is the single instruction
+        # where the reuse gate compares `n+1` (eax) with the stored capacity ([r9]), and 0x1e9aa8 is where
+        # a growth writes 2n+33 back into that slot.  Both are reached by every one of mso's 12 request
+        # sites, so a zero here means the xml-item scratch path is not entered by this corpus at all.
         $lines = @(
           '.sympath()',
           'sxi e06d7363',
           'sxi c004f013',
           'sxn av',
-          'sxe ld:mso.dll',
+          'sxe ld:mso98win32client.dll',
           'g',
-          '.echo ====MSO_MAPPED',
-          'bu mso+0x3E95E8 ".echo FDS;g"',
-          'bu mso+0x3E975A ".echo NEG;r;g"',
-          'bu mso+0x3E97D0 ".echo CPY;r;g"',
-          'bu mso+0x7f0b64 ".echo XIN1;r;dq @r9 l1;g"',
-          'bu mso+0x7f0c72 ".echo XIN2;r;dq @r9 l1;g"',
-          'bu mso+0x7f0cbe ".echo XIN3;r;dq @r9 l1;g"',
+          '.echo ====MODULES_MAPPED',
+          'lm m mso98win32client',
+          'bu mso98win32client+0x1e9a2f ".echo REQ;r;dq @r9 l1;g"',
+          'bu mso98win32client+0x1e9a32 ".echo AFTERGATE;r;dq @r9 l1;g"',
+          'bu mso98win32client+0x1e9aa8 ".echo GROWN;r;g"',
           'bl',
           'g',
           '.echo ====XIN_END',
