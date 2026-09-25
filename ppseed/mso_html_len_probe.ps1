@@ -184,6 +184,68 @@ if ($MaxCases -gt 0 -and $files.Count -gt $MaxCases) {
 if ($files.Count -eq 0) { 'NO_CARRIERS (empty corpus: the 0-hit readings below would be meaningless)' | Add-Content $log; Get-Content $log; exit 1 }
 $dumpsDir = Join-Path $base 'dumps'
 $appRoot = 'HKCU:\SOFTWARE\Microsoft\Office\16.0\' + ($App -replace '\.EXE$','')
+
+function Take-Shot([string]$path) {
+  # AGENTS 58: a "no hit" reading is meaningless if the document never opened and rendered, so every
+  # case keeps the desktop frame next to its counter line.
+  try {
+    Add-Type -AssemblyName System.Windows.Forms,System.Drawing -EA SilentlyContinue
+    $bnd = [System.Windows.Forms.SystemInformation]::VirtualScreen
+    $bmp = New-Object System.Drawing.Bitmap $bnd.Width, $bnd.Height
+    $gg = [System.Drawing.Graphics]::FromImage($bmp)
+    $gg.CopyFromScreen($bnd.Location, [System.Drawing.Point]::Empty, $bnd.Size)
+    $bmp.Save($path, [System.Drawing.Imaging.ImageFormat]::Png)
+    $gg.Dispose(); $bmp.Dispose()
+    return $true
+  } catch { 'SHOT_FAIL ' + $_.Exception.Message | Add-Content $log; return $false }
+}
+
+# Warm-up: a fresh install can take a first-run path that relaunches the process, and a relaunched
+# office host drops the document argument it was handed.  The smoke round of 2026-09-25 10:39Z saw the
+# debugged POWERPNT exit while an instance with a bare "Microsoft PowerPoint" title stayed alive, so
+# the app is started once with no document, allowed to reach a window, then closed before any case.
+$exe0 = ($App -replace '\.EXE$','')
+$wu = Start-Process -FilePath $appPath -PassThru -WindowStyle Hidden -EA SilentlyContinue
+$wust = 'no-window'
+if ($wu) {
+  for ($i = 0; $i -lt 20; $i++) {
+    Start-Sleep -Seconds 3
+    $t = (@(Get-Process $exe0 -EA SilentlyContinue | ForEach-Object { $_.MainWindowTitle }) -join ' | ')
+    if ($t) { $wust = 'window'; break }
+  }
+  Get-Process $exe0 -EA SilentlyContinue | ForEach-Object { [void]$_.CloseMainWindow() }
+  Start-Sleep -Seconds 4
+  Get-Process $exe0 -EA SilentlyContinue | Where-Object { $_.StartTime -lt (Get-Date).AddSeconds(-5) } | Stop-Process -Force -EA SilentlyContinue
+  Remove-Item ($appRoot + '\Resiliency') -Recurse -Force -EA SilentlyContinue
+}
+"WARMUP state=$wust titles=$t npp_before=$(@(Get-Process $exe0 -EA SilentlyContinue).Count)" | Add-Content $log
+
+# No-debugger control for the first carrier: the same launch a user would do, without cdb in the
+# picture, so "the application does not open this carrier" can be told apart from "cdb changes what
+# the application does".
+$ctl = @($files | Select-Object -First 1)
+foreach ($cf in $ctl) {
+  $cp = Start-Process -FilePath $appPath -ArgumentList ('"' + $cf.FullName + '"') -PassThru -WindowStyle Hidden -EA SilentlyContinue
+  $cst = 'timeout'
+  for ($i = 0; $i -lt 20; $i++) {
+    Start-Sleep -Seconds 3
+    $cts = (@(Get-Process $exe0 -EA SilentlyContinue | ForEach-Object { $_.MainWindowTitle }) -join ' | ')
+    $mods = 0
+    try { $mods = @(Get-Process $exe0 -EA SilentlyContinue | Select-Object -First 1 -ExpandProperty Modules).Count } catch {}
+    if ($cts -and $cts.IndexOf($cf.BaseName, [StringComparison]::OrdinalIgnoreCase) -ge 0) { $cst = 'titled'; break }
+  }
+  $flatc = ($cts -replace '\s','')
+  $ctm = 0
+  if ($flatc -and $flatc.IndexOf($cf.BaseName, [StringComparison]::OrdinalIgnoreCase) -ge 0) { $ctm = 1 }
+  ('NODEBUG_CONTROL {0} state={1} npp={2} modules={3} titlematch={4} titles={5}' -f `
+    $cf.Name, $cst, (@(Get-Process $exe0 -EA SilentlyContinue).Count), $mods, $ctm, $cts) | Add-Content $log
+  Take-Shot (Join-Path $base ('out\shot_' + $Tag + '_NODEBUG_' + $cf.BaseName + '.png')) | Out-Null
+  Get-Process $exe0 -EA SilentlyContinue | ForEach-Object { [void]$_.CloseMainWindow() }
+  Start-Sleep -Seconds 3
+  Get-Process $exe0 -EA SilentlyContinue | Where-Object { $_.StartTime -lt (Get-Date).AddSeconds(-5) } | Stop-Process -Force -EA SilentlyContinue
+  Remove-Item ($appRoot + '\Resiliency') -Recurse -Force -EA SilentlyContinue
+}
+
 foreach ($f in $files) {
   Set-Content -Path $f.FullName -Stream Zone.Identifier -Value "[ZoneTransfer]`r`nZoneId=3" -Encoding ASCII
   $exe = ($App -replace '\.EXE$','')
@@ -263,16 +325,7 @@ foreach ($f in $files) {
   Get-Process -Id $p.Id -EA SilentlyContinue | Stop-Process -Force -EA SilentlyContinue
   # Screen capture per case (AGENTS 58): a "no hit" reading is meaningless if the document never
   # actually opened and rendered, so the frame is archived next to the counter line.
-  try {
-    Add-Type -AssemblyName System.Windows.Forms,System.Drawing -EA SilentlyContinue
-    $bnd = [System.Windows.Forms.SystemInformation]::VirtualScreen
-    $bmp = New-Object System.Drawing.Bitmap $bnd.Width, $bnd.Height
-    $gg = [System.Drawing.Graphics]::FromImage($bmp)
-    $gg.CopyFromScreen($bnd.Location, [System.Drawing.Point]::Empty, $bnd.Size)
-    $shot = Join-Path $base ('out\shot_' + $Tag + '_' + $f.BaseName + '.png')
-    $bmp.Save($shot, [System.Drawing.Imaging.ImageFormat]::Png)
-    $gg.Dispose(); $bmp.Dispose()
-  } catch { 'SHOT_FAIL ' + $_.Exception.Message | Add-Content $log }
+  Take-Shot (Join-Path $base ('out\shot_' + $Tag + '_' + $f.BaseName + '.png')) | Out-Null
   $txt = ''
   if (Test-Path $stdout) { $txt = Get-Content $stdout -Raw }
   if ($txt -match 'Invalid switch|^usage: cdb') {
