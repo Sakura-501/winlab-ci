@@ -154,11 +154,16 @@ foreach ($f in $files) {
     $before = @(Get-ChildItem $dumpsDir -Filter *.dmp -EA SilentlyContinue | ForEach-Object Name)
     $t0 = Get-Date
     $stdout = Join-Path $base ('out\' + $f.BaseName + '_' + $m + '.log')
-    $args = @('-cf', $cmdf, $pp)
-    if ($m -eq 'show') { $args += '/s' }
-    $args += ('"' + $f.FullName + '"')
+    # `$args` is a PowerShell automatic variable; assigning to it inside a param()'d script is a
+    # known footgun, so the launcher array gets its own name.  The local symbol path plus -netsrc:0
+    # keeps cdb from probing the network at every module load (the runner default is `srv*`).
+    $symLocal = Join-Path $env:TEMP ('sym_' + $Tag)
+    New-Item -ItemType Directory -Force -Path $symLocal | Out-Null
+    $cdbArgs = @('-y', $symLocal, '-netsrc:0', '-cf', $cmdf, $pp)
+    if ($m -eq 'show') { $cdbArgs += '/s' }
+    $cdbArgs += ('"' + $f.FullName + '"')
     if ($cdb) {
-      $p = Start-Process -FilePath $cdb -ArgumentList $args -PassThru -WindowStyle Hidden `
+      $p = Start-Process -FilePath $cdb -ArgumentList $cdbArgs -PassThru -WindowStyle Hidden `
            -RedirectStandardOutput $stdout -RedirectStandardError ($stdout + '.err')
     } else {
       $ppArgs = @(); if ($m -eq 'show') { $ppArgs += '/s' }; $ppArgs += ('"' + $f.FullName + '"')
