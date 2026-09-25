@@ -60,7 +60,14 @@ $SIG = [ordered]@{
   CPY = '488D0C48E8????????8B45??018760020000'
   # `push rbp/rbx/rsi/rdi/r12-r15` prologue + `lea rbp,[rsp+disp]` + `sub rsp,<frame>` + `xor edi,edi`
   # + `mov [rbp+0x10],edi`; disp and frame size wildcarded (both move with servicing builds).
+  # Measured 2026-09-25 10:39Z: this one matched 20132/20144 but NOT the installed 20430.20092
+  # (`TRY mso.dll -> CPY,FDS,NEG`), so it is kept as an optional control only.
   LEX = '40555356574154415541564157488D6C24??4881EC????????33FF48897D10'
+  # ?FCommitHtmlTag@@YAH... prologue at 20144 RVA 0x1c540: `push rbx ; sub rsp,imm ; mov r11,r8 ;
+  # mov eax,<bound> ; mov r8,rdx ; mov r10,r9 ; mov rbx,rcx ; mov edx,1 ; cmp r8,eax`.  Every imported
+  # tag passes through here, so TAGS>0 with FDS=0 separates "importer ran, no div/span commit" from
+  # "importer never ran".  Optional (the imm8 form may have become imm32 on the installed build).
+  TAGS = '40534883EC??4D8BD8B8????????448BC24D8BD1488BD9BA01000000443BC0'
 }
 $REQUIRED = @('FDS','NEG','CPY')
 function Get-Anchors([string]$path) {
@@ -204,13 +211,21 @@ foreach ($f in $files) {
   $c += ('? ' + $modTok + '+0x' + ('{0:X}' -f $rv['FDS']))
   # Register-only payloads: `r` prints the full context, which is what carries the count (ecx at NEG)
   # and the length handed to memcpy (r8 = 2*count at CPY).  `r rcx rax` was invalid cdb syntax.
-  if ($rv['LEX']) { $c += ("bu {1}+0x{0:X} `".echo LEX;g`"" -f $rv['LEX'], $modTok) }
+  # /1 = stop after the first hit: the controls only need to answer "did this layer run at all",
+  # and an unconditional payload would fire once per tag (thousands of debugger round trips a file).
+  if ($rv['LEX']) { $c += ("bu /1 {1}+0x{0:X} `".echo LEX;g`"" -f $rv['LEX'], $modTok) }
+  if ($rv['TAGS']) { $c += ("bu /1 {1}+0x{0:X} `".echo TAGS;g`"" -f $rv['TAGS'], $modTok) }
   $c += ("bu {1}+0x{0:X} `".echo FDS;g`"" -f $rv['FDS'], $modTok)
   $c += ("bu {1}+0x{0:X} `".echo NEG;r;g`"" -f $rv['NEG'], $modTok)
   $c += ("bu {1}+0x{0:X} `".echo CPY;r;g`"" -f $rv['CPY'], $modTok)
   $c += 'bl'
   $c += 'g'
-  for ($i = 0; $i -lt 24; $i++) { $c += '.echo ====STOP'; $c += 'g' }
+  # The smoke round of 2026-09-25 10:35Z ended with all three breakpoints bound and enabled
+  # (`bl` -> `0 e 00007ffb`25f095e8 ... mso!Ordinal25108+0x148 ".echo FDS;g"`) and `g` answering
+  # "No runnable debuggees" from the first stop onward, i.e. the debugged POWERPNT had exited.
+  # `.lastevent` on each stop records which event ended the run (exit code vs breakpoint vs exception)
+  # so an early exit cannot be read as "the code path was not reached".
+  for ($i = 0; $i -lt 8; $i++) { $c += '.echo ====STOP'; $c += '.lastevent'; $c += 'g' }
   $c += '.echo ====LADDER_END'
   $c += 'bl'
   $c += '.echo ====END'
@@ -269,6 +284,10 @@ foreach ($f in $files) {
   $neg = ([regex]::Matches($txt, '(?m)^NEG')).Count
   $cpy = ([regex]::Matches($txt, '(?m)^CPY')).Count
   $lex = ([regex]::Matches($txt, '(?m)^LEX')).Count
+  $tags = ([regex]::Matches($txt, '(?m)^TAGS')).Count
+  $dead = ([regex]::Matches($txt, 'No runnable debuggees')).Count
+  $lev  = (([regex]::Match($txt, '(?m)^Last event:.*')).Value -replace '\s+', ' ')
+  if ($lev.Length -gt 110) { $lev = $lev.Substring(0, 110) }
   $big = ([regex]::Matches($txt, '(?m)^r8=([89ABCDEF][0-9A-F]{15}|[1-9][0-9A-F]{15})')).Count
   $av  = ([regex]::Matches($txt, 'Access violation')).Count
   # Instrument self-reads: ====MSO_LOADED proves the sxe ld: break happened, `mso+0x…` resolution
@@ -282,9 +301,9 @@ foreach ($f in $files) {
   $flat = ($titles -replace '\s', '')
   $tm = 0
   if ($flat -and $flat.IndexOf($f.BaseName, [StringComparison]::OrdinalIgnoreCase) -ge 0) { $tm = 1 }
-  ('{0,-26} state={1,-11} LEX={2} FDS={3} NEG={4} CPY={5} r8big={6} av={7} dumps={8} titlematch={9} npp={10} loaded={11} unres={12} stops={13} ladder={14} expr={15} titles={16}' -f `
-    $f.Name, $st, $lex, $fds, $neg, $cpy, $big, $av, (@(Get-ChildItem $dumpsDir -Filter *.dmp -EA SilentlyContinue | Where-Object { $_.LastWriteTime -gt $t0 }).Count), `
-    $tm, $npp, $loaded, $unres, $stops, $ladder, $bind, $titles) | Add-Content $log
+  ('{0,-26} state={1,-11} TAGS={2} LEX={3} FDS={4} NEG={5} CPY={6} r8big={7} av={8} dumps={9} titlematch={10} npp={11} loaded={12} unres={13} stops={14} dead={15} ladder={16} expr={17} titles={18} lastevent={19}' -f `
+    $f.Name, $st, $tags, $lex, $fds, $neg, $cpy, $big, $av, (@(Get-ChildItem $dumpsDir -Filter *.dmp -EA SilentlyContinue | Where-Object { $_.LastWriteTime -gt $t0 }).Count), `
+    $tm, $npp, $loaded, $unres, $stops, $dead, $ladder, $bind, $titles, $lev) | Add-Content $log
   if (-not $loaded -or $unres -or -not $bind) {
     ('INSTRUMENT_NOT_PROVEN ' + $f.Name + ' loaded=' + $loaded + ' unres=' + $unres + ' expr=' + $bind +
      ' :: a zero hit count in this case is not attributable') | Add-Content $log
