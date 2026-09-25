@@ -30,7 +30,10 @@ jobs:
           "trying channel=$ch"
           $r = Start-Process -Wait -PassThru -FilePath .\odtx\setup.exe -ArgumentList "/configure","cfg.xml"
           "setup exit=$($r.ExitCode)"
-          $m = Get-Item "C:\Program Files\Microsoft Office\root\Office16\mso.dll" -EA SilentlyContinue
+          $msoCand = @('C:\Program Files\Common Files\Microsoft Shared\OFFICE16\mso.dll','C:\Program Files\Microsoft Office\root\vfs\ProgramFilesCommonX64\Microsoft Shared\OFFICE16\mso.dll','C:\Program Files\Microsoft Office\root\vfs\ProgramFilesCommonX86\Microsoft Shared\OFFICE16\mso.dll','C:\Program Files\Microsoft Office\root\Office16\mso.dll')
+          $m = $null
+          foreach ($cp in $msoCand) { $t = Get-Item $cp -EA SilentlyContinue; if ($t) { $m = $t; break } }
+          if (-not $m) { $m = Get-ChildItem 'C:\Program Files\Microsoft Office\root' -Recurse -Filter mso.dll -EA SilentlyContinue | Sort-Object Length -Descending | Select-Object -First 1 }
           if ($m) {
             "mso v{0} size={1}" -f $m.VersionInfo.FileVersion, $m.Length
             ("{0} {1}" -f $ch, $m.VersionInfo.FileVersion) | Out-File ver.txt
@@ -41,8 +44,14 @@ jobs:
           "after $ch : mso=$([bool]$m) pp=$([bool]$pp)"
           Start-Process -Wait -FilePath .\odtx\setup.exe -ArgumentList "/configure","cfg.xml","/force-downgrade" -EA SilentlyContinue
         }
-        if (-not (Test-Path "C:\Program Files\Microsoft Office\root\Office16\mso.dll")) {
-          "Office16 listing:"; (Get-ChildItem "C:\Program Files\Microsoft Office\root\Office16" -EA SilentlyContinue | Select-Object -First 40 Name) -join " "
+        $found = @($msoCand | Where-Object { Test-Path $_ })
+        if ($found.Count -eq 0) {
+          $h = Get-ChildItem 'C:\Program Files\Microsoft Office\root' -Recurse -Filter mso.dll -EA SilentlyContinue | Sort-Object Length -Descending | Select-Object -First 1
+          if ($h) { $found = @($h.FullName) }
+        }
+        "mso locations: $($found -join ' | ')"
+        if ($found.Count -eq 0) {
+          "Office16 listing:"; ((Get-ChildItem "C:\Program Files\Microsoft Office\root\Office16" -EA SilentlyContinue | Select-Object -First 40).Name -join " ")
           throw "mso missing after all channels"
         }
     - name: Build HTML carriers
