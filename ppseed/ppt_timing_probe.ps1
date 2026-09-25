@@ -74,6 +74,10 @@ $files = @(Get-ChildItem $Dir -File -Filter *.pptx | Sort-Object Name)
 "cases=$($files.Count)" | Add-Content $log
 foreach ($f in $files) {
   Set-Content -Path $f.FullName -Stream Zone.Identifier -Value "[ZoneTransfer]`r`nZoneId=3" -Encoding ASCII
+  # runner is single-tenant: clear every POWERPNT instance so the document cannot be relayed to a
+  # surviving instance (measured 2026-09-25 run 36103535396: 8/10 cases reported another case's title)
+  Get-Process POWERPNT -EA SilentlyContinue | Stop-Process -Force -EA SilentlyContinue
+  Start-Sleep -Seconds 2
   $modes = @('open')
   if ($Show) { $modes += 'show' }
   foreach ($m in $modes) {
