@@ -7,6 +7,12 @@
 #   CPY  the memcpy argument site @0x1c9d50     - the copy actually issued, with r8 = 2*count
 # The interesting reading is NEG>0 and/or a CPY whose r8 is enormous (negative doubled).
 # Signature source: office-sep2026-fixsurface-20260913/bin/mso_20326.20144_x64.dll
+#
+# LEX is a positive control: ?TkLexHtml@@YAHXZ @0x180019490, the HTML lexer that drives the tag
+# callback feeding the div/span commit.  Its prologue (push rbx..rbp sequence + frame alloc) matches
+# exactly once in both 20132 and 20144 x64.  LEX>0 with FDS=0 separates "the app never ran the HTML
+# lexer" from "the sink breakpoints are not live"; FDS=0 with LEX=0 cannot be read as a negative
+# about the sink at all.
 param([string]$Dir = 'carriers_h',
       [string]$Tag = 'htmllen',
       [string]$Base = '.',
@@ -51,7 +57,11 @@ $SIG = [ordered]@{
   # lea rcx,[rax+rcx*2] ; call memcpy(rel32 wildcarded) ; mov eax,[rbp+<off>](offset wildcarded) ;
   # add dword ptr [rdi+0x260],eax   -- 0x260 is a struct field offset and is kept literal.
   CPY = '488D0C48E8????????8B45??018760020000'
+  # `push rbp/rbx/rsi/rdi/r12-r15` prologue + `lea rbp,[rsp+disp]` + `sub rsp,<frame>` + `xor edi,edi`
+  # + `mov [rbp+0x10],edi`; disp and frame size wildcarded (both move with servicing builds).
+  LEX = '40555356574154415541564157488D6C24??4881EC????????33FF48897D10'
 }
+$REQUIRED = @('FDS','NEG','CPY')
 function Get-Anchors([string]$path) {
   $out = @{}
   $bytes = [IO.File]::ReadAllBytes($path)
@@ -87,7 +97,7 @@ function Get-Anchors([string]$path) {
       if ($ok) { $idx = $c; break }
       $from = $c + 1
     }
-    if ($idx -lt 0) { return $out }
+    if ($idx -lt 0) { continue }   # partial results are fine; the required-key check decides
     $out[$k] = ($tva + ($idx - $tpraw))
   }
   return $out
@@ -102,7 +112,9 @@ $rv = @{}; $modTok = ''
 foreach ($h in $hosts) {
   $r = Get-Anchors $h
   ("TRY {0} -> {1}" -f (Split-Path $h -Leaf), (($r.Keys | Sort-Object) -join ',')) | Add-Content $log
-  if ($r.Count -eq $SIG.Count) { $rv = $r; $modTok = (Split-Path $h -Leaf) -replace '\.dll$',''; break }
+  $have = 0
+  foreach ($q in $REQUIRED) { if ($r[$q]) { $have++ } }
+  if ($have -eq $REQUIRED.Count) { $rv = $r; $modTok = (Split-Path $h -Leaf) -replace '\.dll$',''; break }
 }
 foreach ($k in $SIG.Keys) { if ($rv[$k]) { ("SIG {0} rva=0x{1:X}" -f $k, $rv[$k]) | Add-Content $log } }
 if (-not $modTok) { 'ANCHOR_FAIL' | Add-Content $log; Get-Content $log; exit 1 }
@@ -175,16 +187,32 @@ foreach ($f in $files) {
   Remove-Item ($appRoot + '\Resiliency') -Recurse -Force -EA SilentlyContinue
   Start-Sleep -Seconds 1
   $cmdf = Join-Path $base ('out\' + $f.BaseName + '.cdb')
+  # First-chance noise on this app is large (C++ EH, WinRT originate error, 0xc004f013 from the JSI
+  # worker).  Declaring them notification-only keeps `g` running; the smoke run of 2026-09-25 showed
+  # cdb returning from `g` into the tail commands mid-startup (prompt moved to thread 7, a v8jsi
+  # SleepConditionVariableSRW wait), after which `q` killed the debuggee before the carrier was read.
+  # On top of that the run now arms the breakpoints *after* an `sxe ld:mso.dll` break so no deferred
+  # `bu` resolution is needed, and the resume ladder below survives any further stray stop.
   $c = @('.sympath()', ('.echo ====CASE ' + $f.BaseName))
-  # Register-only payloads: the NEG anchor starts *at* `neg ecx`, so a hit means the fetched count
-  # was negative (ecx = |count|, rax = used); the CPY anchor is the instruction before `call memcpy`
-  # with r8 = 2*count.  Avoiding `poi(@rbp+off)` keeps the probe independent of this build's frame layout.
-  $c += ("bu {1}+0x{0:X} `".echo FDS; g`"" -f $rv['FDS'], $modTok)
-  $c += ("bu {1}+0x{0:X} `".echo NEG; r rcx rax; g`"" -f $rv['NEG'], $modTok)
-  $c += ("bu {1}+0x{0:X} `".echo CPY; r r8 rcx; g`"" -f $rv['CPY'], $modTok)
-  $c += 'sxn av'
+  foreach ($ec in @('sxn av','sxn e06d7363','sxn e0434352','sxn c004f013','sxn 40080201',
+                    'sxn 000006ef','sxn 80000003','sxn c00000fd')) { $c += $ec }
+  $c += 'sxe ld:mso.dll'
   $c += 'g'
-  $c += '.echo ====EXC'; $c += 'r'; $c += 'k 16'; $c += '.echo ====END'; $c += 'q'
+  $c += '.echo ====MSO_LOADED'
+  $c += ('? ' + $modTok + '+0x' + ('{0:X}' -f $rv['FDS']))
+  # Register-only payloads: `r` prints the full context, which is what carries the count (ecx at NEG)
+  # and the length handed to memcpy (r8 = 2*count at CPY).  `r rcx rax` was invalid cdb syntax.
+  if ($rv['LEX']) { $c += ("bu {1}+0x{0:X} `".echo LEX;g`"" -f $rv['LEX'], $modTok) }
+  $c += ("bu {1}+0x{0:X} `".echo FDS;g`"" -f $rv['FDS'], $modTok)
+  $c += ("bu {1}+0x{0:X} `".echo NEG;r;g`"" -f $rv['NEG'], $modTok)
+  $c += ("bu {1}+0x{0:X} `".echo CPY;r;g`"" -f $rv['CPY'], $modTok)
+  $c += 'bl'
+  $c += 'g'
+  for ($i = 0; $i -lt 24; $i++) { $c += '.echo ====STOP'; $c += 'g' }
+  $c += '.echo ====LADDER_END'
+  $c += 'bl'
+  $c += '.echo ====END'
+  $c += 'q'
   Set-Content -LiteralPath $cmdf -Value $c -Encoding ASCII
   $t0 = Get-Date
   $stdout = Join-Path $base ('out\' + $f.BaseName + '.log')
@@ -202,6 +230,12 @@ foreach ($f in $files) {
     if (-not (Get-Process -Id $p.Id -EA SilentlyContinue)) { $st = 'cdb-exited'; break }
   }
   $exe = ($App -replace '\.EXE$','')
+  # Titles/instance count must be sampled *before* the recycle below, otherwise the window evidence
+  # can never be positive (the previous revision read them after Stop-Process: titlematch=0 npp=0 by
+  # construction).
+  $procs = @(Get-Process $exe -EA SilentlyContinue)
+  $titles = (@($procs | ForEach-Object { $_.MainWindowTitle }) -join ' | ')
+  $npp = $procs.Count
   Get-Process $exe -EA SilentlyContinue | Where-Object { $_.StartTime -gt $t0.AddSeconds(-3) } | Stop-Process -Force -EA SilentlyContinue
   Start-Sleep -Seconds 1
   Get-Process -Id $p.Id -EA SilentlyContinue | Stop-Process -Force -EA SilentlyContinue
@@ -227,15 +261,27 @@ foreach ($f in $files) {
   $fds = ([regex]::Matches($txt, '(?m)^FDS')).Count
   $neg = ([regex]::Matches($txt, '(?m)^NEG')).Count
   $cpy = ([regex]::Matches($txt, '(?m)^CPY')).Count
+  $lex = ([regex]::Matches($txt, '(?m)^LEX')).Count
   $big = ([regex]::Matches($txt, '(?m)^r8=([89ABCDEF][0-9A-F]{15}|[1-9][0-9A-F]{15})')).Count
   $av  = ([regex]::Matches($txt, 'Access violation')).Count
-  $titles = (@(Get-Process $exe -EA SilentlyContinue | ForEach-Object { $_.MainWindowTitle }) -join ' | ')
+  # Instrument self-reads: ====MSO_LOADED proves the sxe ld: break happened, `mso+0x…` resolution
+  # failure would print "Unable to resolve", and ====LADDER_END means the resume ladder was consumed
+  # (i.e. the target kept stopping) rather than the case ending because the harness gave up.
+  $loaded = ([regex]::Matches($txt, '(?m)^====MSO_LOADED')).Count
+  $unres  = ([regex]::Matches($txt, 'Unable to resolve')).Count
+  $stops  = ([regex]::Matches($txt, '(?m)^====STOP')).Count
+  $ladder = ([regex]::Matches($txt, '(?m)^====LADDER_END')).Count
+  $bind   = ([regex]::Matches($txt, 'Evaluate expression')).Count
   $flat = ($titles -replace '\s', '')
   $tm = 0
   if ($flat -and $flat.IndexOf($f.BaseName, [StringComparison]::OrdinalIgnoreCase) -ge 0) { $tm = 1 }
-  ('{0,-26} state={1,-11} FDS={2} NEG={3} CPY={4} r8big={5} av={6} dumps={7} titlematch={8} npp={9} titles={10}' -f `
-    $f.Name, $st, $fds, $neg, $cpy, $big, $av, (@(Get-ChildItem $dumpsDir -Filter *.dmp -EA SilentlyContinue | Where-Object { $_.LastWriteTime -gt $t0 }).Count), `
-    $tm, (@(Get-Process $exe -EA SilentlyContinue).Count), $titles) | Add-Content $log
+  ('{0,-26} state={1,-11} LEX={2} FDS={3} NEG={4} CPY={5} r8big={6} av={7} dumps={8} titlematch={9} npp={10} loaded={11} unres={12} stops={13} ladder={14} expr={15} titles={16}' -f `
+    $f.Name, $st, $lex, $fds, $neg, $cpy, $big, $av, (@(Get-ChildItem $dumpsDir -Filter *.dmp -EA SilentlyContinue | Where-Object { $_.LastWriteTime -gt $t0 }).Count), `
+    $tm, $npp, $loaded, $unres, $stops, $ladder, $bind, $titles) | Add-Content $log
+  if (-not $loaded -or $unres -or -not $bind) {
+    ('INSTRUMENT_NOT_PROVEN ' + $f.Name + ' loaded=' + $loaded + ' unres=' + $unres + ' expr=' + $bind +
+     ' :: a zero hit count in this case is not attributable') | Add-Content $log
+  }
 }
 if ($g) { & $g.FullName /p /disable $App | Out-Null }
 'dump_total=' + @(Get-ChildItem $dumpsDir -Filter *.dmp -EA SilentlyContinue).Count | Add-Content $log

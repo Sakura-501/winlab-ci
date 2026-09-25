@@ -85,7 +85,7 @@ jobs:
         foreach ($t in @('htmllenpp','htmllenwd')) {
           $f = "out\$($t)_log.txt"
           "##### $t"
-          if (Test-Path $f) { Get-Content $f | Select-String 'SIG |TRY |state=|ANCHOR|NO_CDB|dump_total|GlobalFlag|cases=|msoPath|DUMP_CHANNEL' } else { "missing" }
+          if (Test-Path $f) { Get-Content $f | Select-String 'SIG |TRY |state=|ANCHOR|NO_CDB|dump_total|GlobalFlag|cases=|msoPath|DUMP_CHANNEL|INSTRUMENT' } else { "missing" }
         }
         "dumps=" + @(Get-ChildItem dumps -Filter *.dmp -EA SilentlyContinue).Count
         (Get-ChildItem dumps -Filter *.dmp -EA SilentlyContinue | ForEach-Object { $_.Name + ":" + $_.Length }) -join " "
