@@ -83,10 +83,12 @@ foreach ($f in $files) {
     foreach ($kk in @('FVAL', 'TVCTOR', 'DROP', 'ONT')) {
       if ($rv[$kk]) {
         $blk = if ($kk -eq 'FVAL' -or $kk -eq 'TVCTOR') { ('.echo {0}; r dl; g' -f $kk) } else { ('.echo {0}; g' -f $kk) }
-        $c += ('bp ppcore+0x{0:X} "{1}"' -f $rv[$kk], $blk)
+        $c += ('bu ppcore+0x{0:X} "{1}"' -f $rv[$kk], $blk)   # bu = deferred: ppcore is not loaded yet when the command file runs
       }
     }
     $c += 'sxn av'
+    $c += '.echo ====BPS'
+    $c += 'bl'
     $c += 'g'
     $c += '.echo ====EXC'
     $c += 'r'
