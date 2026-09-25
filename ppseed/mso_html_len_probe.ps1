@@ -193,7 +193,7 @@ foreach ($f in $files) {
   # switch the network source off.
   $symLocal = Join-Path $env:TEMP ('sym_' + $Tag)
   New-Item -ItemType Directory -Force -Path $symLocal | Out-Null
-  $cdbArgs = @('-y', $symLocal, '-netsrc:0', '-cf', $cmdf, $appPath, ('"' + $f.FullName + '"'))
+  $cdbArgs = @('-y', $symLocal, '-cf', $cmdf, $appPath, ('"' + $f.FullName + '"'))
   $p = Start-Process -FilePath $cdbExe -ArgumentList $cdbArgs -PassThru -WindowStyle Hidden `
        -RedirectStandardOutput $stdout -RedirectStandardError ($stdout + '.err')
   $st = 'timeout'
@@ -219,6 +219,11 @@ foreach ($f in $files) {
   } catch { 'SHOT_FAIL ' + $_.Exception.Message | Add-Content $log }
   $txt = ''
   if (Test-Path $stdout) { $txt = Get-Content $stdout -Raw }
+  if ($txt -match 'Invalid switch|^usage: cdb') {
+    ('CDB_ARGV_FAIL ' + $f.Name + ' :: ' + (($txt -split "`n")[0..2] -join ' / ')) | Add-Content $log
+    Get-Content $log
+    exit 1
+  }
   $fds = ([regex]::Matches($txt, '(?m)^FDS')).Count
   $neg = ([regex]::Matches($txt, '(?m)^NEG')).Count
   $cpy = ([regex]::Matches($txt, '(?m)^CPY')).Count
