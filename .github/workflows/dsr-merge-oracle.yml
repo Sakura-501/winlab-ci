@@ -59,7 +59,7 @@ jobs:
         if ($aDll) { $combos += @{ dll = $aDll.FullName; tag = 'A_35738'; rva = 'A1CC0' } }
         $combos += @{ dll = (Get-ChildItem dsr_*.dll | Where-Object Name -match 'x64' | Select-Object -First 1).FullName; tag = 'B_36250'; rva = 'BFBF0' }
         foreach ($c in $combos) {
-          foreach ($obj in @('t_orig','t_evil')) {
+          foreach ($obj in @('t','t_evil')) {
             Copy-Item "$obj.obj" t.obj -Force
             $o = & .\mo11.exe t.pdb $c.dll $c.rva 2>&1 | Out-String
             "=== dll=$($c.tag) obj=$obj exit=$LASTEXITCODE ===" | Tee-Object -FilePath "out\log_$($c.tag)_$obj.txt"
