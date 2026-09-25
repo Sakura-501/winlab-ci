@@ -11,7 +11,8 @@ param([string]$Dir = 'carriers_h',
       [string]$Tag = 'htmllen',
       [string]$Base = '.',
       [string]$App = 'POWERPNT.EXE',
-      [int]$WaitSec = 110)
+      [int]$WaitSec = 110,
+      [int]$MaxCases = 0)
 $ErrorActionPreference = 'Continue'
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $root = 'C:\Program Files\Microsoft Office\root\Office16'
@@ -154,6 +155,9 @@ Start-Process -FilePath 'C:\Program Files\PowerShell\7\pwsh.exe' -ArgumentList '
 if (-not [IO.Path]::IsPathRooted($Dir)) { $Dir = Join-Path $base $Dir }
 $files = @(Get-ChildItem $Dir -File -EA SilentlyContinue | Where-Object { $_.Extension -in '.htm','.html','.mht','.mhtml' } | Sort-Object Name)
 "cases=$($files.Count) dir=$Dir pwd=$((Get-Location).Path)" | Add-Content $log
+if ($MaxCases -gt 0 -and $files.Count -gt $MaxCases) {
+  $files = @($files | Select-Object -First $MaxCases)
+}
 if ($files.Count -eq 0) { 'NO_CARRIERS (empty corpus: the 0-hit readings below would be meaningless)' | Add-Content $log; Get-Content $log; exit 1 }
 $dumpsDir = Join-Path $base 'dumps'
 $appRoot = 'HKCU:\SOFTWARE\Microsoft\Office\16.0\' + ($App -replace '\.EXE$','')
