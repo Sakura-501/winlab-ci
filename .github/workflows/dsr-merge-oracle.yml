@@ -26,12 +26,12 @@ jobs:
         call "%VCVARS%" x64_arm64
         (echo int data_x=7;)> t.c
         (echo int __declspec(noinline^) tiny(int p^){ return p + data_x; })>> t.c
-        cl /nologo /Zi /Gy /O2 /c t.c
+        cl /nologo /FS /Zi /Gy /O2 /c t.c
+dir t.pdb
     - name: Patch evil variant
       shell: pwsh
       run: |
         python patch_obj.py
-        Copy-Item t.pdb vm_t_stub.pdb -Force
     - name: Prepare fixtures
       shell: pwsh
       run: |
