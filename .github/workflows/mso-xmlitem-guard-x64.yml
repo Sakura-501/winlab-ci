@@ -25,6 +25,8 @@ on:
 jobs:
   guard:
     runs-on: windows-latest
+    env:
+      XMLSLOT: '17'
     steps:
     - name: Download ODT
       shell: pwsh
@@ -190,13 +192,40 @@ jobs:
         if ($nrec -lt 140) { throw "xml-item corpus not materialized ($nrec)" }
         if ((Get-Item corpus\mime25.txt).Length -lt 100000) { throw 'MIME tail family not materialized' }
 
+    - name: Discover which importer vtable slot runs the HTML tokenizer
+      shell: pwsh
+      run: |
+        # mso's tokenizer ?TkLexHtml@@YAHXZ (0x193b0 on the installed 16.0.20430.20092 x64) has exactly
+        # one caller in the module: ?FDoImportCopyContent@HI@@UEAAHPEAUIMsoHTMLExport@@@Z at 0x1eef0
+        # (call at +0x25e).  Both sinks of this line sit under that call, and the slot pinned by
+        # earlier waves (slot=17) reports callbacks and stream bytes but never enters TkLexHtml
+        # (run 36141057840: 18 anchors all `e`, chain=LEX=0 HTAG=0 INITC=0 POXT=0 with cbs=13914),
+        # so the import entry the harness reaches has to be found by rva, not by bytes-read ranking.
+        # The harness prints `slot<N> rva=0x<RVA>` while probing (i.e. with no `slot=` argument),
+        # so replay the corpus's control record once and pick the index whose rva is FDoImportCopyContent.
+        $env:PATH = 'C:\Program Files\Microsoft Office\root\Office16;' + $env:PATH
+        $o = & .\bin\gbx.exe msohtml corpus\xmlitem.txt 1 0 none norel noskip max=64 2>&1 | Out-String
+        $o | Set-Content out\slotprobe.txt
+        ($o -split "`n" | Select-String 'slot[0-9]+ rva=|IMPORT_SLOT=|NOIMPORTSLOT|ARM |MSO base') -join "`n"
+        $wantRva = 0x1eef0
+        $m = [regex]::Matches($o, 'slot(\d+) rva=0x([0-9a-fA-F]+)')
+        $pick = -1
+        foreach ($x in $m) {
+          if ([Convert]::ToInt32($x.Groups[2].Value, 16) -eq $wantRva) { $pick = [int]$x.Groups[1].Value; break }
+        }
+        "tokenizer_slot_candidates=" + $m.Count
+        "TOKENIZER_SLOT=$pick"
+        if ($pick -ge 0) { "XMLSLOT=$pick" | Add-Content $env:GITHUB_ENV }
+        else { 'XMLSLOT=17' | Add-Content $env:GITHUB_ENV; 'TOKENIZER_SLOT_NOT_IN_TABLE' }
+      continue-on-error: true
+
     - name: XML-item reuse-gate records under the armed heap
       shell: pwsh
       run: |
         # The harness starts by LoadLibraryA("OLMAPI32.dll"); that only resolves when the Office16
         # directory is on PATH (run 36131021711 printed `NOMOD err=126` without it).
         $env:PATH = 'C:\Program Files\Microsoft Office\root\Office16;' + $env:PATH
-        $o = & .\bin\gbx.exe msohtml corpus\xmlitem.txt 300 0 none life noskip slot=17 2>&1 | Out-String
+        $o = & .\bin\gbx.exe msohtml corpus\xmlitem.txt 300 0 none life noskip slot=$env:XMLSLOT 2>&1 | Out-String
         "-----GBX OUTPUT BEGIN-----"
         $o
         "-----GBX OUTPUT END-----"
@@ -293,7 +322,7 @@ jobs:
         $all = @()
         foreach ($fl in $flagList) {
           $env:GBFLAGS = '0x{0:X}' -f $fl
-          $one = & $cdb -cf $cf .\bin\gbx.exe msohtml corpus\xmlitem.txt 300 0 none life noskip slot=17 2>&1 | Out-String
+          $one = & $cdb -cf $cf .\bin\gbx.exe msohtml corpus\xmlitem.txt 300 0 none life noskip slot=$env:XMLSLOT 2>&1 | Out-String
           $row = 'FLAGS=0x{0:X8} fds={1} neg={2} cpy={3} req={4} grown={5} ' -f $fl,
             ([regex]::Matches($one, '(?m)^FDS$')).Count, ([regex]::Matches($one, '(?m)^NEG$')).Count,
             ([regex]::Matches($one, '(?m)^CPY$')).Count, ([regex]::Matches($one, '(?m)^REQ$')).Count,
