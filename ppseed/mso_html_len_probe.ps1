@@ -43,7 +43,9 @@ if (-not $mso) { "START $(Get-Date -Format HH:mm:ss) MSO_NOT_FOUND candidates=$(
 $SIG = [ordered]@{
   FDS = '4C894C2420488954241055535657415441554157488D6C24'
   NEG = 'F7D98BD1483BD077E2482BC2'
-  CPY = '488D0C48E87742EEFF8B4577018760020000E9CD00000048'
+  # lea rcx,[rax+rcx*2] ; call memcpy(rel32 wildcarded) ; mov eax,[rbp+<off>](offset wildcarded) ;
+  # add dword ptr [rdi+0x260],eax   -- 0x260 is a struct field offset and is kept literal.
+  CPY = '488D0C48E8????????8B45??018760020000'
 }
 function Get-Anchors([string]$path) {
   $out = @{}
@@ -63,9 +65,23 @@ function Get-Anchors([string]$path) {
   if (-not $tpraw) { return $out }
   $latin = [Text.Encoding]::GetEncoding(28591).GetString($bytes)
   foreach ($k in $SIG.Keys) {
-    $pat = ''; $h = $SIG[$k]
-    for ($j = 0; $j -lt $h.Length; $j += 2) { $pat += [char][Convert]::ToInt32($h.Substring($j, 2), 16) }
-    $idx = $latin.IndexOf($pat, [StringComparison]::Ordinal)
+    $h = $SIG[$k]
+    $bts = @(); for ($j = 0; $j -lt $h.Length; $j += 2) {
+      $pair = $h.Substring($j, 2)
+      if ($pair -eq '??') { $bts += -1 } else { $bts += [Convert]::ToInt32($pair, 16) } }
+    # anchor the scan on the leading literal run, then verify byte-by-byte (?? = any byte)
+    $lit = ''
+    foreach ($v in $bts) { if ($v -lt 0) { break }; $lit += [char]$v }
+    $idx = -1; $from = 0
+    while ($true) {
+      $c = $latin.IndexOf($lit, $from, [StringComparison]::Ordinal)
+      if ($c -lt 0) { break }
+      $ok = $true
+      for ($m = 0; $m -lt $bts.Count; $m++) {
+        if ($bts[$m] -ge 0 -and [int][byte]$latin[$c + $m] -ne $bts[$m]) { $ok = $false; break } }
+      if ($ok) { $idx = $c; break }
+      $from = $c + 1
+    }
     if ($idx -lt 0) { return $out }
     $out[$k] = ($tva + ($idx - $tpraw))
   }
@@ -137,11 +153,12 @@ foreach ($f in $files) {
   Start-Sleep -Seconds 2
   $cmdf = Join-Path $base ('out\' + $f.BaseName + '.cdb')
   $c = @('.sympath()', '.echo ====CASE ' + $f.BaseName)
-  # `?` (evaluate) prints both the signed decimal and the 64-bit hex form, so a negative count and
-  # the size_t it becomes are readable without any nested quoting inside the cdb command string.
-  $c += ("bu {1}+0x{0:X} `".echo FDS; ? poi(@rbp+0x77); g`"" -f $rv['FDS'], $modTok)
-  $c += ("bu {1}+0x{0:X} `".echo NEG; ? poi(@rbp+0x77); g`"" -f $rv['NEG'], $modTok)
-  $c += ("bu {1}+0x{0:X} `".echo CPY; ? @r8; ? poi(@rbp+0x77); g`"" -f $rv['CPY'], $modTok)
+  # Register-only payloads: the NEG anchor starts *at* `neg ecx`, so a hit means the fetched count
+  # was negative (ecx = |count|, rax = used); the CPY anchor is the instruction before `call memcpy`
+  # with r8 = 2*count.  Avoiding `poi(@rbp+off)` keeps the probe independent of this build's frame layout.
+  $c += ("bu {1}+0x{0:X} `".echo FDS; g`"" -f $rv['FDS'], $modTok)
+  $c += ("bu {1}+0x{0:X} `".echo NEG; r rcx rax; g`"" -f $rv['NEG'], $modTok)
+  $c += ("bu {1}+0x{0:X} `".echo CPY; r r8 rcx; g`"" -f $rv['CPY'], $modTok)
   $c += 'sxn av'
   $c += 'g'
   $c += '.echo ====EXC'; $c += 'r'; $c += 'k 16'; $c += '.echo ====END'; $c += 'q'
