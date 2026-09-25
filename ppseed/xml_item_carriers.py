@@ -67,6 +67,39 @@ CASES = [
 ]
 
 
+
+# Comment-island shapes.  Why these exist: the state field the XML branch is gated on
+# ([[HISD+0x2b0]+0x10440] == 5) is written only by the HTML comment layer in mso
+# (FInitComment 0x63c51a on the HICD control byte +0x60 bit 0x20; FProcessComment 0x87d4cc and
+# TkLexHtml 0x1a918 on (HISD+8 & 0x0c000000) == 0x04000000, bit 0x1a being set by FInitComment and
+# cleared by FCommitComment) -- see STATE SS58-SS59.  So each shape below keeps the <xml> island
+# inside a comment in one of the spellings Office's own exporters write, and puts the (n1, n2)
+# length pair on the item kinds that the two slot pairs inside FProcessOpenXmlTag consume
+# (element name / attribute value / xmlns URI); 'bare' is the same markup without the comment.
+SHAPES = {
+    'isl': lambda a, b: '<!-- <xml>' + a + b + '</xml> -->',
+    'c9': lambda a, b: '<!--[if gte mso 9]><xml><o:Doc>' + a + b + '</o:Doc></xml><![endif]-->',
+    'cmso': lambda a, b: '<!--[if mso]><xml><w:WordDocument>' + a + b + '</w:WordDocument></xml><![endif]-->',
+    'bare': lambda a, b: '<xml>' + a + b + '</xml>',
+    'xns': lambda a, b: '<!-- <xml xmlns:c="' + a + '" xmlns:d="' + b + '"><c:i/><d:i/></xml> -->',
+    'gfx': lambda a, b: ('<?xml a="' + a + '" b="' + b + '"?>'
+                         '<!-- <xml><v:group o:gfxdata="' + a + '"><v:shape o:spid="' + b +
+                         '"/></v:group></xml> -->'),
+}
+
+
+def shape_items(kind, n1, n2):
+    # The two items of a pair, as element names, xmlns URIs or attribute values.
+    if kind in ('isl', 'c9', 'cmso', 'bare'):
+        i1 = '<a:' + 'A' * max(1, n1 - 2) + '/>'
+        i2 = '<b:' + 'B' * max(1, n2 - 2) + '/>'
+    elif kind == 'xns':
+        i1, i2 = 'C' * n1, 'D' * n2
+    else:
+        i1, i2 = 'E' * n1, 'F' * n2
+    return SHAPES[kind](i1, i2)
+
+
 def main():
     out = sys.argv[1] if len(sys.argv) > 1 else 'carriers_x'
     os.makedirs(out, exist_ok=True)
@@ -83,8 +116,21 @@ def main():
             written += 1
         lens = ','.join(str(n) for n, _ in steps)
         print('%-18s lengths=%s bytes=%d' % (name, lens, os.path.getsize(os.path.join(out, name + '.htm'))))
-    print('carriers=%d dir=%s' % (written, out))
-    if written < len(CASES):
+    # comment-island families: the same length pairs, one file per (shape, pair)
+    nfam = 0
+    for name, steps in CASES:
+        if len(steps) < 2:
+            continue
+        n1, n2 = steps[0][0], steps[1][0]
+        for kind in sorted(SHAPES):
+            body = HEAD + shape_items(kind, n1, n2) + '<div class=Slide><span>t</span></div>' + TAIL
+            cn = 'c' + kind + '_' + name[1:].split('_')[0] + '_' + str(n1) + '_' + str(n2)
+            with open(os.path.join(out, cn + '.htm'), 'w', encoding='ascii', newline='') as fh:
+                fh.write(body)
+            written += 1
+            nfam += 1
+    print('carriers=%d base=%d comment_islands=%d dir=%s' % (written, len(CASES), nfam, out))
+    if written < len(CASES) + nfam:
         raise SystemExit('CARRIER_GENERATION_SHORT')
 
 

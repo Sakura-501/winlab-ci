@@ -72,6 +72,28 @@ jobs:
         $e = @(Get-ChildItem carriers_e -Filter *.eml -File).Count
         "eml_carriers=$e"
         if ($e -ne $n) { throw "eml wrapping lost files ($e of $n)" }
+    - name: Build the xml-item comment-island carriers
+      shell: pwsh
+      run: |
+        # The state the XML branch is gated on ([[HISD+0x2b0]+0x10440] == 5) is written by mso's HTML
+        # comment layer (FInitComment / FProcessComment / TkLexHtml 0x1a918), so these carriers keep the
+        # <xml> island inside a comment and put an (n1, n2) item-length pair on element names,
+        # attribute values and xmlns URIs.  See STATE mso-html-import-20260923 SS58-SS62.
+        python ppseed\xml_item_carriers.py carriers_x
+        $n = @(Get-ChildItem carriers_x -Filter *.htm -File).Count
+        "xml_carriers=$n"
+        "cisl=" + @(Get-ChildItem carriers_x -Filter 'cisl_*.htm' -File).Count
+        if ($n -lt 100) { throw "xml carrier generation failed ($n)" }
+    - name: Probe the xml-item reuse gate in PowerPoint
+      continue-on-error: true
+      shell: pwsh
+      run: |
+        pwsh -NoProfile -ExecutionPolicy Bypass -File ppseed\mso_html_len_probe.ps1 -Dir carriers_x -Tag xitempp -App POWERPNT.EXE -Base (Get-Location).Path -WaitSec 240 -MaxCases 12 -NameFilter "^(x00_plain|x01_40_56|cisl_01_40_56|cisl_05_200_432|cc9_01_40_56|cc9_05_200_432|cxns_01_40_56|cbare_01_40_56|cgfx_01_40_56|cisl_13_16_32|cisl_07_1000_1016|cmso_01_40_56)$"
+    - name: Probe the xml-item reuse gate in Word
+      continue-on-error: true
+      shell: pwsh
+      run: |
+        pwsh -NoProfile -ExecutionPolicy Bypass -File ppseed\mso_html_len_probe.ps1 -Dir carriers_x -Tag xitemwd -App WINWORD.EXE -Base (Get-Location).Path -WaitSec 240 -MaxCases 8 -NameFilter "^(x00_plain|cisl_01_40_56|cc9_01_40_56|cxns_01_40_56|cbare_01_40_56|cgfx_01_40_56|cisl_05_200_432|cmso_01_40_56)$"
     - name: Probe the div/span length path in PowerPoint
       continue-on-error: true
       shell: pwsh

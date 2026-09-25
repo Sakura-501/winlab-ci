@@ -71,7 +71,22 @@ $SIG = [ordered]@{
   TAGS = '40534883EC??4D8BD8B8????????448BC24D8BD1488BD9BA01000000443BC0'
 }
 $REQUIRED = @('FDS','NEG','CPY')
-function Get-Anchors([string]$path) {
+
+# The xml-item scratch routine lives in the Mso98Win32Client module and mso reaches it through an
+# ordinal import, so it is located by its own byte pattern.  XGATE covers
+#   cmp qword ptr [r8], 0 ; mov rsi,r9 ; mov rdi,r8 ; movsxd rbx,edx ; mov r14,rcx ;
+#   je <reuse-skip> ; lea eax,[rbx+1] ; cmp eax,[r9] ; jg <grow> ; mov rax,[rdi] ; mov [r14],rax
+# i.e. the whole reuse decision in one 24-byte run.  Offsets from the match: the `cmp eax,[r9]`
+# (the reuse gate itself) is +0x15, the "return the previous buffer" pair is +0x1a.  XGROWN matches
+# the capacity write-back `lea eax,[rbx*2+0x21] ; mov [rsi],eax`.
+# Verified 2026-09-25 13:35Z on the installed 16.0.20430.20092 x64 with tools/pat_multi.py:
+# XGATE hits=1 at 0x1e9a1a (=> gate 0x1e9a2f, reuse 0x1e9a34), XGROWN hits=1 at 0x1e9aa8.
+$SIGX = [ordered]@{
+  XGATE  = '49833800 498bf1 498bf8 4863da 4c8bf1 741d 8d4301 413b01 7f15'
+  XGROWN = '8d045d210000008906'
+}
+$XREQ_OFF = 0x15; $XREUSE_OFF = 0x1a
+function Get-Anchors([string]$path, $table) {
   $out = @{}
   $bytes = [IO.File]::ReadAllBytes($path)
   $pe = [BitConverter]::ToInt32($bytes, 0x3C)
@@ -88,8 +103,8 @@ function Get-Anchors([string]$path) {
   }
   if (-not $tpraw) { return $out }
   $latin = [Text.Encoding]::GetEncoding(28591).GetString($bytes)
-  foreach ($k in $SIG.Keys) {
-    $h = $SIG[$k]
+  foreach ($k in $table.Keys) {
+    $h = $table[$k]
     $bts = @(); for ($j = 0; $j -lt $h.Length; $j += 2) {
       $pair = $h.Substring($j, 2)
       if ($pair -eq '??') { $bts += -1 } else { $bts += [Convert]::ToInt32($pair, 16) } }
@@ -119,7 +134,7 @@ $msoDir = Split-Path $mso.FullName
 $hosts += @(Get-ChildItem $msoDir -Filter 'Mso*win32client.dll' -EA SilentlyContinue | ForEach-Object { $_.FullName })
 $rv = @{}; $modTok = ''
 foreach ($h in $hosts) {
-  $r = Get-Anchors $h
+  $r = Get-Anchors $h $SIG
   ("TRY {0} -> {1}" -f (Split-Path $h -Leaf), (($r.Keys | Sort-Object) -join ',')) | Add-Content $log
   $have = 0
   foreach ($q in $REQUIRED) { if ($r[$q]) { $have++ } }
@@ -127,6 +142,17 @@ foreach ($h in $hosts) {
 }
 foreach ($k in $SIG.Keys) { if ($rv[$k]) { ("SIG {0} rva=0x{1:X}" -f $k, $rv[$k]) | Add-Content $log } }
 if (-not $modTok) { 'ANCHOR_FAIL' | Add-Content $log; Get-Content $log; exit 1 }
+
+$rvX = @{}; $modTokX = ''
+foreach ($hx in @($hosts | Where-Object { $_ -ne $mso.FullName })) {
+  $rx = Get-Anchors $hx $SIGX
+  ("TRYX {0} -> {1}" -f (Split-Path $hx -Leaf), (($rx.Keys | Sort-Object) -join ',')) | Add-Content $log
+  if ($rx['XGATE'] -and $rx['XGROWN']) { $rvX = $rx; $modTokX = (Split-Path $hx -Leaf) -replace '\.dll$',''; break }
+}
+if ($rvX['XGATE']) {
+  ("SIGX {0} XGATE=0x{1:X} REQ=0x{2:X} REUSE=0x{3:X} GROWN=0x{4:X}" -f $modTokX, $rvX['XGATE'],
+    ($rvX['XGATE'] + $XREQ_OFF), ($rvX['XGATE'] + $XREUSE_OFF), $rvX['XGROWN']) | Add-Content $log
+} else { 'XML_ANCHORS_UNRESOLVED' | Add-Content $log }
 
 
 $cdb = $null
@@ -365,6 +391,21 @@ foreach ($f in $files) {
   for ($i = 0; $i -lt 8; $i++) { $c += '.echo ====STOP'; $c += '.lastevent'; $c += 'g' }
   $c += '.echo ====LADDER_END'
   $c += 'bl'
+  # The xml-item reuse gate: armed last, and deferred (`bu`) so it resolves whenever that module is
+  # mapped.  `dq @r9 l1` reads the stored capacity (a **byte** count, `2*n_prev+33`) while edx is the
+  # **character** count being asked for; `dq @rsp+48 l1` is the return address, which names the
+  # caller site (4 pushes + sub rsp,0x28 puts the return address at rsp+0x48 here).
+  if ($modTokX) {
+    $c += '.echo ====XML_ARM'
+    $c += ("bu {1}+0x{0:X} `".echo REQ;r;dq @r9 l1;dq @rsp+48 l1;g`"" -f ($rvX['XGATE'] + $XREQ_OFF), $modTokX)
+    $c += ("bu {1}+0x{0:X} `".echo REUSE;r;dq @r9 l1;dq @rsp+48 l1;g`"" -f ($rvX['XGATE'] + $XREUSE_OFF), $modTokX)
+    $c += ("bu {1}+0x{0:X} `".echo GROWN;r;g`"" -f $rvX['XGROWN'], $modTokX)
+    $c += 'bl'
+    $c += 'g'
+    for ($i = 0; $i -lt 8; $i++) { $c += '.echo ====XSTOP'; $c += '.lastevent'; $c += 'g' }
+    $c += '.echo ====XML_END'
+    $c += 'bl'
+  }
   $c += '.echo ====END'
   $c += 'q'
   Set-Content -LiteralPath $cmdf -Value $c -Encoding ASCII
@@ -408,6 +449,37 @@ foreach ($f in $files) {
     Get-Content $log
     exit 1
   }
+  # `unres` must describe only the mso-side arming, so split the transcript at the xml arm marker.
+  $txparts = ($txt -split '====XML_ARM')
+  $txtPre = $txparts[0]
+  $txtXml = ''
+  if ($txparts.Count -gt 1) { $txtXml = ($txparts[1..($txparts.Count-1)] -join '====XML_ARM') }
+  $req = ([regex]::Matches($txt, '(?m)^REQ')).Count
+  $reuse = ([regex]::Matches($txt, '(?m)^REUSE')).Count
+  $grown = ([regex]::Matches($txt, '(?m)^GROWN')).Count
+  $xpairs = @(); $xoob = 0
+  foreach ($mk in @('REQ','REUSE')) {
+    $ln = $txtXml -split "`n"; $grab = -1
+    for ($k = 0; $k -lt $ln.Count; $k++) {
+      if ($ln[$k] -notmatch ('^' + $mk + '$')) { continue }
+      $n = -1; $cap = -1; $ret = ''
+      for ($m = $k; $m -lt [Math]::Min($k + 30, $ln.Count); $m++) {
+        if ($n -lt 0 -and $ln[$m] -match 'rdx=([0-9a-fA-F]+)') { $n = [Convert]::ToInt64($Matches[1],16) }
+        if ($ln[$m] -match '^[0-9a-fA-F`]+\s+([0-9a-fA-F]{8})`([0-9a-fA-F]{4})') {
+          if ($cap -lt 0) { $cap = [Convert]::ToInt64($Matches[1],16) }
+          elseif (-not $ret) { $ret = $Matches[1] + $Matches[2] }
+        }
+        if ($n -ge 0 -and $cap -ge 0 -and $ret) { break }
+      }
+      if ($n -ge 0 -and $cap -ge 0) {
+        $w = 2 * $n + 2
+        if ($w -gt $cap) { $xoob++ }
+        if ($xpairs.Count -lt 8) { $xpairs += ('{0}(n={1},cap={2},w={3},{4},ret={5})' -f $mk, $n, $cap, $w, $(if ($w -gt $cap) {'OOB'} else {'in'}), $ret) }
+      }
+    }
+  }
+  $xs = ($xpairs -join ';')
+  if ($xs.Length -gt 190) { $xs = $xs.Substring(0, 190) }
   $fds = ([regex]::Matches($txt, '(?m)^FDS')).Count
   $neg = ([regex]::Matches($txt, '(?m)^NEG')).Count
   $cpy = ([regex]::Matches($txt, '(?m)^CPY')).Count
@@ -422,16 +494,16 @@ foreach ($f in $files) {
   # failure would print "Unable to resolve", and ====LADDER_END means the resume ladder was consumed
   # (i.e. the target kept stopping) rather than the case ending because the harness gave up.
   $loaded = ([regex]::Matches($txt, '(?m)^====MSO_LOADED')).Count
-  $unres  = ([regex]::Matches($txt, 'Unable to resolve')).Count
+  $unres  = ([regex]::Matches($txtPre, 'Unable to resolve')).Count
   $stops  = ([regex]::Matches($txt, '(?m)^====STOP')).Count
   $ladder = ([regex]::Matches($txt, '(?m)^====LADDER_END')).Count
   $bind   = ([regex]::Matches($txt, 'Evaluate expression')).Count
   $flat = ($titles -replace '\s', '')
   $tm = 0
   if ($flat -and $flat.IndexOf($f.BaseName, [StringComparison]::OrdinalIgnoreCase) -ge 0) { $tm = 1 }
-  ('{0,-26} state={1,-11} TAGS={2} LEX={3} FDS={4} NEG={5} CPY={6} r8big={7} av={8} dumps={9} titlematch={10} npp={11} loaded={12} unres={13} stops={14} dead={15} ladder={16} expr={17} titles={18} lastevent={19}' -f `
-    $f.Name, $st, $tags, $lex, $fds, $neg, $cpy, $big, $av, (@(Get-ChildItem $dumpsDir -Filter *.dmp -EA SilentlyContinue | Where-Object { $_.LastWriteTime -gt $t0 }).Count), `
-    $tm, $npp, $loaded, $unres, $stops, $dead, $ladder, $bind, $titles, $lev) | Add-Content $log
+  ('{0,-26} state={1,-11} TAGS={2} LEX={3} FDS={4} NEG={5} CPY={6} REQ={7} REUSE={8} GROWN={9} xoob={10} r8big={11} av={12} dumps={13} titlematch={14} npp={15} loaded={16} unres={17} stops={18} dead={19} ladder={20} expr={21} xmlpairs={22} titles={23} lastevent={24}' -f `
+    $f.Name, $st, $tags, $lex, $fds, $neg, $cpy, $req, $reuse, $grown, $xoob, $big, $av, (@(Get-ChildItem $dumpsDir -Filter *.dmp -EA SilentlyContinue | Where-Object { $_.LastWriteTime -gt $t0 }).Count), `
+    $tm, $npp, $loaded, $unres, $stops, $dead, $ladder, $bind, $xs, $titles, $lev) | Add-Content $log
   if (-not $loaded -or $unres -or -not $bind) {
     ('INSTRUMENT_NOT_PROVEN ' + $f.Name + ' loaded=' + $loaded + ' unres=' + $unres + ' expr=' + $bind +
      ' :: a zero hit count in this case is not attributable') | Add-Content $log
