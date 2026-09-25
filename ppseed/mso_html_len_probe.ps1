@@ -432,8 +432,14 @@ foreach ($f in $files) {
   # On top of that the run now arms the breakpoints *after* an `sxe ld:mso.dll` break so no deferred
   # `bu` resolution is needed, and the resume ladder below survives any further stray stop.
   $c = @('.sympath()', ('.echo ====CASE ' + $f.BaseName))
-  foreach ($ec in @('sxn av','sxn e06d7363','sxn e0434352','sxn c004f013','sxn 40080201',
+  foreach ($ec in @('sxn e06d7363','sxn e0434352','sxn c004f013','sxn 40080201',
                     'sxn 000006ef','sxn 80000003','sxn c00000fd')) { $c += $ec }
+  # WER LocalDumps produced nothing even for a deliberate access violation on the runner image
+  # (`DUMP_CHANNEL_CONTROL dumps=0 after_poll` in run 36173048936), so the dump has to be taken by
+  # the debugger itself: first-chance AVs stay notification-only (Office raises them internally),
+  # a second-chance AV prints the context + stack and writes a full dump next to the case log.
+  $c += 'sxn av'
+  $c += ('sxd av ".echo AV2;r;k 12;.dump /ma dumpav_' + $f.BaseName + '.dmp;g"')
   $c += 'sxe ld:mso.dll'
   $c += 'g'
   $c += '.echo ====MSO_LOADED'
@@ -587,6 +593,7 @@ foreach ($f in $files) {
   if ($lev.Length -gt 110) { $lev = $lev.Substring(0, 110) }
   $big = ([regex]::Matches($txt, '(?m)^r8=([89ABCDEF][0-9A-F]{15}|[1-9][0-9A-F]{15})')).Count
   $av  = ([regex]::Matches($txt, 'Access violation')).Count
+  $av2 = ([regex]::Matches($txt, '(?m)^AV2')).Count
   # Instrument self-reads: ====MSO_LOADED proves the sxe ld: break happened, `mso+0x…` resolution
   # failure would print "Unable to resolve", and ====LADDER_END means the resume ladder was consumed
   # (i.e. the target kept stopping) rather than the case ending because the harness gave up.
@@ -598,8 +605,8 @@ foreach ($f in $files) {
   $flat = ($titles -replace '\s', '')
   $tm = 0
   if ($flat -and $flat.IndexOf($f.BaseName, [StringComparison]::OrdinalIgnoreCase) -ge 0) { $tm = 1 }
-  ('{0,-26} state={1,-11} TAGS={2} LEX={3} FDS={4} NEG={5} CPY={6} REQ={7} REUSE={8} GROWN={9} XWRITE={10} xwbig={11} xoob={12} r8big={13} av={12} dumps={13} titlematch={14} npp={15} loaded={16} unres={17} stops={18} dead={19} ladder={20} expr={21} xmlpairs={22} titles={23} lastevent={24}' -f `
-    $f.Name, $st, $tags, $lex, $fds, $neg, $cpy, $req, $reuse, $grown, $xw, $xwbig, $xoob, $big, $av, (@(Get-ChildItem $dumpsDir -Filter *.dmp -EA SilentlyContinue | Where-Object { $_.LastWriteTime -gt $t0 }).Count), `
+  ('{0,-26} state={1,-11} TAGS={2} LEX={3} FDS={4} NEG={5} CPY={6} REQ={7} REUSE={8} GROWN={9} XWRITE={10} xwbig={11} xoob={12} av2={13} r8big={14} av={12} dumps={13} titlematch={14} npp={15} loaded={16} unres={17} stops={18} dead={19} ladder={20} expr={21} xmlpairs={22} titles={23} lastevent={24}' -f `
+    $f.Name, $st, $tags, $lex, $fds, $neg, $cpy, $req, $reuse, $grown, $xw, $xwbig, $xoob, $av2, $big, $av, (@(Get-ChildItem $dumpsDir -Filter *.dmp -EA SilentlyContinue | Where-Object { $_.LastWriteTime -gt $t0 }).Count), `
     $tm, $npp, $loaded, $unres, $stops, $dead, $ladder, $bind, $xs, $titles, $lev) | Add-Content $log
   if (-not $loaded -or $unres -or -not $bind) {
     ('INSTRUMENT_NOT_PROVEN ' + $f.Name + ' loaded=' + $loaded + ' unres=' + $unres + ' expr=' + $bind +
