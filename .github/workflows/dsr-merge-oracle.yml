@@ -26,7 +26,7 @@ jobs:
         call "%VCVARS%" x64_arm64
         (echo int data_x=7;)> t.c
         (echo int __declspec(noinline^) tiny(int p^){ return p + data_x; })>> t.c
-        (echo int helper2(int q^){ return q ^ 0x5A; })> t2.c
+        pwsh -c "Set-Content -Encoding ASCII t2.c 'int helper2(int q){ return q ^ 0x5A; }'"
         cl /nologo /FS /Zi /Gy /O2 /c t.c t2.c
         copy /y fixtures\t2.pdb vm_t2.pdb >nul
         for /f "delims=" %%l in ('dir /b /ad "C:\Program Files\Microsoft Visual Studio\18"') do set VSFLAVOR=%%l
