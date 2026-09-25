@@ -20,7 +20,8 @@ param([string]$Dir = 'carriers_h',
       [int]$WaitSec = 110,
       [int]$MaxCases = 0,
       [string]$NameFilter = '',
-      [string]$Ext = '.htm,.html,.mht,.mhtml')
+      [string]$Ext = '.htm,.html,.mht,.mhtml',
+      [switch]$NoCdb)
 $ErrorActionPreference = 'Continue'
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $root = 'C:\Program Files\Microsoft Office\root\Office16'
@@ -246,6 +247,35 @@ foreach ($cf in $ctl) {
   Remove-Item ($appRoot + '\Resiliency') -Recurse -Force -EA SilentlyContinue
 }
 
+
+function Read-Dumps([string]$since) {
+  # A negative fetched count doubles into a memcpy length of ~2^64, so the fault is self-recording:
+  # full page heap + WER LocalDumps capture it without a debugger attached (and a debugger attached
+  # changed what POWERPNT did on 2026-09-25 10:39Z - the debugged process exited before parsing).
+  # Each dump is then opened read-only by cdb to lift the stack, so attribution happens after the fact.
+  $out = @()
+  foreach ($d in @(Get-ChildItem $dumpsDir -Filter *.dmp -EA SilentlyContinue | Where-Object { $_.LastWriteTime -gt $since })) {
+    $a = Join-Path $base ('out\dump_' + $d.BaseName + '.stack.txt')
+    $dc = Join-Path $base ('out\dump_' + $d.BaseName + '.cdb')
+    Set-Content -LiteralPath $dc -Value @('.echo ====STACK', 'k 24', '.echo ====EXR', '.cxr', '.echo ====FAULT', '.echo ====END', 'q') -Encoding ASCII
+    & $cdbExe -z $d.FullName -cf $dc -y $symGlobal | Out-File $a -Encoding ASCII
+    $txt = ''
+    if (Test-Path $a) { $txt = Get-Content $a -Raw }
+    $m = [regex]::Match($txt, '(?s)====STACK(.*)====EXR')
+    $top = ((($m.Value -replace '====STACK|====EXR','') -split "`n" | Where-Object { $_ -match '\S' } | Select-Object -First 6) -join ' || ')
+    $sink = 0
+    if ($rv['FDS'] -and $txt.IndexOf(('+0x{0:X}' -f $rv['FDS']), [StringComparison]::OrdinalIgnoreCase) -ge 0) { $sink = 1 }
+    $cp = 0
+    if ($rv['CPY'] -and $txt.IndexOf(('+0x{0:X}' -f $rv['CPY']), [StringComparison]::OrdinalIgnoreCase) -ge 0) { $cp = 1 }
+    ('DUMP {0} mso_sink_frame={1} mso_cpy_frame={2} av={3} top={4}' -f $d.Name, $sink, $cp, `
+      ([regex]::Matches($txt, 'Access violation')).Count, $top.Substring(0, [Math]::Min(300, $top.Length))) | Add-Content $log
+    $out += $d.Name
+  }
+  return $out
+}
+$symGlobal = Join-Path $env:TEMP ('sym_' + $Tag + '_d')
+New-Item -ItemType Directory -Force -Path $symGlobal | Out-Null
+
 foreach ($f in $files) {
   Set-Content -Path $f.FullName -Stream Zone.Identifier -Value "[ZoneTransfer]`r`nZoneId=3" -Encoding ASCII
   $exe = ($App -replace '\.EXE$','')
@@ -257,6 +287,28 @@ foreach ($f in $files) {
   Get-Process $exe -EA SilentlyContinue | Where-Object { $_.StartTime -lt (Get-Date).AddSeconds(-5) } | Stop-Process -Force -EA SilentlyContinue
   Remove-Item ($appRoot + '\Resiliency') -Recurse -Force -EA SilentlyContinue
   Start-Sleep -Seconds 1
+  if ($NoCdb) {
+    Set-Content -Path $f.FullName -Stream Zone.Identifier -Value "[ZoneTransfer]`r`nZoneId=3" -Encoding ASCII
+    $dp0 = Get-Date
+    $la = if ($exe -eq 'OUTLOOK') { @('/eml', ('"' + $f.FullName + '"')) } else { ('"' + $f.FullName + '"') }
+    $null = Start-Process -FilePath $appPath -ArgumentList $la -WindowStyle Hidden -EA SilentlyContinue
+    $pst = 'timeout'
+    for ($i = 0; $i * 3 -lt $WaitSec; $i++) {
+      Start-Sleep -Seconds 3
+      $ps = @(Get-Process $exe -EA SilentlyContinue)
+      if (-not $ps) { $pst = 'app-exited'; break }
+      $pt = (@($ps | ForEach-Object { $_.MainWindowTitle }) -join ' | ')
+      if ($pt -and $pt.Replace(' ','').IndexOf($f.BaseName, [StringComparison]::OrdinalIgnoreCase) -ge 0) { $pst = 'titled'; break }
+    }
+    $pdn = @(Read-Dumps $dp0)
+    Take-Shot (Join-Path $base ('out\shot_' + $Tag + '_' + $f.BaseName + '.png')) | Out-Null
+    ('{0,-26} PASSIVE state={1} dumps={2} names={3}' -f $f.Name, $pst, $pdn.Count, ($pdn -join ',')) | Add-Content $log
+    Get-Process $exe -EA SilentlyContinue | ForEach-Object { [void]$_.CloseMainWindow() }
+    Start-Sleep -Seconds 3
+    Get-Process $exe -EA SilentlyContinue | Where-Object { $_.StartTime -lt (Get-Date).AddSeconds(-5) } | Stop-Process -Force -EA SilentlyContinue
+    Remove-Item ($appRoot + '\Resiliency') -Recurse -Force -EA SilentlyContinue
+    continue
+  }
   $cmdf = Join-Path $base ('out\' + $f.BaseName + '.cdb')
   # First-chance noise on this app is large (C++ EH, WinRT originate error, 0xc004f013 from the JSI
   # worker).  Declaring them notification-only keeps `g` running; the smoke run of 2026-09-25 showed
