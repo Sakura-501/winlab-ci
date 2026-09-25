@@ -93,10 +93,15 @@ $SIGW = [ordered]@{
 }
 $XWRITE_OFF = 0x30
 $SIGX = [ordered]@{
-  XGATE  = '49833800 498bf1 498bf8 4863da 4c8bf1 741d 8d4301 413b01 7f15'
+  # Reuse gate, taken from the `lea eax,[rbx+1] ; cmp eax,[r9] ; jg` triple itself (8 bytes, no register
+  # shuffling before it).  The 24-byte prologue run is the tighter form but the installed
+  # Mso98win32client.dll on the runner matched only XGROWN with it (run 36151144839:
+  # `TRYX Mso98win32client.dll -> XGROWN`), so this shorter one is the primary anchor.
+  # Offsets from the match: `cmp eax,[r9]` +3, the "return the previous buffer" pair +8.
+  XGATE  = '8d4301413b017f'
   XGROWN = '8d045d210000008906'
 }
-$XREQ_OFF = 0x15; $XREUSE_OFF = 0x1a
+$XREQ_OFF = 0x3; $XREUSE_OFF = 0x8
 function Get-Anchors([string]$path, $table) {
   $out = @{}
   $bytes = [IO.File]::ReadAllBytes($path)
@@ -431,11 +436,29 @@ foreach ($f in $files) {
   # The shipped default symbol path on the runner is `srv*`; a network symbol probe at every module
   # load is what left cdb sitting before the initial breakpoint.  Point it at an empty local dir and
   # switch the network source off.
+  $exe = ($App -replace '\.EXE$','')
   $symLocal = Join-Path $env:TEMP ('sym_' + $Tag)
   New-Item -ItemType Directory -Force -Path $symLocal | Out-Null
   # `.eml` has no Office default association on a fresh install; the registered handler is
   # HKCR:\Outlook.File.eml.15\shell\open\command = OUTLOOK.EXE /eml "%1", so the wave passes that verb
   # explicitly (AGENTS 61: name the application when the association is absent) rather than ShellExecute.
+  # Office is single-instance per user: launching the app on a document while another instance owns it
+  # hands the file over and the new process exits immediately, which is what produced
+  # `loaded=0 npp=0 stops=1 ladder=8` with `WARMUP npp_before=1` in run 36151144839.  Close every
+  # instance (gracefully first, so Office does not mark the profile as a failed startup) and wait for
+  # the count to reach zero before attaching.
+  for ($k = 0; $k -lt 2; $k++) {
+    Get-Process $exe -EA SilentlyContinue | ForEach-Object { $null = $_.CloseMainWindow() }
+    for ($j = 0; $j -lt 6; $j++) {
+      if (-not @(Get-Process $exe -EA SilentlyContinue).Count) { break }
+      Start-Sleep -Seconds 2
+    }
+    if (@(Get-Process $exe -EA SilentlyContinue).Count) {
+      Get-Process $exe -EA SilentlyContinue | Stop-Process -Force
+      Start-Sleep -Seconds 2
+    }
+  }
+  ('PRELAUNCH instances=' + @(Get-Process $exe -EA SilentlyContinue).Count) | Add-Content $log
   $caseArg = '"' + $f.FullName + '"'
   if ($exe -eq 'OUTLOOK') { $caseArg = '/eml "' + $f.FullName + '"' }
   $cdbArgs = @('-y', $symLocal, '-cf', $cmdf, $appPath, $caseArg)
