@@ -19,6 +19,7 @@ hand-authored tree.  Every dimension below is a single-variable change against `
   h09_img_missing_part     <img> pointing at a part the package does not contain
   h10_many_items           40 items in one list (iteration-count stress)
   h11_mht_orphan_part      MHTML whose Content-Location names a part no link refers to
+  h17..h30                 div/span nesting and text-run-length shapes (see the block comment)
 """
 import os
 import sys
@@ -105,6 +106,42 @@ def build(outdir):
                                          [li("d")]])
     files["h15_many_close.htm"] = deck([[li("a"), ('</div>' * 6 + li("b"))], [li("c"), '</span></span>']])
     files["h16_empty_div_slide.htm"] = deck([['<div class=Slide></div>'], [li("only")]])
+    # ---- div/span commit-length family: shapes that re-enter the div/span commit loop while an
+    # outer commit is still running, and shapes that vary the text-run length around the
+    # "|fetched count| <= used elements" magnitude check inside FCommitDivSpanCore.
+    def run(text):
+        return '<span>%s</span>' % text
+
+    files["h17_div_in_div.htm"] = deck([[('<div class=Slide><div class=Slide>' + li("inner") +
+                                          '</div>' + li("after inner close") + '</div>')], [li("t")]])
+    files["h18_span_in_span.htm"] = deck([[('<span><span>' + li("deep") + '</span>' + li("tail") + '</span>')],
+                                          [li("u")]])
+    files["h19_div_after_span_open.htm"] = deck([[('<span class=Slide><div>' + li("swapped") +
+                                                   '</div></span>')], [li("v")]])
+    files["h20_two_div_open_one_close.htm"] = deck([[('<div class=Slide><div class=Slide>' + li("two one") +
+                                                      '</div>')], [li("w")]])
+    files["h21_list_inside_div_close_then_text.htm"] = deck([[('<div class=Slide><ul>' + li("l") +
+                                                               '</ul></div>' + li("text after close"))],
+                                                             [li("x")]])
+    files["h22_table_inside_div.htm"] = deck([[('<div class=Slide><table><tr><td>' + li("c1") +
+                                                '</td><td>' + li("c2") + '</td></tr></table>' +
+                                                li("after table") + '</div>')], [li("y")]])
+    for n, ln in (("h23_longrun_120.htm", 120), ("h24_longrun_1200.htm", 1200),
+                  ("h25_longrun_4000.htm", 4000), ("h26_longrun_66000.htm", 66000)):
+        files[n] = deck([[('<div class=Slide>' + run("z" * ln) + '</div>' + li("after"))], [li("q")]])
+    files["h27_close_before_open.htm"] = deck([[('</div>' + li("orphan close") +
+                                                 '<div class=Slide>' + li("then open") + '</div>')],
+                                               [li("r")]])
+    files["h28_five_deep_alternation.htm"] = deck([[('<div class=Slide>' + '<span>' * 5 + li("deep5") +
+                                                     '</span>' * 5 + '</div>' + li("out"))],
+                                                   [li("s")]])
+    files["h29_nested_div_text_between.htm"] = deck([[('<div class=Slide>' + run("between1") +
+                                                       '<div>' + run("between2") + '</div>' +
+                                                       run("between3") + '</div>' + li("fin"))],
+                                                     [li("g")]])
+    files["h30_div_in_div_in_li.htm"] = deck([[('<li><div class=Slide><div>' + li("d") +
+                                                '</div>' + li("e") + '</div></li>')], [li("h")]])
+
     many = [li("item %d" % k, 1 + (k % 4)) for k in range(40)]
     files["h10_many_items.htm"] = deck([many, [li("end")]])
 
