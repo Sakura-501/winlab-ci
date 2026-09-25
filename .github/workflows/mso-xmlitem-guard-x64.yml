@@ -176,7 +176,7 @@ jobs:
         # The harness starts by LoadLibraryA("OLMAPI32.dll"); that only resolves when the Office16
         # directory is on PATH (run 36131021711 printed `NOMOD err=126` without it).
         $env:PATH = 'C:\Program Files\Microsoft Office\root\Office16;' + $env:PATH
-        $o = & .\bin\gbx.exe msohtml corpus\xmlitem.txt 20 0 none life noskip slot=17 2>&1 | Out-String
+        $o = & .\bin\gbx.exe msohtml corpus\xmlitem.txt 300 0 none life noskip slot=17 2>&1 | Out-String
         "-----GBX OUTPUT BEGIN-----"
         $o
         "-----GBX OUTPUT END-----"
@@ -198,6 +198,9 @@ jobs:
         # window of STATE SS46-50.  RVAs are for the installed 16.0.20430.20092 x64 (symbols read from
         # msdl MSO.pdb: ?FProcessOpenXmlTag@ = 0x7f0a0c, the FObtainXmlItemString call at +0x158 = 0x7f0b64).
         $env:PATH = 'C:\Program Files\Microsoft Office\root\Office16;' + $env:PATH
+        # argv 3 caps how many records the harness feeds the importer; the earlier waves passed 20 which
+        # stopped before the families appended after the length pairs (run 36137089262 reported the same
+        # recs=20 cbs=1028 as its predecessor despite a bigger corpus file).
         $mso = Get-Item 'C:\Program Files\Common Files\Microsoft Shared\Office16\mso.dll' -EA SilentlyContinue
         if (-not $mso) { $mso = Get-Item 'C:\Program Files\Microsoft Office\root\vfs\ProgramFilesCommonX64\Microsoft Shared\OFFICE16\mso.dll' }
         "instrumented_mso=$($mso.FullName) v=$($mso.VersionInfo.FileVersion)"
@@ -241,7 +244,7 @@ jobs:
         )
         Set-Content -LiteralPath $cf -Value $lines -Encoding ASCII
         Get-Content $cf
-        $o = & $cdb -cf $cf .\bin\gbx.exe msohtml corpus\xmlitem.txt 20 0 none life noskip slot=17 2>&1 | Out-String
+        $o = & $cdb -cf $cf .\bin\gbx.exe msohtml corpus\xmlitem.txt 300 0 none life noskip slot=17 2>&1 | Out-String
         $o | Set-Content out\xin_cdb.txt
         # Walk the marker blocks: each XIN block holds one `r` dump (rdx = the requested character count,
         # r9 = &capacitySlot) followed by the qword read through r9 (low dword = the capacity in bytes).
