@@ -74,6 +74,13 @@ def timing_xml(spids, bad=99001, opts=()):
 
     cond_tgt = '<p:tgtEl><p:spTgt spid="%d"/></p:tgtEl>' % bad if "bad_cond" in opts else "<p:tgtEl><p:sldTgt/></p:tgtEl>"
     sub = ""
+    if "many" in opts:
+        n = int(opts["many"])
+        body = "".join(behavior_set(100 + 2 * k, bad + k) + behavior_anim(101 + 2 * k, bad + k) for k in range(n))
+        sub = '<p:subTnLst>%s</p:subTnLst>' % (("<p:par>%s</p:par>" % _cond(90) + body + "</p:cTn></p:par>") if False else
+              "".join('<p:par><p:cTn id="%d" fill="hold"><p:stCondLst><p:cond delay="0"/></p:stCondLst>'
+                      '<p:childTnLst>%s%s</p:childTnLst></p:cTn></p:par>'
+                      % (90 + 3 * k, behavior_set(91 + 3 * k, bad + k), behavior_anim(92 + 3 * k, bad + k)) for k in range(n)))
     if "sub" in opts:
         kind = opts["sub"]
         sub = '<p:subTnLst><p:par>%s</p:par></p:subTnLst>' % sub_par_inner(kind, good, bad)
@@ -148,6 +155,9 @@ def sub_par_inner(kind, good, bad):
 VARIANT_KINDS = ("empty", "wrongbhvr", "media", "dangling_sub")
 
 VARIANTS = {
+    "t19_many_dangling8": {"many": 8},
+    "t20_many_dangling16": {"many": 16},
+    "t21_many_dangling3": {"many": 3},
     "t11_sub_empty": {"sub": "empty"},
     "t12_sub_wrongbhvr": {"sub": "wrongbhvr"},
     "t13_sub_media": {"sub": "media"},
