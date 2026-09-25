@@ -110,26 +110,30 @@ jobs:
         "dense_html=" + (Get-Item corpus\html.txt).Length
         if ((Get-Item corpus\html.txt).Length -lt 1000000) { throw 'corpus not materialized' }
         "mime25=" + (Get-Item corpus\mime25.txt).Length
-        # The XML-item reuse-gate shapes (STATE mso-html-import-20260923 SS46-48): two attribute values
-        # through the same item slot, (n1, n2) straddling the `n+1 <= [cap]=2*n1+33` reuse gate.
-        $pairs = @(,@(40,56) + @(40,55) + @(40,57) + @(200,216) + @(200,432) + @(200,433) + @(1000,1016) +
-                   @(1000,2032) + @(17,33) + @(16,32) + @(8,24) + @(60,76) + @(400,416) + @(400,830) +
-                   @(2000,2016) + @(2000,4032) + @(40,40))
+        # The XML-item reuse-gate shapes (STATE mso-html-import-20260923 SS46-54): two attribute values
+        # through the same item slot pair, straddling the `n+1 <= [cap]=2*n1+33` reuse gate.
+        # A leading plain-HTML record acts as the corpus-internal control: if it reports callbacks and a
+        # later record faults, the difference is the record, not the framing or the instrument.
+        $pairs = @(,@(40,56)) + @(,@(40,55)) + @(,@(40,57)) + @(,@(200,216)) + @(,@(200,432)) + @(,@(200,433)) +
+                 @(,@(1000,1016)) + @(,@(1000,2032)) + @(,@(17,33)) + @(,@(16,32)) + @(,@(8,24)) + @(,@(60,76)) +
+                 @(,@(400,416)) + @(,@(400,830)) + @(,@(2000,2016)) + @(,@(2000,4032)) + @(,@(40,40))
         $xh = '<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:a="urn:schemas-microsoft-com:office:art" xmlns="http://www.w3.org/TR/REC-html40"><head><title>xi</title></head><body>'
+        $recs = @()
+        $recs += ,'<html><body><b>control</b></body></html>'
+        foreach ($p in $pairs) {
+          $n1 = [int]$p[0]; $n2 = [int]$p[1]
+          $recs += ,($xh + '<div class=Slide><a:itx a:val="' + ('A' * $n1) + '"></a:itx><a:itx b:val="' + ('B' * $n2) + '"></a:itx></div></body></html>')
+        }
+        $many = $xh + '<div class=Slide>'
+        foreach ($k in 1..12) { $many += '<a:itx a:val="' + ('C' * (40 + 16 * $k)) + '"></a:itx>' }
+        $recs += ,($many + '</div></body></html>')
         $fs = [IO.File]::Create("$PWD\corpus\xmlitem.txt")
         $nrec = 0
-        foreach ($p in $pairs) {
-          $body = $xh + '<div class=Slide><a:itx a:val="' + ('A' * [int]$p[0]) + '"></a:itx><a:itx b:val="' + ('B' * [int]$p[1]) + '"></a:itx></div></body></html>'
+        foreach ($body in $recs) {
           $b = [Text.Encoding]::ASCII.GetBytes($body)
           $l = [Text.Encoding]::ASCII.GetBytes("$($b.Length)`n")
           $fs.Write($l, 0, $l.Length); $fs.Write($b, 0, $b.Length); $nrec++
         }
-        # one record that walks a long/short alternation through the same slot several times
-        $many = $xh + '<div class=Slide>'
-        foreach ($k in 1..12) { $many += '<a:itx a:val="' + ('C' * (40 + 16 * $k)) + '"></a:itx>' }
-        $many += '</div></body></html>'
-        $mb = [Text.Encoding]::ASCII.GetBytes($many); $ml = [Text.Encoding]::ASCII.GetBytes("$($mb.Length)`n")
-        $fs.Write($ml, 0, $ml.Length); $fs.Write($mb, 0, $mb.Length); $nrec++
         $fs.Close()
         "xmlitem_records=$nrec bytes=" + (Get-Item corpus\xmlitem.txt).Length
         if ($nrec -lt 18) { throw "xml-item corpus not materialized ($nrec)" }
@@ -141,7 +145,7 @@ jobs:
         # The harness starts by LoadLibraryA("OLMAPI32.dll"); that only resolves when the Office16
         # directory is on PATH (run 36131021711 printed `NOMOD err=126` without it).
         $env:PATH = 'C:\Program Files\Microsoft Office\root\Office16;' + $env:PATH
-        $o = & .\bin\gbx.exe msohtml corpus\xmlitem.txt 34 0 none life noskip slot=17 2>&1 | Out-String
+        $o = & .\bin\gbx.exe msohtml corpus\xmlitem.txt 20 0 none life noskip slot=17 2>&1 | Out-String
         "-----GBX OUTPUT BEGIN-----"
         $o
         "-----GBX OUTPUT END-----"
