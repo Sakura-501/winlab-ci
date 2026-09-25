@@ -81,6 +81,17 @@ $REQUIRED = @('FDS','NEG','CPY')
 # the capacity write-back `lea eax,[rbx*2+0x21] ; mov [rsi],eax`.
 # Verified 2026-09-25 13:35Z on the installed 16.0.20430.20092 x64 with tools/pat_multi.py:
 # XGATE hits=1 at 0x1e9a1a (=> gate 0x1e9a2f, reuse 0x1e9a34), XGROWN hits=1 at 0x1e9aa8.
+# The caller-side write: `lea r9,[rdi+0x210]; lea r8,[rdi+0x1f8]; mov edx,[rbp+disp8]; mov rcx,?;
+# call [rip+?]` -- the FObtainXmlItemString request through the element-name slot pair.  Verified with
+# tools/pat_multi.py to hit exactly one place on 20430.20092 (0x7f0b50), 20326.20144 (0x1c2e94) and
+# 20326.20132 (0x1a6f04); +0x30 from the match is the following `call memcpy` where rcx=destination,
+# rdx=source and **r8 = 2*n is the number of bytes the caller writes into the block whose capacity is
+# the reuse gate's `2*n_prev+33` (STATE SS60-SS61, SS69).  That is the write-site measurement, taken at
+# the write itself rather than inferred from the callee.
+$SIGW = [ordered]@{
+  XREQ = '4c8d8f100200004c8d87f80100008b55????????ff15????????'
+}
+$XWRITE_OFF = 0x30
 $SIGX = [ordered]@{
   XGATE  = '49833800 498bf1 498bf8 4863da 4c8bf1 741d 8d4301 413b01 7f15'
   XGROWN = '8d045d210000008906'
@@ -381,6 +392,12 @@ foreach ($f in $files) {
   $c += ("bu {1}+0x{0:X} `".echo FDS;g`"" -f $rv['FDS'], $modTok)
   $c += ("bu {1}+0x{0:X} `".echo NEG;r;g`"" -f $rv['NEG'], $modTok)
   $c += ("bu {1}+0x{0:X} `".echo CPY;r;g`"" -f $rv['CPY'], $modTok)
+  $rvW = Get-Anchors $mso.FullName $SIGW
+  if ($rvW['XREQ']) {
+    ("SIGW XREQ=0x{0:X} XWRITE=0x{1:X}" -f $rvW['XREQ'], ($rvW['XREQ'] + $XWRITE_OFF)) | Add-Content $log
+    $c += ("bu {1}+0x{0:X} `".echo XWRITE;r;g`"" -f ($rvW['XREQ'] + $XWRITE_OFF), $modTok)
+    $xwRva = $rvW['XREQ'] + $XWRITE_OFF
+  } else { 'XML_WRITE_ANCHOR_UNRESOLVED' | Add-Content $log; $xwRva = 0 }
   $c += 'bl'
   $c += 'g'
   # The smoke round of 2026-09-25 10:35Z ended with all three breakpoints bound and enabled
@@ -457,6 +474,12 @@ foreach ($f in $files) {
   $req = ([regex]::Matches($txt, '(?m)^REQ')).Count
   $reuse = ([regex]::Matches($txt, '(?m)^REUSE')).Count
   $grown = ([regex]::Matches($txt, '(?m)^GROWN')).Count
+  $xw = ([regex]::Matches($txt, '(?m)^XWRITE')).Count
+  $xwbig = 0
+  foreach ($mm in [regex]::Matches($txt, '(?m)^r8=([0-9a-fA-F]{16})')) {
+    $v = [Convert]::ToUInt64($mm.Groups[1].Value, 16)
+    if ($v -ge 200 -and $v -lt 0x80000000) { $xwbig++ }
+  }
   $xpairs = @(); $xoob = 0
   foreach ($mk in @('REQ','REUSE')) {
     $ln = $txtXml -split "`n"; $grab = -1
@@ -501,8 +524,8 @@ foreach ($f in $files) {
   $flat = ($titles -replace '\s', '')
   $tm = 0
   if ($flat -and $flat.IndexOf($f.BaseName, [StringComparison]::OrdinalIgnoreCase) -ge 0) { $tm = 1 }
-  ('{0,-26} state={1,-11} TAGS={2} LEX={3} FDS={4} NEG={5} CPY={6} REQ={7} REUSE={8} GROWN={9} xoob={10} r8big={11} av={12} dumps={13} titlematch={14} npp={15} loaded={16} unres={17} stops={18} dead={19} ladder={20} expr={21} xmlpairs={22} titles={23} lastevent={24}' -f `
-    $f.Name, $st, $tags, $lex, $fds, $neg, $cpy, $req, $reuse, $grown, $xoob, $big, $av, (@(Get-ChildItem $dumpsDir -Filter *.dmp -EA SilentlyContinue | Where-Object { $_.LastWriteTime -gt $t0 }).Count), `
+  ('{0,-26} state={1,-11} TAGS={2} LEX={3} FDS={4} NEG={5} CPY={6} REQ={7} REUSE={8} GROWN={9} XWRITE={10} xwbig={11} xoob={12} r8big={13} av={12} dumps={13} titlematch={14} npp={15} loaded={16} unres={17} stops={18} dead={19} ladder={20} expr={21} xmlpairs={22} titles={23} lastevent={24}' -f `
+    $f.Name, $st, $tags, $lex, $fds, $neg, $cpy, $req, $reuse, $grown, $xw, $xwbig, $xoob, $big, $av, (@(Get-ChildItem $dumpsDir -Filter *.dmp -EA SilentlyContinue | Where-Object { $_.LastWriteTime -gt $t0 }).Count), `
     $tm, $npp, $loaded, $unres, $stops, $dead, $ladder, $bind, $xs, $titles, $lev) | Add-Content $log
   if (-not $loaded -or $unres -or -not $bind) {
     ('INSTRUMENT_NOT_PROVEN ' + $f.Name + ' loaded=' + $loaded + ' unres=' + $unres + ' expr=' + $bind +
