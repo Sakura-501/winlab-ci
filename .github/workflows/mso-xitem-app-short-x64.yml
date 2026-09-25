@@ -1,0 +1,91 @@
+name: mso-xitem-app-short-x64
+# Measurement run for the mso HTML div/span commit length path.
+# The instrument anchors four sites inside the installed mso.dll by code signature (no PDB, no
+# symbol server), then opens every HTML carrier under cdb with full page heap armed and reports how
+# often the commit runs, how often the fetched count comes out negative, and the length handed to
+# the copy.  Carriers are generated at run time from ppseed/ppt_html_carriers.py, so no document
+# payload is stored in this repository.
+on: [workflow_dispatch]
+jobs:
+  p:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+    - uses: actions/checkout@v4
+    - name: Syntax gate for the probe script
+      shell: pwsh
+      run: |
+        $errs = $null
+        [void][System.Management.Automation.Language.Parser]::ParseFile("$PWD\ppseed\mso_html_len_probe.ps1", [ref]$null, [ref]$errs)
+        if ($errs) { $errs | ForEach-Object { "PARSE " + $_.Extent.StartLineNumber + " " + $_.Message }; exit 1 }
+        "PARSE_OK"
+    - name: Download ODT
+      shell: pwsh
+      run: |
+        $page = (Invoke-WebRequest -Uri "https://www.microsoft.com/en-us/download/details.aspx?id=49117" -UseBasicParsing).Content
+        if ($page -match 'href="(https://download\.microsoft\.com/download/[^"]+officedeploymenttool[^"]*\.exe)"') {
+          Invoke-WebRequest -Uri $Matches[1] -OutFile odt.exe
+        } else { throw 'odt link not found' }
+        Start-Process -Wait -FilePath .\odt.exe -ArgumentList "/extract:odtx /quiet"
+    - name: Install CurrentPreview Office (x64)
+      shell: pwsh
+      run: |
+        $cfg = '<Configuration><Add OfficeClientEdition="64" Channel="{0}"><Product ID="O365ProPlusRetail"><Language ID="en-us" /><ExcludeApp ID="Excel" /><ExcludeApp ID="OneNote" /><ExcludeApp ID="Access" /><ExcludeApp ID="Publisher" /><ExcludeApp ID="Teams" /><ExcludeApp ID="SharePointDesigner" /><ExcludeApp ID="FormConverter" /></Product></Add><Display Level="None" AcceptEULA="TRUE" /><Updates Enabled="FALSE" /></Configuration>'
+        foreach ($ch in @('CurrentChannelPreview','CurrentChannel','MonthlyChannel')) {
+          $xml = $cfg -f $ch
+          Set-Content -Path cfg.xml -Value $xml
+          "trying channel=$ch"
+          $r = Start-Process -Wait -PassThru -FilePath .\odtx\setup.exe -ArgumentList "/configure","cfg.xml"
+          "setup exit=$($r.ExitCode)"
+          $msoCand = @('C:\Program Files\Common Files\Microsoft Shared\OFFICE16\mso.dll','C:\Program Files\Microsoft Office\root\vfs\ProgramFilesCommonX64\Microsoft Shared\OFFICE16\mso.dll','C:\Program Files\Microsoft Office\root\vfs\ProgramFilesCommonX86\Microsoft Shared\OFFICE16\mso.dll','C:\Program Files\Microsoft Office\root\Office16\mso.dll')
+          $m = $null
+          foreach ($cp in $msoCand) { $t = Get-Item $cp -EA SilentlyContinue; if ($t) { $m = $t; break } }
+          if (-not $m) { $m = Get-ChildItem 'C:\Program Files\Microsoft Office\root' -Recurse -Filter mso.dll -EA SilentlyContinue | Sort-Object Length -Descending | Select-Object -First 1 }
+          if ($m) {
+            "mso v{0} size={1} path={2}" -f $m.VersionInfo.FileVersion, $m.Length, $m.FullName
+            ("{0} {1}" -f $ch, $m.VersionInfo.FileVersion) | Out-File ver.txt
+            break
+          }
+          (Get-Content setup.log -EA SilentlyContinue | Select-Object -Last 25) -join "`n"
+          $pp = Get-Item "C:\Program Files\Microsoft Office\root\Office16\POWERPNT.EXE" -EA SilentlyContinue
+          "after $ch : mso=$([bool]$m) pp=$([bool]$pp)"
+          Start-Process -Wait -FilePath .\odtx\setup.exe -ArgumentList "/configure","cfg.xml","/force-downgrade" -EA SilentlyContinue
+        }
+        $found = @($msoCand | Where-Object { Test-Path $_ })
+        if ($found.Count -eq 0) {
+          $h = Get-ChildItem 'C:\Program Files\Microsoft Office\root' -Recurse -Filter mso.dll -EA SilentlyContinue | Sort-Object Length -Descending | Select-Object -First 1
+          if ($h) { $found = @($h.FullName) }
+        }
+        "mso locations: $($found -join ' | ')"
+        if ($found.Count -eq 0) {
+          "Office16 listing:"; ((Get-ChildItem "C:\Program Files\Microsoft Office\root\Office16" -EA SilentlyContinue | Select-Object -First 40).Name -join " ")
+          throw "mso missing after all channels"
+        }
+    - name: Build the xml-item comment-island carriers
+      shell: pwsh
+      run: |
+        python ppseed\xml_item_carriers.py carriers_x
+        $n = @(Get-ChildItem carriers_x -Filter *.htm -File).Count
+        "xml_carriers=$n"
+        if ($n -lt 100) { throw "xml carrier generation failed ($n)" }
+    - name: PowerPoint xml-item reuse gate (short list)
+      continue-on-error: true
+      shell: pwsh
+      run: |
+        pwsh -NoProfile -ExecutionPolicy Bypass -File ppseed\mso_html_len_probe.ps1 -Dir carriers_x -Tag pp4 -App POWERPNT.EXE -Base (Get-Location).Path -WaitSec 150 -MaxCases 4 -NameFilter "^(cisl_01_40_56|cc9_01_40_56|cxns_01_40_56|cisl_05_200_432)$"
+    - name: Word xml-item reuse gate (short list)
+      continue-on-error: true
+      shell: pwsh
+      run: |
+        pwsh -NoProfile -ExecutionPolicy Bypass -File ppseed\mso_html_len_probe.ps1 -Dir carriers_x -Tag wd4 -App WINWORD.EXE -Base (Get-Location).Path -WaitSec 150 -MaxCases 4 -NameFilter "^(cisl_01_40_56|cc9_01_40_56|cxns_01_40_56|cisl_05_200_432)$"
+    - name: Report
+      shell: pwsh
+      run: |
+        Get-Content out\pp4_log.txt -EA SilentlyContinue
+        Get-Content out\wd4_log.txt -EA SilentlyContinue
+    - name: Upload evidence
+      uses: actions/upload-artifact@v4
+      with:
+        name: mso-xitem-app-short
+        path: out
+        if-no-files-found: warn
