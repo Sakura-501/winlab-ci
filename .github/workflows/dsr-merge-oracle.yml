@@ -27,6 +27,7 @@ jobs:
         (echo int data_x=7;)> t.c
         (echo int __declspec(noinline^) tiny(int p^){ return p + data_x; })>> t.c
         cl /nologo /FS /Zi /Gy /O2 /c t.c
+        pwsh -c "$n=0; while (!(Test-Path t.pdb) -and $n -lt 60) { Start-Sleep 1; $n++ }; if (Test-Path t.pdb) { 'pdb ok' } else { 'pdb MISSING after 60s'; exit 1 }"
         dir t.pdb
     - name: Patch evil variant
       shell: pwsh
