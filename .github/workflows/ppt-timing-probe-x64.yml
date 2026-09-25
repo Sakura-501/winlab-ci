@@ -1,0 +1,65 @@
+name: ppt-timing-validator-probe-x64
+# Screening net for the PowerPoint slide-timing loader (ppcore.dll).
+# Carriers are .pptx decks whose <p:timing> tree carries different target-id shapes, produced on
+# the runner by ppt_timing_mutate.py, so no document payload is embedded in this file.
+on: [workflow_dispatch]
+jobs:
+  s:
+    runs-on: windows-latest
+    timeout-minutes: 240
+    steps:
+    - uses: actions/checkout@v4
+    - name: Download ODT
+      shell: pwsh
+      run: |
+        $page = (Invoke-WebRequest -Uri "https://www.microsoft.com/en-us/download/details.aspx?id=49117" -UseBasicParsing).Content
+        if ($page -match 'href=\"(https://download\.microsoft\.com/download/[^\"]+officedeploymenttool[^\"]*\.exe)\"') {
+          Invoke-WebRequest -Uri $Matches[1] -OutFile odt.exe
+        } else { throw 'odt link not found' }
+        Start-Process -Wait -FilePath .\odt.exe -ArgumentList "/extract:odtx /quiet"
+    - name: Install CurrentPreview PowerPoint (x64)
+      shell: pwsh
+      run: |
+        $xml = '<Configuration><Add OfficeClientEdition="64" Channel="CurrentChannelPreview"><Product ID="O365ProPlusRetail"><Language ID="en-us" /><ExcludeApp ID="Word" /><ExcludeApp ID="Excel" /><ExcludeApp ID="Outlook" /><ExcludeApp ID="OneNote" /><ExcludeApp ID="Access" /><ExcludeApp ID="Publisher" /><ExcludeApp ID="Teams" /><ExcludeApp ID="SharePointDesigner" /><ExcludeApp ID="FormConverter" /></Product></Add></Configuration>'
+        Set-Content -Path cfg.xml -Value $xml
+        Start-Process -Wait -FilePath .\odtx\setup.exe -ArgumentList "/configure","cfg.xml"
+        $p = Get-Item "C:\Program Files\Microsoft Office\root\Office16\ppcore.dll" -EA SilentlyContinue
+        if (-not $p) { throw "ppcore missing" }
+        "ppcore v{0} size={1}" -f $p.VersionInfo.FileVersion, $p.Length
+        $p.VersionInfo.FileVersion | Out-File ver.txt
+    - name: Build record-header carriers
+      shell: pwsh
+      run: |
+        python -m pip install --quiet python-pptx
+        python ppseed\ppt_timing_mutate.py carriers_t
+        $n = @(Get-ChildItem carriers_t -File -Filter *.pptx).Count
+        "carriers=$n"
+        if ($n -lt 8) { throw "carrier generation failed ($n)" }
+        "timing variants built"
+    - name: Sweep under full page heap
+      shell: pwsh
+      run: |
+        pwsh -NoProfile -ExecutionPolicy Bypass -File ppseed\ppt_sweep.ps1 -Dir carriers_t -Tag ppttime -Ext '.pptx' -Base (Get-Location).Path -WaitSec 70
+        Get-Content out\ppttime_log.txt | Select-Object -Last 130
+    - name: Measure the timing validator under cdb
+      shell: pwsh
+      run: |
+        pwsh -NoProfile -ExecutionPolicy Bypass -File ppseed\ppt_timing_probe.ps1 -Dir carriers_t -Tag ppttime -Base (Get-Location).Path -WaitSec 100 -Show
+    - name: Report
+      shell: pwsh
+      run: |
+        $d = @(Get-ChildItem dumps -Filter *.dmp -EA SilentlyContinue)
+        "SUMMARY cases=" + @(Get-ChildItem carriers_t -File -Filter *.pptx).Count + " dumps=" + $d.Count
+        ($d | ForEach-Object { $_.Name + ":" + $_.Length }) -join " "
+        $idx = Get-Content out\ppttime_index.txt -EA SilentlyContinue
+        "opened=" + @($idx | Select-String "state=opened").Count + " exited=" + @($idx | Select-String "state=exited").Count + " dumpstate=" + @($idx | Select-String "state=dump").Count + " timeout=" + @($idx | Select-String "state=timeout").Count
+    - uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: ppttime-out
+        path: |
+          out/
+          ver.txt
+          dumps/
+        if-no-files-found: warn
+        retention-days: 30
