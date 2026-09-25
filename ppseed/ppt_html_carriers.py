@@ -95,6 +95,16 @@ def build(outdir):
                                                 'alt="x" width="40" height="40">')],
                                               [li("z")]])
     files["h11_mht_orphan_part.mht"] = MHT % {"html": plain}
+
+    # div/span balance dimensions for the mso FCommitDivSpanCore length path
+    files["h12_div_unclosed.htm"] = deck([[li("a"), ('<div class=Slide><ul>' + li("b") + '</ul>')],
+                                          [li("c")]])
+    files["h13_span_close_div.htm"] = deck([[li("a"), '<span class=X>' + li("b") + '</div>'],
+                                            [li("c")]])
+    files["h14_div_in_span.htm"] = deck([[('<div><span>' + li("nested") + '</span></div>')],
+                                         [li("d")]])
+    files["h15_many_close.htm"] = deck([[li("a"), ('</div>' * 6 + li("b"))], [li("c"), '</span></span>']])
+    files["h16_empty_div_slide.htm"] = deck([['<div class=Slide></div>'], [li("only")]])
     many = [li("item %d" % k, 1 + (k % 4)) for k in range(40)]
     files["h10_many_items.htm"] = deck([many, [li("end")]])
 

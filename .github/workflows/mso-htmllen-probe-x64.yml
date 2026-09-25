@@ -1,0 +1,68 @@
+name: mso-htmllen-probe-x64
+# Measurement run for the mso HTML div/span commit length path.
+# The instrument anchors four sites inside the installed mso.dll by code signature (no PDB, no
+# symbol server), then opens every HTML carrier under cdb with full page heap armed and reports how
+# often the commit runs, how often the fetched count comes out negative, and the length handed to
+# the copy.  Carriers are generated at run time from ppseed/ppt_html_carriers.py, so no document
+# payload is stored in this repository.
+on: [workflow_dispatch]
+jobs:
+  p:
+    runs-on: windows-latest
+    timeout-minutes: 150
+    steps:
+    - uses: actions/checkout@v4
+    - name: Download ODT
+      shell: pwsh
+      run: |
+        $page = (Invoke-WebRequest -Uri "https://www.microsoft.com/en-us/download/details.aspx?id=49117" -UseBasicParsing).Content
+        if ($page -match 'href="(https://download\.microsoft\.com/download/[^"]+officedeploymenttool[^"]*\.exe)"') {
+          Invoke-WebRequest -Uri $Matches[1] -OutFile odt.exe
+        } else { throw 'odt link not found' }
+        Start-Process -Wait -FilePath .\odt.exe -ArgumentList "/extract:odtx /quiet"
+    - name: Install CurrentPreview Office (x64)
+      shell: pwsh
+      run: |
+        $xml = '<Configuration><Add OfficeClientEdition="64" Channel="CurrentChannelPreview"><Product ID="O365ProPlusRetail"><Language ID="en-us" /><ExcludeApp ID="Excel" /><ExcludeApp ID="OneNote" /><ExcludeApp ID="Access" /><ExcludeApp ID="Publisher" /><ExcludeApp ID="Teams" /><ExcludeApp ID="SharePointDesigner" /><ExcludeApp ID="FormConverter" /></Product></Add><Display Level="None" AcceptEULA="TRUE" /></Configuration>'
+        Set-Content -Path cfg.xml -Value $xml
+        Start-Process -Wait -FilePath .\odtx\setup.exe -ArgumentList "/configure","cfg.xml"
+        $m = Get-Item "C:\Program Files\Microsoft Office\root\Office16\mso.dll" -EA SilentlyContinue
+        if (-not $m) { throw "mso missing" }
+        "mso v{0} size={1}" -f $m.VersionInfo.FileVersion, $m.Length
+        $m.VersionInfo.FileVersion | Out-File ver.txt
+    - name: Build HTML carriers
+      shell: pwsh
+      run: |
+        python ppseed\ppt_html_carriers.py carriers_h
+        $n = @(Get-ChildItem carriers_h -File).Count
+        "carriers=$n"
+        if ($n -lt 12) { throw "carrier generation failed ($n)" }
+    - name: Probe the div/span length path in PowerPoint
+      shell: pwsh
+      run: |
+        pwsh -NoProfile -ExecutionPolicy Bypass -File ppseed\mso_html_len_probe.ps1 -Dir carriers_h -Tag htmllenpp -App POWERPNT.EXE -Base (Get-Location).Path -WaitSec 90
+    - name: Probe the div/span length path in Word
+      shell: pwsh
+      run: |
+        pwsh -NoProfile -ExecutionPolicy Bypass -File ppseed\mso_html_len_probe.ps1 -Dir carriers_h -Tag htmllenwd -App WINWORD.EXE -Base (Get-Location).Path -WaitSec 90
+    - name: Report
+      shell: pwsh
+      if: always()
+      run: |
+        foreach ($t in @('htmllenpp','htmllenwd')) {
+          $f = "out\$($t)_log.txt"
+          "##### $t"
+          if (Test-Path $f) { Get-Content $f | Select-String 'SIG |state=|ANCHOR|NO_CDB|dump_total|GlobalFlag|cases=' } else { "missing" }
+        }
+        "dumps=" + @(Get-ChildItem dumps -Filter *.dmp -EA SilentlyContinue).Count
+        (Get-ChildItem dumps -Filter *.dmp -EA SilentlyContinue | ForEach-Object { $_.Name + ":" + $_.Length }) -join " "
+    - uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: htmllen-out
+        path: |
+          out/
+          ver.txt
+          dumps/
+        if-no-files-found: warn
+        retention-days: 30
