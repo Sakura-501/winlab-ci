@@ -33,6 +33,13 @@ jobs:
     - name: Patch evil variant
       shell: pwsh
       run: python patch_obj.py
+    - name: Prepare VM-path fixture
+      shell: pwsh
+      run: |
+        New-Item -ItemType Directory -Force -Path C:\Users\nonoge\Documents\encobj | Out-Null
+        Copy-Item t.c, t.obj, t_evil.obj C:\Users\nonoge\Documents\encobj\ -Force
+        Copy-Item fixtures\vm_t.pdb .\vm_t.pdb -Force
+        Get-ChildItem C:\Users\nonoge\Documents\encobj
     - name: Build host (x64)
       shell: cmd
       run: |
@@ -59,7 +66,8 @@ jobs:
         if ($aDll) { $combos += @{ dll = $aDll.FullName; tag = 'A_35738'; rva = 'A1CC0' } }
         $combos += @{ dll = (Get-ChildItem dsr_*.dll | Where-Object Name -match 'x64' | Select-Object -First 1).FullName; tag = 'B_36250'; rva = 'BFBF0' }
         foreach ($c in $combos) {
-          foreach ($obj in @('t','t_evil')) {
+          foreach ($obj in @('t','t_evil','vm_t_pdb')) {
+          if ($obj -eq 'vm_t_pdb') { Copy-Item vm_t.pdb t.pdb -Force }
             if ($obj -ne 't') { Copy-Item "$obj.obj" t.obj -Force }
             $o = & .\mo11.exe t.pdb $c.dll $c.rva 2>&1 | Out-String
             "=== dll=$($c.tag) obj=$obj exit=$LASTEXITCODE ===" | Tee-Object -FilePath "out\log_$($c.tag)_$obj.txt"
