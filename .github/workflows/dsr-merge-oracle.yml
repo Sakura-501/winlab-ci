@@ -20,15 +20,21 @@ jobs:
         $dia = Get-ChildItem "C:\Program Files\Microsoft Visual Studio" -Recurse -Filter dia2.h -EA SilentlyContinue | Select-Object -First 1
         Add-Content $env:GITHUB_ENV "VCVARS=$($vs.FullName)"
         Add-Content $env:GITHUB_ENV "DIAINC=$($dia.DirectoryName)"
-    - name: Compile object (cross ARM64)
+    - name: Compile and link (cross ARM64, multi-module)
       shell: cmd
       run: |
         call "%VCVARS%" x64_arm64
         (echo int data_x=7;)> t.c
         (echo int __declspec(noinline^) tiny(int p^){ return p + data_x; })>> t.c
-        cl /nologo /FS /Zi /Gy /O2 /c t.c
-        pwsh -c "$n=0; while (!(Test-Path t.pdb) -and $n -lt 60) { Start-Sleep 1; $n++ }; if (Test-Path t.pdb) { 'pdb ok' } else { 'pdb MISSING after 60s'; exit 1 }"
-        dir t.pdb
+        (echo int helper2(int q^){ return q ^ 0x5A; })> t2.c
+        cl /nologo /FS /Zi /Gy /O2 /c t.c t2.c
+        copy /y fixtures\t2.pdb vm_t2.pdb >nul
+        for /f "delims=" %%l in ('dir /b /ad "C:\Program Files\Microsoft Visual Studio\18"') do set VSFLAVOR=%%l
+        set LK=C:\Program Files\Microsoft Visual Studio\18\%VSFLAVOR%\VC\Tools\MSVC
+        for /f "delims=" %%v in ('dir /b /ad "%LK%"') do set MSVCVER=%%v
+        set ARMLINK=%LK%\%MSVCVER%\bin\Hostx64\arm64\link.exe
+        "%ARMLINK%" /DEBUG /PDB:t2.pdb /NODEFAULTLIB /ENTRY:tiny /SUBSYSTEM:CONSOLE /MACHINE:ARM64 /OUT:t2.exe t.obj t2.obj
+        dir t2.pdb
     - name: Patch evil variant
       shell: pwsh
       run: |
@@ -58,10 +64,10 @@ jobs:
       run: |
         New-Item -ItemType Directory -Force -Path out | Out-Null
         $cases = @(
-          @{ obj = 't';      objfile = 't.obj';      pdb = 't.pdb' },
-          @{ obj = 't_evil'; objfile = 't_evil.obj'; pdb = 't.pdb' },
-          @{ obj = 'vm';     objfile = 't.obj';      pdb = 'vm_t.pdb' },
-          @{ obj = 'vm_evil'; objfile = 't_evil.obj'; pdb = 'vm_t.pdb' }
+          @{ obj = 't';      objfile = 't.obj';      pdb = 't2.pdb' },
+          @{ obj = 't_evil'; objfile = 't_evil.obj'; pdb = 't2.pdb' },
+          @{ obj = 'vm';     objfile = 't.obj';      pdb = 'vm_t2.pdb' },
+          @{ obj = 'vm_evil'; objfile = 't_evil.obj'; pdb = 'vm_t2.pdb' }
         )
         $dll = "$PWD\dsr_x64_B.dll"
         foreach ($c in $cases) {
