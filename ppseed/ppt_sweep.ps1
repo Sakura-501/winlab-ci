@@ -1,6 +1,7 @@
 param([string]$Dir = 'carriers',
        [string]$Tag = 'pptrec',
        [string]$Base = '.',
+       [string]$Ext = '.ppt',
        [int]$WaitSec = 70)
 # ppt_sweep.ps1 - POWERPNT + full page heap + WER local dumps over mutated .ppt record headers + WER local dumps over a carrier directory (screening net).
 # Runner-only host: no co-tenant Office instance exists, so the PID<->window attribution stays valid (the VM case that broke this on 2026-09-25 was a shared desktop).
@@ -28,7 +29,8 @@ Set-ItemProperty -Path $k -Name DumpType -Value 2 -Type DWord
 Set-ItemProperty -Path $k -Name DumpCount -Value 40 -Type DWord
 
 # MOTW before opening (AGENTS 62): real delivery condition
-$files = @(Get-ChildItem $Dir -File | Where-Object { $_.Extension -in '.ppt' } | Sort-Object Name)
+$ExtA = @($Ext.Split(','))
+$files = @(Get-ChildItem $Dir -File | Where-Object { $_.Extension -in $ExtA } | Sort-Object Name)
 'cases=' + $files.Count | Add-Content $log
 foreach ($f in $files) {
     Set-Content -Path $f.FullName -Stream Zone.Identifier -Value "[ZoneTransfer]`r`nZoneId=3" -Encoding ASCII
