@@ -1,0 +1,113 @@
+name: mso-xmlitem-passive-x64
+# Passive wave: full page heap + WER LocalDumps, no debugger attached.
+# The XML-item scratch slot in Mso98Win32Client!FObtainXmlItemString (shipped x64 20430.20092 RVA 0x1e9a10)
+# stores its capacity as bytes (`lea eax,[rbx*2+0x21]; mov [rsi],eax` at 0x1e9aa8) but gates reuse against a
+# character count (`lea eax,[rbx+1]; cmp eax,[r9]; jg` at 0x1e9a2c), and every caller writes `2*n` bytes plus a
+# terminating WORD into whatever pointer comes back.  A write that runs past the block faults under page heap and
+# WER records the stack, so no breakpoint is needed and nothing about the application's behaviour is perturbed
+# (the cdb-attached runs of 2026-09-25 10:50Z ended with `Exit process code ffffffff` before parsing anything).
+# Carriers: ppseed/xml_item_carriers.py emits (n1, n2) attribute-length pairs around the predicted boundary.
+# -NoCdb in ppseed/mso_html_len_probe.ps1 keeps only the arming (gflags /p /enable <app> /full, WER
+# LocalDumps, dump-channel control) and the per-case window/screenshot evidence; every dump left behind
+# is then opened read-only by cdb (-z) and its stack is archived next to the counter line, with the
+# reuse-site / capacity-store RVAs of the affected module searched in the stack text.
+on: [workflow_dispatch]
+
+jobs:
+  p:
+    runs-on: windows-latest
+    timeout-minutes: 330
+    steps:
+    - uses: actions/checkout@v4
+    - name: Syntax gate for the probe script
+      shell: pwsh
+      run: |
+        $errs = $null
+        [void][System.Management.Automation.Language.Parser]::ParseFile("$PWD\ppseed\mso_html_len_probe.ps1", [ref]$null, [ref]$errs)
+        if ($errs) { $errs | ForEach-Object { "PARSE " + $_.Extent.StartLineNumber + " " + $_.Message }; exit 1 }
+        "PARSE_OK"
+    - name: Download ODT
+      shell: pwsh
+      run: |
+        $page = (Invoke-WebRequest -Uri "https://www.microsoft.com/en-us/download/details.aspx?id=49117" -UseBasicParsing).Content
+        if ($page -match 'href="(https://download\.microsoft\.com/download/[^"]+officedeploymenttool[^"]*\.exe)"') {
+          Invoke-WebRequest -Uri $Matches[1] -OutFile odt.exe
+        } else { throw 'odt link not found' }
+        Start-Process -Wait -FilePath .\odt.exe -ArgumentList "/extract:odtx /quiet"
+    - name: Install CurrentPreview Office (x64)
+      shell: pwsh
+      run: |
+        $cfg = '<Configuration><Add OfficeClientEdition="64" Channel="{0}"><Product ID="O365ProPlusRetail"><Language ID="en-us" /><ExcludeApp ID="Excel" /><ExcludeApp ID="OneNote" /><ExcludeApp ID="Access" /><ExcludeApp ID="Publisher" /><ExcludeApp ID="Teams" /><ExcludeApp ID="SharePointDesigner" /><ExcludeApp ID="FormConverter" /></Product></Add><Display Level="None" AcceptEULA="TRUE" /><Updates Enabled="FALSE" /></Configuration>'
+        foreach ($ch in @('CurrentChannelPreview','CurrentChannel','MonthlyChannel')) {
+          $xml = $cfg -f $ch
+          Set-Content -Path cfg.xml -Value $xml
+          "trying channel=$ch"
+          $r = Start-Process -Wait -PassThru -FilePath .\odtx\setup.exe -ArgumentList "/configure","cfg.xml"
+          "setup exit=$($r.ExitCode)"
+          $msoCand = @('C:\Program Files\Common Files\Microsoft Shared\OFFICE16\mso.dll','C:\Program Files\Microsoft Office\root\vfs\ProgramFilesCommonX64\Microsoft Shared\OFFICE16\mso.dll','C:\Program Files\Microsoft Office\root\vfs\ProgramFilesCommonX86\Microsoft Shared\OFFICE16\mso.dll','C:\Program Files\Microsoft Office\root\Office16\mso.dll')
+          $m = $null
+          foreach ($cp in $msoCand) { $t = Get-Item $cp -EA SilentlyContinue; if ($t) { $m = $t; break } }
+          if (-not $m) { $m = Get-ChildItem 'C:\Program Files\Microsoft Office\root' -Recurse -Filter mso.dll -EA SilentlyContinue | Sort-Object Length -Descending | Select-Object -First 1 }
+          if ($m) {
+            "mso v{0} size={1} path={2}" -f $m.VersionInfo.FileVersion, $m.Length, $m.FullName
+            ("{0} {1}" -f $ch, $m.VersionInfo.FileVersion) | Out-File ver.txt
+            break
+          }
+          (Get-Content setup.log -EA SilentlyContinue | Select-Object -Last 25) -join "`n"
+          $pp = Get-Item "C:\Program Files\Microsoft Office\root\Office16\POWERPNT.EXE" -EA SilentlyContinue
+          "after $ch : mso=$([bool]$m) pp=$([bool]$pp)"
+          Start-Process -Wait -FilePath .\odtx\setup.exe -ArgumentList "/configure","cfg.xml","/force-downgrade" -EA SilentlyContinue
+        }
+        $found = @($msoCand | Where-Object { Test-Path $_ })
+        if ($found.Count -eq 0) {
+          $h = Get-ChildItem 'C:\Program Files\Microsoft Office\root' -Recurse -Filter mso.dll -EA SilentlyContinue | Sort-Object Length -Descending | Select-Object -First 1
+          if ($h) { $found = @($h.FullName) }
+        }
+        "mso locations: $($found -join ' | ')"
+        if ($found.Count -eq 0) {
+          "Office16 listing:"; ((Get-ChildItem "C:\Program Files\Microsoft Office\root\Office16" -EA SilentlyContinue | Select-Object -First 40).Name -join " ")
+          throw "mso missing after all channels"
+        }
+    - name: Build HTML carriers
+      shell: pwsh
+      run: |
+        python ppseed\ppt_html_carriers.py carriers_h
+        $n = @(Get-ChildItem carriers_h -File).Count
+        "carriers=$n"
+        if ($n -lt 12) { throw "carrier generation failed ($n)" }
+        python ppseed\eml_from_htm.py carriers_h carriers_e
+        "eml_carriers=" + @(Get-ChildItem carriers_e -Filter *.eml -File).Count
+    - name: Open the xml-item length pairs in PowerPoint (page heap only)
+      continue-on-error: true
+      shell: pwsh
+      run: |
+        python ppseed\xml_item_carriers.py carriers_x
+        python ppseed\eml_from_htm.py carriers_x carriers_xe
+        "xcarriers=" + @(Get-ChildItem carriers_x -Filter *.htm).Count + " eml=" + @(Get-ChildItem carriers_xe -Filter *.eml).Count
+        pwsh -NoProfile -ExecutionPolicy Bypass -File ppseed\mso_html_len_probe.ps1 -Dir carriers_x -Ext .htm -Tag passivex -App POWERPNT.EXE -Base (Get-Location).Path -WaitSec 120 -NoCdb
+    - name: Open the same bodies as an inbound message, page heap only
+      continue-on-error: true
+      shell: pwsh
+      run: |
+        pwsh -NoProfile -ExecutionPolicy Bypass -File ppseed\mso_html_len_probe.ps1 -Dir carriers_xe -Ext .eml -Tag passiveol -App OUTLOOK.EXE -Base (Get-Location).Path -WaitSec 120 -NoCdb
+    - name: Report
+      shell: pwsh
+      if: always()
+      run: |
+        foreach ($t in @('passivex','passiveol')) {
+          $f = "out\$($t)_log.txt"
+          "##### $t"
+          if (Test-Path $f) { Get-Content $f | Select-String 'SIG |TRY |state=|ANCHOR|NO_CDB|dump_total|GlobalFlag|cases=|msoPath|DUMP_CHANNEL|INSTRUMENT|cdb=|PARSE' } else { "missing" }
+        }
+        "dumps=" + @(Get-ChildItem dumps -Filter *.dmp -EA SilentlyContinue).Count
+        (Get-ChildItem dumps -Filter *.dmp -EA SilentlyContinue | ForEach-Object { $_.Name + ":" + $_.Length }) -join " "
+    - uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: xmlitem-passive-out
+        path: |
+          out/
+          ver.txt
+          dumps/
+        if-no-files-found: warn
+        retention-days: 30
