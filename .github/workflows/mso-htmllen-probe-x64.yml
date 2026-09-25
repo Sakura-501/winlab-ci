@@ -66,12 +66,15 @@ jobs:
       run: |
         python ppseed\ppt_html_carriers.py carriers_h
         $n = @(Get-ChildItem carriers_h -File).Count
-        "carriers=$n"
-        if ($n -lt 12) { throw "carrier generation failed ($n)" }
+        # eml_from_htm.py wraps the .htm bodies; the corpus also carries one .mht (h11) whose bytes are
+        # already a MIME container, so the assertion compares against the .htm count, not the total.
+        $nh = @(Get-ChildItem carriers_h -Filter *.htm -File).Count
+        "carriers=$n htm=$nh"
+        if ($nh -lt 12) { throw "carrier generation failed ($n)" }
         python ppseed\eml_from_htm.py carriers_h carriers_e
         $e = @(Get-ChildItem carriers_e -Filter *.eml -File).Count
         "eml_carriers=$e"
-        if ($e -ne $n) { throw "eml wrapping lost files ($e of $n)" }
+        if ($e -ne $nh) { throw "eml wrapping lost files ($e of $nh)" }
     - name: Build the xml-item comment-island carriers
       shell: pwsh
       run: |
