@@ -1,0 +1,115 @@
+name: edge-pdf-openaction-probe
+'on':
+  workflow_dispatch: {}
+jobs:
+  probe:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+    - name: install-latest-stable-edge-msi
+      shell: pwsh
+      continue-on-error: true
+      run: |
+        $j = (Invoke-WebRequest -Uri 'https://edgeupdates.microsoft.com/api/products' -UseBasicParsing -TimeoutSec 60).Content | ConvertFrom-Json
+        $rel = $null
+        foreach ($p in $j) {
+          if ($p.Product -ne 'Stable') { continue }
+          foreach ($r in $p.Releases) {
+            if (($r.Platform -eq 'Windows' -or $r.Platform -eq 'Windows x64') -and ($r.Architecture -eq 'x64' -or -not $r.Architecture)) {
+              if (-not $rel -or [Version]$r.ProductVersion -gt [Version]$rel.ProductVersion) { $rel = $r }
+            }
+          }
+        }
+        if (-not $rel) { Write-Host 'no stable release found'; exit 0 }
+        Write-Host ('target_version=' + $rel.ProductVersion)
+        $art = $rel.Artifacts | Where-Object { $_.ArtifactName -eq 'msi' } | Select-Object -First 1
+        Invoke-WebRequest -Uri $art.Location -OutFile edge.msi -UseBasicParsing -TimeoutSec 900
+        $p = Start-Process msiexec.exe -ArgumentList '/i','edge.msi','/quiet','/norestart' -Wait -PassThru
+        Write-Host ('msiexec_exit=' + $p.ExitCode)
+        $exe = 'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe'
+        if (Test-Path $exe) { Write-Host ('installed_version=' + (Get-Item $exe).VersionInfo.FileVersion) }
+    - name: make-pdfs
+      shell: pwsh
+      run: |
+        New-Item -ItemType Directory -Force -Path C:\pdfp | Out-Null
+        @'
+        import os
+        def build(objs):
+            out = b"%PDF-1.7\n"
+            offs = []
+            for i, body in enumerate(objs, start=1):
+                offs.append(len(out))
+                out += ("%d 0 obj\n" % i).encode() + body + b"\nendobj\n"
+            xref = len(out)
+            out += ("xref\n0 %d\n" % (len(objs)+1)).encode()
+            out += b"0000000000 65535 f \n"
+            for o in offs:
+                out += ("%010d 00000 n \n" % o).encode()
+            out += ("trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n" % (len(objs)+1, xref)).encode()
+            return out
+        def stream(s):
+            return b"<< /Length %d >>\nstream\n" % len(s) + s + b"\nendstream"
+        content = b"BT /F1 24 Tf 72 700 Td (probe) Tj ET"
+        base = [b"<< /Type /Catalog /Pages 2 0 R >>",
+                b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+                b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>",
+                stream(content),
+                b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"]
+        def mk(act):
+            o = list(base)
+            o[0] = b"<< /Type /Catalog /Pages 2 0 R /OpenAction 6 0 R >>"
+            o.append(act)
+            return build(o)
+        cases = {}
+        cases["p_plain.pdf"] = build(base)
+        cases["p_uri.pdf"] = mk(b"<< /S /URI /URI (http://127.0.0.1:8899/uri_open) >>")
+        cases["p_launch_calc.pdf"] = mk(b"<< /S /Launch /F (C:\\Windows\\System32\\calc.exe) >>")
+        cases["p_launch_calc2.pdf"] = mk(b"<< /Type /Action /S /Launch /Win << /F (calc.exe) /D (C:\\Windows\\System32) /O (open) >> >>")
+        cases["p_launch_cmd.pdf"] = mk(b"<< /S /Launch /F (C:\\Windows\\System32\\cmd.exe) /P (/c echo PDFLAUNCH_OK>C:\\pdfp\\launch_ok.txt) >>")
+        js = b"app.alert('x'); this.submitForm({cURL:'http://127.0.0.1:8899/js_submit', cSubmitAs:'HTML'});"
+        cases["p_js.pdf"] = mk(b"<< /S /JavaScript /JS " + js.replace(b"(", b"\\(").replace(b")", b"\\)") + b" >>")
+        cases["p_gotor_file.pdf"] = mk(b"<< /S /GoToR /F (C:\\Windows\\win.ini) /D [0 /Fit] >>")
+        cases["p_uri_file.pdf"] = mk(b"<< /S /URI /URI (file:///C:/Windows/win.ini) >>")
+        for n, d in cases.items():
+            open(os.path.join(r"C:\pdfp", n), "wb").write(d)
+            print("wrote", n, len(d))
+        '@ | Set-Content -Encoding UTF8 C:\pdfp\mk.py
+        python C:\pdfp\mk.py
+    - name: serve-and-run
+      shell: pwsh
+      run: |
+        $exe = 'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe'
+        Write-Host ('msedge_version=' + (Get-Item $exe).VersionInfo.FileVersion)
+        $srv = Start-Process -FilePath python -ArgumentList '-m','http.server','8899','--bind','127.0.0.1','--directory','C:\pdfp' -PassThru -WindowStyle Hidden
+        Start-Sleep -Seconds 3
+        $names = @('p_plain.pdf','p_uri.pdf','p_launch_calc.pdf','p_launch_calc2.pdf','p_launch_cmd.pdf','p_js.pdf','p_gotor_file.pdf','p_uri_file.pdf')
+        foreach ($n in $names) {
+          Get-Process CalculatorApp,calc,notepad,cmd -ErrorAction SilentlyContinue | Where-Object { $_.ProcessName -ne 'cmd' } | Stop-Process -Force -ErrorAction SilentlyContinue
+          Remove-Item C:\pdfp\launch_ok.txt -Force -ErrorAction SilentlyContinue
+          Start-Sleep -Milliseconds 300
+          $ud = "C:\pdfp\ud_" + [guid]::NewGuid().ToString("N").Substring(0,8)
+          $args = @('--headless=new','--no-proxy-server','--disable-gpu','--no-first-run','--no-default-browser-check','--user-data-dir=' + $ud, "http://127.0.0.1:8899/$n")
+          $p = Start-Process -FilePath $exe -ArgumentList $args -PassThru
+          Start-Sleep -Seconds 10
+          $kids = @()
+          try { $kids = @(Get-CimInstance Win32_Process -Filter ("ParentProcessId=" + $p.Id) -ErrorAction SilentlyContinue | ForEach-Object { $_.ProcessId }) } catch {}
+          $all = @($p.Id) + $kids
+          $mspdf = 0
+          foreach ($k in $all) {
+            try { $m = (Get-Process -Id $k -ErrorAction SilentlyContinue).Modules; foreach ($x in $m) { if ($x.ModuleName -like 'mspdf*') { $mspdf = 1 } } } catch {}
+          }
+          $sp = (Get-Process CalculatorApp,calc,notepad -ErrorAction SilentlyContinue | ForEach-Object { $_.ProcessName }) -join ','
+          $flag = Test-Path C:\pdfp\launch_ok.txt
+          Write-Host ("RESULT name={0} npids={1} mspdf={2} spawn={3} launchflag={4}" -f $n, $all.Count, $mspdf, $sp, $flag)
+          & taskkill /PID $p.Id /T /F 2>&1 | Out-Null
+          Start-Sleep -Seconds 2
+          Remove-Item -Path $ud -Recurse -Force -ErrorAction SilentlyContinue
+        }
+        Write-Host '--- dump-dom control ---'
+        $ud2 = 'C:\pdfp\ud_dom'
+        $o = & $exe --headless=new --no-proxy-server --disable-gpu --no-first-run --user-data-dir=$ud2 --dump-dom "http://127.0.0.1:8899/p_plain.pdf" 2>&1 | Out-String
+        Write-Host ('DUMLEN=' + $o.Length)
+        Write-Host ('DUMPREFIX=' + $o.Substring(0, [Math]::Min(800, $o.Length)))
+        & taskkill /F /IM msedge.exe 2>&1 | Out-Null
+        try { Stop-Process -Id $srv.Id -Force -ErrorAction SilentlyContinue } catch {}
+        Write-Host 'DONE'
