@@ -138,7 +138,7 @@ g
 lm m <MODTOK>
 u <MODTOK>+0x<STORE> L4
 bp <MODTOK>+0x<STORE> "r $t0=@$t0+1; .printf \"CNT %x %d\\n\", @eax, @eax; g"
-bp /c <WINS> <MODTOK>+0x<STORE> ".echo STOPK; .printf \"WIN cnt=%x buf=%p p58=%p p98=%p pa0=%p pa8=%p pb8=%p pc0=%p pc8=%p p70=%p p78=%p rbx=%p\\n\", @eax, poi(@rbx+0xb0), poi(@rbx+0x58), poi(@rbx+0x98), poi(@rbx+0xa0), poi(@rbx+0xa8), poi(@rbx+0xb8), poi(@rbx+0xc0), poi(@rbx+0xc8), poi(@rbx+0x70), poi(@rbx+0x78), @rbx; g"
+bp /c <WINS> <MODTOK>+0x<STORE> ".echo STOPK; .printf \"RET ra=%p rva_mso=\n\"; dpq @rsp L6; .printf \"WIN cnt=%x buf=%p p58=%p p98=%p pa0=%p pa8=%p pb8=%p pc0=%p pc8=%p p70=%p p78=%p rbx=%p\\n\", @eax, poi(@rbx+0xb0), poi(@rbx+0x58), poi(@rbx+0x98), poi(@rbx+0xa0), poi(@rbx+0xa8), poi(@rbx+0xb8), poi(@rbx+0xc0), poi(@rbx+0xc8), poi(@rbx+0x70), poi(@rbx+0x78), @rbx; g"
 SNAPBPS
 bl
 .echo ====BREAKPOINTS_SET
@@ -211,11 +211,13 @@ q
   }
   $stopk = @()
   $blocks = @($txt -split '(?m)^STOPK')
+  $stackRows = @()
   foreach ($b in $blocks) {
-    $fr = @(($b -split "`n" | Where-Object { $_ -match '^([0-9a-f]{16}) `[0-9a-f]{16} ' } | ForEach-Object { $_.Trim() }) | Select-Object -First 16)
-    if ($fr.Count) { $stopk += ('--- frames=' + $fr.Count) + "`n" + ($fr -join "`n") }
+    $fr = @(($b -split "`n" | Where-Object { $_ -match '^[0-9a-fA-F]{16}`?[0-9a-fA-F]{0,8}`?\s+[0-9a-fA-F]{16}' }))
+    if ($fr.Count) { $stackRows += ($fr[0..([Math]::Min(7, $fr.Count-1))] -join "`n") }
   }
-  if ($stopk.Count -gt 3) { $stopk = @($stopk[0..2]) }
+  if ($stackRows.Count -gt 4) { $stackRows = @($stackRows[0..3]) }
+  foreach ($sr in $stackRows) { Say ("ARM={0} stopk_stack=`n{1}" -f $v, $sr) }
   Say ("ARM={0} stopk_blocks={1}" -f $v, $stopk.Count)
   foreach ($sk in $stopk) { Say ("ARM={0} stopk=`n{1}" -f $v, $sk) }
   $av2 = @([regex]::Matches($txt, '(?m)^AV2')).Count
