@@ -22,6 +22,7 @@ the states in which an "end minus start" span can come out negative:
 
 Output is the record format the harness parses: `<decimal-length>\\n<body-bytes>` repeated.
 """
+import os
 import sys
 
 out = sys.argv[1] if len(sys.argv) > 1 else "divneg.txt"
@@ -94,6 +95,19 @@ for d in (1, 2, 4, 9, 20, 63, 64, 65, 255, 256, 257, 4013, 4014, 4015, 4016):
     add("nest_span_%d" % d, "<html><body>" + ("<span>" * d) + "x" + ("</span>" * d) + "</body></html>")
     add("nest_div_short_%d" % d, "<html><body>" + ("<div>" * d) + "x" + ("</div>" * max(0, d - 1)) + "</body></html>")
     add("nest_div_long_%d" % d, "<html><body>" + ("<div>" * d) + "x" + ("</div>" * (d + 1)) + "</body></html>")
+
+out_dir = None
+if len(sys.argv) > 2:
+    out_dir = sys.argv[2]
+    os.makedirs(out_dir, exist_ok=True)
+
+if out_dir:
+    # the app-driven arm opens real files (double-click / `WINWORD.EXE <file>`), so emit each record
+    # as its own .htm as well
+    for name, body in recs:
+        with open(os.path.join(out_dir, name + ".htm"), "wb") as f:
+            f.write(body)
+    print("htm_files=%d dir=%s" % (len(recs), out_dir))
 
 with open(out, "wb") as f:
     for name, body in recs:
