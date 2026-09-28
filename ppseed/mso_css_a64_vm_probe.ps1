@@ -84,16 +84,16 @@ foreach ($f in $files) {
   $cmdf = Join-Path $LogDir ($name + '.cdb')
   $avh = 'sxd av ".echo AV2; r pc; k 14; .dump /ma ' + (Join-Path $LogDir ('dump_' + $name + '.dmp')) + '; g"'
   $c = @('.sympath()', 'sxn e06d7363', 'sxn e0434352', 'sxn c00000fd', 'sxn 80000003', $avh,
-         'sxe ld:mso.dll', '.echo ====MSO_LOADED', 'g', '.echo ====WAIT', '? mso', 'lm m mso',
-         'u mso+0x{0:X} L4' -f $rv['A6PROD'], 'u mso+0x{0:X} L4' -f $rv['A6ALLOC'], 'u mso+0x{0:X} L4' -f $rv['A6COPY'],
+         'sxe ld:mso.dll', '.echo ====ENTER', 'g', '.echo ====MSO_LOADED', '? mso', 'lm m mso',
+         ('u mso+0x{0:X} L4' -f $rv['A6PROD']), ('u mso+0x{0:X} L4' -f $rv['A6ALLOC']), ('u mso+0x{0:X} L4' -f $rv['A6COPY']),
          ('bp /c 800 mso+0x{0:X} "r $t0=@$t0+1; .echo A6PD; r x10 x20; g"' -f $rv['A6PROD']),
          ('bp /c 800 mso+0x{0:X} "r $t1=@$t1+1; .echo A6AL; r x0 x21; g"' -f $rv['A6ALLOC']),
          ('bp /c 800 mso+0x{0:X} "r $t2=@$t2+1; .echo A6CP; r x2 x0 x1; g"' -f $rv['A6COPY']),
          'bl', '.echo ====BP_SET')
   for ($i = 0; $i -lt 200; $i++) { $c += '.echo ====STOP'; $c += 'g' }
-  $c += '.printf "COUNTERS pd=%d al=%d cp=%d\n", @$t0, @$t1, @$t2'
+  $c += ('.printf "COUNTERS pd=%d al=%d cp=%d\n", @$t0, @$t1, @$t2')
   $c += 'q'
-  Set-Content -LiteralPath $cmdf -Value ($c -join "`n") -Encoding ASCII
+  Set-Content -LiteralPath $cmdf -Value $c -Encoding ASCII
   $argl = @('-cf', $cmdf, ('"' + $appPath + '"'))
   if ($ExtraArgs) { $argl += $ExtraArgs }
   $argl += ('"' + $f.FullName + '"')
