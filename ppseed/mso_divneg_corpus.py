@@ -151,6 +151,28 @@ for ch in ("&#xDCE0;", "&#xD800;", "&#xDFFF;", "&#x10000;", "&#xE000;", "&#xFDD0
         add("csstok_eof_%s_%s" % (shape, tag), b.replace("</style></head><body>x</body></html>", "")
                                             .replace("</div></body></html>", "</div>"))
 
+# Window-edge sweep aimed at the producer's own arithmetic (STATE mso-html-import-20260923 SS117):
+# PwchFetchToIhtks computes the count as (LBS+0x60 - LBS+0x68)/2 after checking only that the cursor
+# LBS+0x68 lies in [LBS+0x50, LBS+0x50+0x4000], so the quantity goes negative when the cursor is inside
+# that 16 KiB window slack but past the end of data.  The commit loop keeps iterating while the nesting
+# counter (direction flag == 1 -> +1, else -1) is above zero, so a div/span with N unclosed inner spans
+# and text ending inside the window requests further fetches after the data is consumed.  The sweep below
+# therefore varies BOTH the unclosed-span count and the text length across the window edge (8192 WCHARs)
+# and across a second window size (16384), one character at a time.
+for _n in (0, 1, 2, 3, 5, 9):
+    for _edge in (4096, 8192, 16384):
+        for _d in range(-4, 5):
+            _l = _edge + _d
+            if _l < 1:
+                continue
+            add("spanwin_%d_%d_%+d" % (_n, _edge, _d),
+                "<html><body><div>" + ("<span>" * _n) + ("t" * _l))
+            add("spanwin_close_%d_%d_%+d" % (_n, _edge, _d),
+                "<html><body><div>" + ("<span>" * _n) + ("t" * _l) + ("</span>" * _n) + "</div>")
+
+# keep the window-edge sweep first so a run limited to the first records measures exactly that family
+recs = [r for r in recs if r[0].startswith('spanwin')] + [r for r in recs if not r[0].startswith('spanwin')]
+
 out_dir = None
 if len(sys.argv) > 2:
     out_dir = sys.argv[2]
