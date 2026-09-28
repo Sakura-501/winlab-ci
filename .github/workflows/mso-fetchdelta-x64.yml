@@ -181,7 +181,7 @@ jobs:
       if: always()
       shell: pwsh
       run: |
-        foreach ($t in @('dsdense','dsmime','dsdivneg')) {
+        foreach ($t in @('fddense','fdmime','fddivneg','ecslot')) {
           $f = "out\$($t)_log.txt"
           "##### $t"
           if (Test-Path $f) { Get-Content $f } else { "missing" }
@@ -190,10 +190,12 @@ jobs:
         "transcripts=$($tr.Count)"
         foreach ($x in $tr) {
           $txt = Get-Content $x.FullName -Raw
-          ("{0} bytes={1} FDS={2} NEG={3} CPY={4} AV2={5} r8_ffff={6}" -f $x.Name, $x.Length,
+          ("{0} bytes={1} FDS={2} NEG={3} CPY={4} AV2={5} r8_ffff={6} dltx={7} dltx_topbit={8}" -f $x.Name, $x.Length,
             ([regex]::Matches($txt,'(?m)^FDS')).Count, ([regex]::Matches($txt,'(?m)^NEG')).Count,
             ([regex]::Matches($txt,'(?m)^CPY')).Count, ([regex]::Matches($txt,'(?m)^AV2')).Count,
-            ([regex]::Matches($txt,'(?m)^r8=ffff')).Count)
+            ([regex]::Matches($txt,'(?m)^r8=ffff')).Count,
+            ([regex]::Matches($txt,'(?m)^DLTX')).Count,
+            ([regex]::Matches($txt,'(?m)^DLTX\r?\nrcx=[89a-f]')).Count)
         }
         "dav_dmp=" + ((Get-Item C:\dsdbg\dav.dmp -EA SilentlyContinue).Length)
     - name: Keep the biggest evidence pieces
@@ -201,7 +203,8 @@ jobs:
       shell: pwsh
       run: |
         New-Item -ItemType Directory -Force -Path keep | Out-Null
-        Copy-Item out\ds*_log.txt keep\ -EA SilentlyContinue
+        Copy-Item out\fd*_log.txt keep\ -EA SilentlyContinue
+        Copy-Item out\ecslot_log.txt keep\ -EA SilentlyContinue
         foreach ($x in @(Get-ChildItem out -Filter 'trans_*.txt' -EA SilentlyContinue)) {
           Compress-Archive -Path $x.FullName -DestinationPath ('keep\' + $x.BaseName + '.zip') -Force -EA SilentlyContinue
         }
