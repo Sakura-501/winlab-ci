@@ -96,24 +96,6 @@ for d in (1, 2, 4, 9, 20, 63, 64, 65, 255, 256, 257, 4013, 4014, 4015, 4016):
     add("nest_div_short_%d" % d, "<html><body>" + ("<div>" * d) + "x" + ("</div>" * max(0, d - 1)) + "</body></html>")
     add("nest_div_long_%d" % d, "<html><body>" + ("<div>" * d) + "x" + ("</div>" * (d + 1)) + "</body></html>")
 
-out_dir = None
-if len(sys.argv) > 2:
-    out_dir = sys.argv[2]
-    os.makedirs(out_dir, exist_ok=True)
-
-if out_dir:
-    # the app-driven arm opens real files (double-click / `WINWORD.EXE <file>`), so emit each record
-    # as its own .htm as well
-    for name, body in recs:
-        with open(os.path.join(out_dir, name + ".htm"), "wb") as f:
-            f.write(body)
-    print("htm_files=%d dir=%s" % (len(recs), out_dir))
-
-with open(out, "wb") as f:
-    for name, body in recs:
-        f.write(("%d\n" % len(body)).encode("ascii"))
-        f.write(body)
-
 # ---- CSS family: FImportStyleSheet (mso 20092 x64 rva 0x7F9250) takes n from FClassifyRgwch's int*
 # out-param, allocates 2*(n+2) with a 32-bit add and no sign test, then memcpy's 2*n into buf+2.
 # These records put markup inside <style> / @import so the CSS classify runs on attacker-chosen text:
@@ -132,5 +114,24 @@ add("css_only_at", "<html><head><style>@charset \"utf-8\";")
 add("css_utf16_mix", "<html><head><style>@import url(file:///nonexistent/")
 add("css_brace_no_semi", "<html><head><style>a{b c")
 add("css_deep_braces", "<html><head><style>" + ("a{b:" * 60) + "v" * 300)
+
+out_dir = None
+if len(sys.argv) > 2:
+    out_dir = sys.argv[2]
+    os.makedirs(out_dir, exist_ok=True)
+
+if out_dir:
+    # the app-driven arm opens real files (double-click / `WINWORD.EXE <file>`), so emit each record
+    # as its own .htm as well
+    for name, body in recs:
+        with open(os.path.join(out_dir, name + ".htm"), "wb") as f:
+            f.write(body)
+    print("htm_files=%d dir=%s" % (len(recs), out_dir))
+
+with open(out, "wb") as f:
+    for name, body in recs:
+        f.write(("%d\n" % len(body)).encode("ascii"))
+        f.write(body)
+
 
 print("records=%d file=%s" % (len(recs), out))
