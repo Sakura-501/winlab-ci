@@ -30,7 +30,7 @@ $log = Join-Path $base ('out\' + $Tag + '_log.txt')
 function Say([string]$s) { ("{0} {1}" -f (Get-Date -Format HH:mm:ss), $s) | Add-Content $log; $s }
 
 # 28 bytes ending at the function's ret; unique exactly once in the archived 20092 client DLL.
-$STORESIG = '880000000000008907488B83B0000000 488B5C24304883C4205FC3'.Replace(' ','')
+$STORESIG = '88000000000000008907488B83B0000000488B5C24304883C4205FC3'
 $STOREOFF = 8          # `mov [rdi], eax` sits 8 bytes into the signature
 $hostCand = @(
   'C:\Program Files\Common Files\Microsoft Shared\Office16\mso98win32client.dll',
