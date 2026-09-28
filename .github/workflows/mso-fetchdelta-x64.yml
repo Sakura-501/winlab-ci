@@ -33,6 +33,7 @@ jobs:
       run: |
         $errs = $null
         [void][System.Management.Automation.Language.Parser]::ParseFile("$PWD\ppseed\mso_fetchdelta_probe.ps1", [ref]$null, [ref]$errs)
+        $errs2 = $null
         [void][System.Management.Automation.Language.Parser]::ParseFile("$PWD\ppseed\mso_ec_slot_read.ps1", [ref]$null, [ref]$errs2)
         if ($errs2.Count) { $errs2 | ForEach-Object { 'PARSE ' + $_.Message }; exit 1 }
         if ($errs) { $errs | ForEach-Object { "PARSE " + $_.Extent.StartLineNumber + " " + $_.Message }; exit 1 }
