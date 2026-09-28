@@ -21,6 +21,7 @@ param([string]$Dir = 'carriers_h',
       [int]$MaxCases = 0,
       [string]$NameFilter = '',
       [string]$Ext = '.htm,.html,.mht,.mhtml',
+      [string]$ExtraArgs = '',
       [switch]$NoCdb,
       [int]$Stops = 400)
 $ErrorActionPreference = 'Continue'
@@ -538,7 +539,10 @@ foreach ($f in $files) {
   }
   ('PRELAUNCH instances=' + @(Get-Process $exe -EA SilentlyContinue).Count) | Add-Content $log
   $caseArg = '"' + $f.FullName + '"'
-  if ($exe -eq 'OUTLOOK') { $caseArg = '/eml "' + $f.FullName + '"' }
+  if ($exe -eq 'OUTLOOK') { $caseArg = '/eml "' + $f.FullName + '"' }  # Office is single-instance: without `/w` the launched process can hand the document to an existing
+  # instance and exit, which shows up as `dead=1 loaded=0 stops=1` on every case (run 36387788374).
+  if ($ExtraArgs) { $caseArg = $ExtraArgs + ' ' + $caseArg }
+
   $cdbArgs = @('-y', $symLocal, '-cf', $cmdf, $appPath, $caseArg)
   $p = Start-Process -FilePath $cdbExe -ArgumentList $cdbArgs -PassThru -WindowStyle Hidden `
        -RedirectStandardOutput $stdout -RedirectStandardError ($stdout + '.err')
