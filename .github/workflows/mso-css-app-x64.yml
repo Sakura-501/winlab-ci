@@ -96,14 +96,31 @@ jobs:
         "htm_carriers=$n"
         if ($n -lt 200) { throw "div/span carrier generation failed ($n)" }
         pwsh -NoProfile -ExecutionPolicy Bypass -File ppseed\mso_html_len_probe.ps1 -Dir carriers_dn -Tag csswd -App WINWORD.EXE -ExtraArgs /w -Base (Get-Location).Path -WaitSec 150 -MaxCases 14 -NameFilter "^(css_rule_4013|css_rule_1|css_open_str_4014|css_close_str_256|css_comment_eof_4015|css_import_trunc_64|css_no_close_tag_2|css_in_div_4013|css_deep_braces|css_brace_no_semi|css_only_at|css_utf16_mix|css_empty_rule|css_rule_4014)$"
+    - name: Wrap the CSS carriers as inbound mail and probe them (Outlook, no Protected View)
+      continue-on-error: true
+      shell: pwsh
+      run: |
+        # Outlook renders an HTML body without Protected View and without any dialog (AGENTS 62(6)), so the
+        # same CSS records wrapped as .eml are the delivery-shaped arm: if the CSS handlers run at all in a
+        # product, this is the route where they run on attacker-chosen text with nothing clicked.
+        python ppseed\eml_from_htm.py carriers_dn carriers_dc
+        $e = @(Get-ChildItem carriers_dc -Filter *.eml -File).Count
+        "eml_carriers=$e"
+        if ($e -lt 200) { throw "eml wrapping of the CSS carriers failed ($e)" }
+        pwsh -NoProfile -ExecutionPolicy Bypass -File ppseed\mso_html_len_probe.ps1 -Dir carriers_dc -Ext .eml -Tag cssem -App OUTLOOK.EXE -Base (Get-Location).Path -WaitSec 150 -MaxCases 16 -NameFilter "^(css_rule_1|css_in_div_8|css_deep_braces|css_empty_rule|css_open_str_4014|css_comment_eof_64|csstok_sheet_value_uDCE0|csstok_sheet_name_uD800|csstok_inline_value_uDFFF|csstok_inline_name_u10000|csstok_at_page_uE000|csstok_at_import_uFDD0|csstok_class_attr_uFFFF|csstok_sheet_value_uFEFF|csstok_inline_value_u0|csstok_eof_sheet_name_ed800)$"
+    - name: Probe the rewind-triggering token shapes through Word as well
+      continue-on-error: true
+      shell: pwsh
+      run: |
+        pwsh -NoProfile -ExecutionPolicy Bypass -File ppseed\mso_html_len_probe.ps1 -Dir carriers_dn -Tag csstokwd -App WINWORD.EXE -ExtraArgs /w -Base (Get-Location).Path -WaitSec 150 -MaxCases 12 -NameFilter "^(csstok_sheet_value_uDCE0|csstok_sheet_name_uD800|csstok_inline_value_uDFFF|csstok_inline_name_u10000|csstok_at_page_uE000|csstok_at_import_uFDD0|csstok_class_attr_uFFFF|csstok_sheet_value_uFEFF|csstok_inline_value_u0|csstok_eof_sheet_name_ed800|csstok_inline_value_effff|csstok_at_page_e)$"
     - name: Report
       if: always()
       shell: pwsh
       run: |
-        foreach ($t in @('dspp','dswd','dsdn','dsol')) {
+        foreach ($t in @('csswd','cssem','csstokwd')) {
           $f = "out\$($t)_log.txt"
           "##### $t"
-          if (Test-Path $f) { Get-Content $f | Select-String 'SIG |TRY |WARMUP|NODEBUG|state=|cases=|av2=|FDS|NEG|CPY|dump_total|GlobalFlag|ALLDONE|NO_CARRIERS|protectedview' } else { "missing" }
+          if (Test-Path $f) { Get-Content $f | Select-String 'SIG |TRY |WARMUP|NODEBUG|state=|cases=|av2=|FDS|NEG|CPY|CSSPAIR|csn=|dump_total|GlobalFlag|ALLDONE|NO_CARRIERS|protectedview' } else { "missing" }
         }
         "dumps=" + @(Get-ChildItem dumps -Filter *.dmp -EA SilentlyContinue).Count
         (Get-ChildItem dumps -Filter *.dmp -EA SilentlyContinue | ForEach-Object { $_.Name + ':' + $_.Length }) -join ' '
