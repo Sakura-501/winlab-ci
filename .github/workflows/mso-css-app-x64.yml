@@ -95,7 +95,7 @@ jobs:
         $n = @(Get-ChildItem carriers_dn -Filter *.htm -File).Count
         "htm_carriers=$n"
         if ($n -lt 200) { throw "div/span carrier generation failed ($n)" }
-        pwsh -NoProfile -ExecutionPolicy Bypass -File ppseed\mso_html_len_probe.ps1 -Dir carriers_dn -Tag csswd -App WINWORD.EXE -Base (Get-Location).Path -WaitSec 150 -MaxCases 14 -NameFilter "^(css_rule_4013|css_rule_1|css_open_str_4014|css_close_str_256|css_comment_eof_4015|css_import_trunc_64|css_no_close_tag_2|css_in_div_4013|css_deep_braces|css_brace_no_semi|css_only_at|css_utf16_mix|css_empty_rule|css_rule_4014)$"
+        pwsh -NoProfile -ExecutionPolicy Bypass -File ppseed\mso_html_len_probe.ps1 -Dir carriers_dn -Tag csswd -App WINWORD.EXE -ExtraArgs /w -Base (Get-Location).Path -WaitSec 150 -MaxCases 14 -NameFilter "^(css_rule_4013|css_rule_1|css_open_str_4014|css_close_str_256|css_comment_eof_4015|css_import_trunc_64|css_no_close_tag_2|css_in_div_4013|css_deep_braces|css_brace_no_semi|css_only_at|css_utf16_mix|css_empty_rule|css_rule_4014)$"
     - name: Report
       if: always()
       shell: pwsh
