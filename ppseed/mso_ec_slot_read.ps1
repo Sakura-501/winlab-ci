@@ -65,7 +65,9 @@ function Get-Anchors([string]$path, $table) {
   }
   return $out
 }
-$msoPath = 'C:\Program Files\Microsoft Office\root\Office16\mso.dll'
+$msoPath = $null
+foreach ($cand in @('C:\Program Files\Common Files\Microsoft Shared\Office16\mso.dll', 'C:\Program Files\Microsoft Office\root\Office16\mso.dll', 'C:\Program Files\Microsoft Office\root\vfs\ProgramFilesCommonX64\Microsoft Shared\OFFICE16\mso.dll')) { if (Test-Path $cand) { $msoPath = $cand; break } }
+if (-not $msoPath) { Say 'MSO_PATH_MISSING'; exit 1 }
 $rv = Get-Anchors $msoPath $SIG
 $fetchRva = $rv['FETCH']
 Say ("FETCH anchor n={0} rva={1} all={2}" -f $rv['FETCH_N'], $fetchRva, $rv['FETCH_ALL'])
