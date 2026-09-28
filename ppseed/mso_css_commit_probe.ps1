@@ -26,12 +26,15 @@ $hostCand = @(
   'C:\Program Files\Common Files\Microsoft Shared\OFFICE16\mso.dll',
   'C:\Program Files\Microsoft Office\root\vfs\ProgramFilesCommonX64\Microsoft Shared\OFFICE16\mso.dll',
   'C:\Program Files\Microsoft Office\root\Office16\mso.dll')
-# pattern starts at the `sub`; the breakpoint belongs on the following `sar rcx,1` (+4 bytes)
-$SIG = [ordered]@{ ALLOC = '8B45F883C0024863C84803C9'; COPY = '4C6345F84D03C0488D4802488B55F0E8' }
-# +4 = the `sar rcx,1` (rcx still holds the raw byte difference); +13 = the CastThrow call site
-# (rcx already holds the character count that is stored through the caller's int*, i.e. the value the
-# committer later doubles for memcpy).
-$SIGOFF = @{ ALLOC = 0; COPY = 0 }
+# ALLOC anchor +12 = the instruction right after the size expression (`mov eax,[rbp-8]; add eax,2;
+# movsxd rcx,eax; add rcx,rcx`), so rcx there IS the requested allocation size in bytes.
+# COPY anchor +15 = right before the memcpy call, so r8 = length, rcx = dst, rdx = src.
+# RET anchor = the `test eax,eax` right after `call ?FClassifyRgwch` (the 7-byte
+# `mov rcx,[rdi+0x81f0]` prefix makes it unique: 1 hit in mso.dll, 128 for the short form), so rax =
+# that routine's BOOL return and `dd [rbp-8]` reads back the signed count being doubled for memcpy.
+$SIG = [ordered]@{ ALLOC = '8B45F883C0024863C84803C9'; COPY = '4C6345F84D03C0488D4802488B55F0E8'
+                   RET = '488B8FF0810000E8????????85C07507' }
+$SIGOFF = @{ ALLOC = 12; COPY = 15; RET = 12 }
 function Get-Anchors([string]$path, $table) {
   $out = @{}
   $bytes = [IO.File]::ReadAllBytes($path)
@@ -77,12 +80,12 @@ foreach ($h in ($hostCand | Where-Object { Test-Path $_ })) {
   $r = Get-Anchors $h $SIG
   $it = Get-Item $h
   $have = 0; if ($r['ALLOC'] -and $r['COPY']) { $have = 2 }
-  Say ("TRY {0} v={1} size={2} hits={3}/2 alloc=0x{4:X} copy=0x{5:X}" -f $it.Name, $it.VersionInfo.FileVersion, `
-        $it.Length, $have, $r['ALLOC'], $r['COPY'])
+  Say ("TRY {0} v={1} size={2} hits={3}/2 alloc=0x{4:X} copy=0x{5:X} ret=0x{6:X} ret_n={7}" -f `
+        $it.Name, $it.VersionInfo.FileVersion, $it.Length, $have, $r['ALLOC'], $r['COPY'], $r['RET'], $r['RET_N'])
   if ($have -eq 2) { $rv = $r; $modFile = $it.Name; $modTok = $it.BaseName; break }
 }
 if (-not $modTok) { Say 'ANCHOR_FAIL_NO_HOST'; exit 1 }
-Say ("HOST selected: {0} token={1} ALLOC=0x{2:X} COPY=0x{3:X}" -f $modFile, $modTok, $rv['ALLOC'], $rv['COPY'])
+Say ("HOST selected: {0} token={1} ALLOC=0x{2:X} COPY=0x{3:X} RET=0x{4:X}" -f $modFile, $modTok, $rv['ALLOC'], $rv['COPY'], $rv['RET'])
 
 # ---- cdb ----
 $cdb = $null
@@ -137,15 +140,17 @@ g
 lm m <MODTOK>
 u <MODTOK>+0x<ALLOC> L6
 u <MODTOK>+0x<COPY> L6
+u <MODTOK>+0x<RET> L4
 bp /c 30000 <MODTOK>+0x<ALLOC> "r $t0=@$t0+1; .echo SZAL; r rcx; g"
-bp /c 30000 <MODTOK>+0x<COPY> "r $t1=@$t1+1; .echo SZCP; r r8 rcx; g"
+bp /c 30000 <MODTOK>+0x<COPY> "r $t1=@$t1+1; .echo SZCP; r r8 rcx rdx; g"
+bp /c 30000 <MODTOK>+0x<RET> "r $t2=@$t2+1; .echo CSN; r rax; dd @rbp-8 L1; g"
 bl
 .echo ====BREAKPOINTS_SET
 STOPS
-.printf "COUNTERS alloc=%d copy=%d\n", @$t0, @$t1
+.printf "COUNTERS alloc=%d copy=%d ret=%d\n", @$t0, @$t1, @$t2
 q
 '@
-  $body = $tmpl.Replace('<ALLOC>', ('{0:X}' -f $rv['ALLOC'])).Replace('<COPY>', ('{0:X}' -f $rv['COPY'])).Replace('<MODFILE>', $modFile).Replace('<MODTOK>', $modTok)
+  $body = $tmpl.Replace('<ALLOC>', ('{0:X}' -f $rv['ALLOC'])).Replace('<COPY>', ('{0:X}' -f $rv['COPY'])).Replace('<RET>', ('{0:X}' -f $rv['RET'])).Replace('<MODFILE>', $modFile).Replace('<MODTOK>', $modTok)
   $ladder = @()
   for ($i = 0; $i -lt $Stops; $i++) { $ladder += '.echo ====STOP'; $ladder += 'g' }
   $c2 = @()
@@ -159,8 +164,26 @@ q
   $txt = ''
   if (Test-Path $tr) { $txt = Get-Content $tr -Raw -EA SilentlyContinue }
   if (-not $txt) { $txt = '' }
-  $cnt = [regex]::Match($txt, 'COUNTERS alloc=(\d+) copy=(\d+)')
-  $ccalls = $cnt.Groups[1].Value + '/' + $cnt.Groups[2].Value
+  $cnt = [regex]::Match($txt, 'COUNTERS alloc=(\d+) copy=(\d+) ret=(\d+)')
+  $ccalls = $cnt.Groups[1].Value + '/' + $cnt.Groups[2].Value + '/' + $cnt.Groups[3].Value
+  # CSN blocks are "CSN" / "rax=..." / "<linear address>  <dword at [rbp-8]>": the dword is the signed
+  # count FClassifyRgwch stored through the caller's struct, i.e. the value the committer doubles twice
+  # (once for the alloc size after a 32-bit `add eax,2`, once for the memcpy length after a 64-bit movsxd).
+  $csn = @([regex]::Matches($txt, '(?m)^CSN\r?\nrax=([0-9a-fA-F]{16})\r?\n[0-9a-fA-F`]+\s+([0-9a-fA-F]{8})'))
+  $retNZ = 0; $nNeg = 0; $nM1 = 0; $nM2 = 0; $nMin = [int64]2147483647
+  foreach ($m in $csn) {
+    if ($m.Groups[1].Value -ne '0000000000000000') { $retNZ++ }
+    $nv = [Convert]::ToUInt32($m.Groups[2].Value, 16)
+    $sv = [int64]$nv
+    if ($nv -gt 0x7FFFFFFF) { $sv = $sv - 4294967296 }
+    if ($sv -lt 0) { $nNeg++ }
+    if ($sv -eq -1) { $nM1++ }
+    if ($sv -eq -2) { $nM2++ }
+    if ($sv -lt $nMin) { $nMin = $sv }
+  }
+  $csnN = $csn.Count
+  if ($csnN -eq 0) { $nMin = 0 }
+  $csnSamp = (($csn | Select-Object -First 12 | ForEach-Object { ($_.Value -replace "`r", '') -replace "`n", ' / ' }) -join "`n")
   $al = @([regex]::Matches($txt, '(?m)^SZAL\r?\nrcx=([0-9a-fA-F]{16})') | ForEach-Object { [Convert]::ToUInt64($_.Groups[1].Value, 16) })
   $cp = @([regex]::Matches($txt, '(?m)^SZCP\r?\nr8=([0-9a-fA-F]{16})') | ForEach-Object { [Convert]::ToUInt64($_.Groups[1].Value, 16) })
   $npair = [Math]::Min($al.Count, $cp.Count); $over = 0; $neglen = 0; $worst = [int64]0
@@ -190,10 +213,11 @@ q
   $cbsmax = 0; if ($cbs.Count) { $cbsmax = ($cbs | Measure-Object -Maximum).Maximum }
   $fault = (($txt -split "`n" | Where-Object { $_ -match 'MSOHTML totals|\[g\] AV-' }) -join ' | ')
   if ($fault.Length -gt 700) { $fault = $fault.Substring(0,700) }
-  $samp = (($txt -split "`n" | Where-Object { $_ -match '^(SZAL|SZCP|rcx=|r8=)' }) -join "`n")
+  $samp = (($txt -split "`n" | Where-Object { $_ -match '^(SZAL|SZCP|CSN|rcx=|r8=|rax=)' }) -join "`n")
   if ($samp.Length -gt 6000) { $samp = $samp.Substring(0, 6000) }
-  Say ("ARM={0} slot={13} host={1} loaded_stop={2} bpset={3} deferred={4} alloc_copy={5} pairs={6} copy_gt_alloc={7} copy_topbit={8} worst_excess={9} av2={10} commit_max={11} cbs_max={12}" -f `
-        $v, $modFile, $loaded, $bpset, $unres, $ccalls, $npair, $over, $neglen, $worst, $av2, $cmtmax, $cbsmax, $sl)
+  Say ("ARM={0} slot={19} host={1} loaded_stop={2} bpset={3} deferred={4} alloc_copy_ret={5} pairs={6} copy_gt_alloc={7} copy_topbit={8} worst_excess={9} av2={10} commit_max={11} cbs_max={12} csn={13} ret_nonzero={14} n_neg={15} n_minus1={16} n_minus2={17} n_min={18}" -f `
+        $v, $modFile, $loaded, $bpset, $unres, $ccalls, $npair, $over, $neglen, $worst, $av2, $cmtmax, $cbsmax, $csnN, $retNZ, $nNeg, $nM1, $nM2, $nMin, $sl)
+  Say ("ARM={0} csn_blocks=`n{1}" -f $v, $csnSamp)
   Say ("ARM={0} bl_list={1}" -f $v, $blTxt)
   Say ("ARM={0} anchor_disasm={1}" -f $v, $uTxt)
   Say ("ARM={0} faultlines={1}" -f $v, $fault)

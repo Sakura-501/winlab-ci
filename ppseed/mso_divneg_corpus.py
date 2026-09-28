@@ -115,6 +115,41 @@ add("css_utf16_mix", "<html><head><style>@import url(file:///nonexistent/")
 add("css_brace_no_semi", "<html><head><style>a{b c")
 add("css_deep_braces", "<html><head><style>" + ("a{b:" * 60) + "v" * 300)
 
+# The classifier behind FClassifyRgwch (mso 20092 x64 rva 0x1E0DC) writes its output run with
+# `mov word ptr [r13], cx ; add r13, 2` (0x1E478/0x1E47D) and has a rewind branch
+# `sub r13, 2` (0x1E4C3) taken from `test r15w, r15w ; jns` (0x1E49C/0x1E4A0) with r8d = 0x8000,
+# i.e. for characters whose class word has bit 15 set.  It then stores the element count as
+# `sub r13, r14 ; sar r13, 1 ; mov dword ptr [rdi+0x18], r13d` (0x1E93B..0x1E957) behind a guard
+# that only rejects counts whose magnitude exceeds 0x7FFFFFFF (`mov eax,0x80000000 ; add rax,r13 ;
+# cmp rax,rcx(=0xFFFFFFFF) ; ja -> mov ecx,5 ; int 0x29`), so a negative difference passes.
+# These records place such characters at the head of a classified run, in each of the five
+# (CPD*, CSSTK*) consumers of that out-param: <style> rule (FImportStyleSheet), inline style
+# value and property name (FSetPropertyValue/FSetSelector), @page (FNewPageRule), @import, class
+# (FSetListId/FSetListLfo).  Numeric character references are used so the corpus stays byte-safe;
+# &#x10000; is emitted as the surrogate pair D800/DC00, which exercises the pair path itself.
+for ch in ("&#xDCE0;", "&#xD800;", "&#xDFFF;", "&#x10000;", "&#xE000;", "&#xFDD0;", "&#xFFFF;",
+           "&#xFEFF;", "&#x0;", "\\d800 ", "\\ffff ", "\\ "):
+    for shape in ("sheet_value", "sheet_name", "inline_value", "inline_name", "at_page",
+                  "at_import", "class_attr"):
+        if shape == "sheet_value":
+            b = "<html><head><style>a{color:" + ch + "red}</style></head><body>x</body></html>"
+        elif shape == "sheet_name":
+            b = "<html><head><style>a{" + ch + "color:red}</style></head><body>x</body></html>"
+        elif shape == "inline_value":
+            b = "<html><body><div style=\"color:" + ch + "red\">t</div></body></html>"
+        elif shape == "inline_name":
+            b = "<html><body><span style=\"" + ch + "color:red\">t</span></body></html>"
+        elif shape == "at_page":
+            b = "<html><head><style>@page {size:" + ch + "A4}</style></head><body>x</body></html>"
+        elif shape == "at_import":
+            b = "<html><head><style>@import \"" + ch + "\";</style></head><body>x</body></html>"
+        else:
+            b = "<html><body><div class=\"" + ch + "\"><p id=\"" + ch + "\">q</p></div></body></html>"
+        tag = ch.replace("&#x", "u").replace(";", "").replace("\\", "e").replace(" ", "")
+        add("csstok_%s_%s" % (shape, tag), b)
+        add("csstok_eof_%s_%s" % (shape, tag), b.replace("</style></head><body>x</body></html>", "")
+                                            .replace("</div></body></html>", "</div>"))
+
 out_dir = None
 if len(sys.argv) > 2:
     out_dir = sys.argv[2]
