@@ -23,44 +23,55 @@ function Say([string]$s) { ("{0} {1}" -f (Get-Date -Format HH:mm:ss), $s) | Add-
 # unique), which means both the slot index and the call site come out of the file instead of being
 # assumed.  Stepping through that one call at runtime is what names the callee.
 $FETCH_SIG = 'FF15????????4C8BF84584ED'
-function Get-FetchAnchor([string]$path, [string]$sig) {
+$SIG = [ordered]@{ FETCH = $FETCH_SIG }
+$SIGOFF = @{ FETCH = 0 }
+function Get-Anchors([string]$path, $table) {
+  $out = @{}
   $bytes = [IO.File]::ReadAllBytes($path)
   $pe = [BitConverter]::ToInt32($bytes, 0x3C)
+  $opt = $pe + 24
   $nsec = [BitConverter]::ToInt16($bytes, $pe + 6)
-  $sh = $pe + 24 + [BitConverter]::ToInt16($bytes, $pe + 20)
+  $sh = $opt + [BitConverter]::ToInt16($bytes, $pe + 20)
   $tva = 0; $tpraw = 0
   for ($i = 0; $i -lt $nsec; $i++) {
     $o = $sh + $i * 40
     if ([Text.Encoding]::ASCII.GetString($bytes, $o, 8).Trim([char]0) -eq '.text') {
-      $tva = [BitConverter]::ToInt32($bytes, $o + 12); $tpraw = [BitConverter]::ToInt32($bytes, $o + 20); break } }
-  if (-not $tpraw) { return $null }
-  $bts = @(); for ($j = 0; $j -lt $sig.Length; $j += 2) {
-    $pair = $sig.Substring($j, 2)
-    if ($pair -eq '??') { $bts += -1 } else { $bts += [Convert]::ToInt32($pair, 16) } }
-  $lit = ''
-  foreach ($v in $bts) { if ($v -lt 0) { break }; $lit += [char]$v }
+      $tva = [BitConverter]::ToInt32($bytes, $o + 12); $tpraw = [BitConverter]::ToInt32($bytes, $o + 20); break }
+  }
+  if (-not $tpraw) { return $out }
   $latin = [Text.Encoding]::GetEncoding(28591).GetString($bytes)
-  $all = @(); $from = 0
-  while ($true) {
-    $c = $latin.IndexOf($lit, $from, [StringComparison]::Ordinal)
-    if ($c -lt 0) { break }
-    $ok = $true
-    for ($m = 0; $m -lt $bts.Count; $m++) {
-      if ($bts[$m] -ge 0 -and [int][byte]$latin[$c + $m] -ne $bts[$m]) { $ok = $false; break } }
-    if ($ok) { $all += ('{0},{1}' -f ($tva + ($c - $tpraw)), $c) }
-    $from = $c + 1 }
-  return $all
+  foreach ($k in $table.Keys) {
+    $h = $table[$k]
+    $bts = @(); for ($j = 0; $j -lt $h.Length; $j += 2) {
+      $pair = $h.Substring($j, 2)
+      if ($pair -eq '??') { $bts += -1 } else { $bts += [Convert]::ToInt32($pair, 16) } }
+    $lit = ''
+    foreach ($v in $bts) { if ($v -lt 0) { break }; $lit += [char]$v }
+    $idx = -1; $from = 0
+    $all = @()
+    while ($true) {
+      $c = $latin.IndexOf($lit, $from, [StringComparison]::Ordinal)
+      if ($c -lt 0) { break }
+      $ok = $true
+      for ($m = 0; $m -lt $bts.Count; $m++) {
+        if ($bts[$m] -ge 0 -and [int][byte]$latin[$c + $m] -ne $bts[$m]) { $ok = $false; break } }
+      if ($ok) { $all += $c; $idx = $c }
+      $from = $c + 1
+    }
+    if ($idx -lt 0) { continue }
+    $out[$k] = ($tva + ($idx - $tpraw)) + $SIGOFF[$k]
+    $out[$k + '_N'] = $all.Count
+    $out[$k + '_ALL'] = (($all | ForEach-Object { '0x{0:X}' -f ($tva + ($_ - $tpraw)) }) -join ',')
+  }
+  return $out
 }
 $msoPath = 'C:\Program Files\Microsoft Office\root\Office16\mso.dll'
-$fa = @(Get-FetchAnchor $msoPath $FETCH_SIG)
-Say ("FETCH anchor hits={0} raw={1}" -f $fa.Count, (($fa -join ';') -replace '\s+',' '))
-if ($fa.Count -ne 1 -or -not $fa[0]) { Say 'FETCH_ANCHOR_NOT_UNIQUE_OR_MISSING'; exit 1 }
-$pp = ($fa[0] -split ',')
-$fetchRva = [int]$pp[0]
-$mb = [IO.File]::ReadAllBytes($msoPath)
-$disp = [BitConverter]::ToInt32($mb, ([int]$pp[1]) + 2)
-$slotRva = $fetchRva + 6 + $disp
-Say ("FETCH rva=0x{0:X} disp32=0x{1:X} slot_rva=0x{2:X}" -f $fetchRva, ($disp -band 0xFFFFFFFF), $slotRva)
+$rv = Get-Anchors $msoPath $SIG
+$fetchRva = $rv['FETCH']
+Say ("FETCH anchor n={0} rva={1} all={2}" -f $rv['FETCH_N'], $fetchRva, $rv['FETCH_ALL'])
+if (-not $fetchRva) { Say 'FETCH_ANCHOR_MISSING'; exit 1 }
+# the slot the call dispatches through is read from the live instruction bytes (`db` below) rather than
+# from a second pass over the file, so the disp32 and the call site come from the same loaded module.
 
 $gbx = Join-Path $base 'bin\gbx.exe'
 if (-not (Test-Path $gbx)) { Say "GBX_MISSING $gbx"; exit 1 }
@@ -96,6 +107,7 @@ g
 lm m mso
 lm m mso98win32client
 u <MODTOK>+0x<FETCH> L4
+db <MODTOK>+0x<FETCH> L6
 bp /c 12 <MODTOK>+0x<FETCH> "r $t0=@$t0+1; .echo ECT; t; .echo C1; ln @rip; u @rip L3; t; .echo C2; ln @rip; u @rip L3; g"
 bl
 .echo ====BP_SET
@@ -105,7 +117,7 @@ q
 '@
 $tmpl = $tmpl.Replace('<FETCH>', ('{0:X}' -f $fetchRva)).Replace('<MODTOK>', 'mso')
 $reads = @()
-foreach ($sv in (@($Slots.Split(',')) + ('0x{0:X}' -f $slotRva)) | ForEach-Object { $_.Trim() }) {
+foreach ($sv in (@($Slots.Split(',')) | ForEach-Object { $_.Trim() })) {
   $reads += ('.echo SLOT_' + $sv)
   $reads += ('dq mso+' + $sv + ' L1')
 }
