@@ -139,12 +139,11 @@ g
 ? <MODTOK>
 lm m <MODTOK>
 u <MODTOK>+0x<DELTA> L4
-bp <MODTOK>+0x<DELTA> "r $t0=@$t0+1; r $t1=@$t1+(@rcx>>63); r $t2=@$t2+(@rcx==0); g"
-bp /c 40 <MODTOK>+0x<DUMP> "r $t3=@$t3+1; .echo SAMPLE; r rcx rbx; dq rbx+0x28 L4; g"
+bp <MODTOK>+0x<DELTA> "r $t0=@$t0+1; r rcx; g"
 bl
 .echo ====BREAKPOINTS_SET
 STOPS
-.printf "COUNTERS calls=%d neg=%d zero=%d dump=%d\n", @$t0, @$t1, @$t2, @$t3
+.printf "COUNTERS calls=%d\n", @$t0
 q
 '@
   $body = $tmpl.Replace('<DELTA>', ('{0:X}' -f $rv['DELTA'])).Replace('<MODFILE>', $modFile).Replace('<MODTOK>', $modTok)
@@ -162,8 +161,22 @@ q
   $txt = ''
   if (Test-Path $tr) { $txt = Get-Content $tr -Raw -EA SilentlyContinue }
   if (-not $txt) { $txt = '' }
-  $cnt = [regex]::Match($txt, 'COUNTERS calls=(\d+) neg=(\d+) zero=(\d+) dump=(\d+)')
-  $ccalls = $cnt.Groups[1].Value; $cneg = $cnt.Groups[2].Value; $czero = $cnt.Groups[3].Value; $cdump = $cnt.Groups[4].Value
+  $cnt = [regex]::Match($txt, 'COUNTERS calls=(\d+)')
+  $ccalls = $cnt.Groups[1].Value
+  # every hit's rcx is in the transcript (the debugger prints the register; the sign/zero/min are
+  # computed here so nothing depends on cdb expression syntax inside a breakpoint command).
+  $rx = [int64[]]@([regex]::Matches($txt, '(?m)^rcx=([0-9a-fA-F]{16})') | ForEach-Object {
+        $u = [Convert]::ToUInt64($_.Groups[1].Value, 16)
+        if ($u -gt [uint64]::MaxValue) { 0 } else { [int64]$u - 0 } })
+  $rx = @([regex]::Matches($txt, '(?m)^rcx=([0-9a-fA-F]{16})') | ForEach-Object { [Convert]::ToUInt64($_.Groups[1].Value, 16) })
+  $cneg = 0; $czero = 0; $cmin = 'na'
+  foreach ($u in $rx) {
+    if ($u -ge 0x8000000000000000) { $cneg++ }
+    if ($u -eq 0) { $czero++ }
+    $signed = if ($u -ge 0x8000000000000000) { [int64]($u - [uint64]::MaxValue - 1) } else { [int64]$u }
+    if ($cmin -eq 'na' -or $signed -lt [int64]$cmin) { $cmin = $signed }
+  }
+  $cdump = $rx.Count
   $negLines = @([regex]::Matches($txt, '(?m)^NEGDELTA')).Count
   $sampLines = @([regex]::Matches($txt, '(?m)^SAMPLE')).Count
   $av2 = @([regex]::Matches($txt, '(?m)^AV2')).Count
@@ -184,7 +197,7 @@ q
   if ($fault.Length -gt 700) { $fault = $fault.Substring(0,700) }
   $samp = (($txt -split "`n" | Where-Object { $_ -match '^(SAMPLE|rcx=|rbx=|[0-9a-f]{8}`)' }) -join "`n")
   if ($samp.Length -gt 6000) { $samp = $samp.Substring(0, 6000) }
-  Say ("ARM={0} slot={15} host={1} loaded_stop={2} bpset={3} deferred={4} calls={5} neg={6} zero={7} dump={8} rcx_captured={9} rcx_topbit={10} av2={11} commit_max={12} cbs_max={13}" -f `
+  Say ("ARM={0} slot={15} host={1} loaded_stop={2} bpset={3} deferred={4} hits={5} neg={6} zero={7} rcx_lines={8} rcx_min={9} av2={10} commit_max={11} cbs_max={12}" -f `
         $v, $modFile, $loaded, $bpset, $unres, $ccalls, $cneg, $czero, $cdump, $rcxs.Count, $negr8.Count, $av2, $cmtmax, $cbsmax, $sl)
   Say ("ARM={0} bl_list={1}" -f $v, $blTxt)
   Say ("ARM={0} anchor_disasm={1}" -f $v, $uTxt)

@@ -489,15 +489,14 @@ foreach ($f in $files) {
     $c += ("bu {1}+0x{0:X} `".echo GROWN;r;g`"" -f $rvX['XGROWN'], $modTokX)
     if ($rvX['DELTA']) {
       ('DELTA armed at {0}+0x{1:X}' -f $modTokX, ($rvX['DELTA'] + $DELTA_OFF)) | Add-Content $log
-      $c += ('bu ' + $modTokX + '+0x' + ('{0:X}' -f ($rvX['DELTA'] + $DELTA_OFF)) + ' "r $t0=@$t0+1; r $t1=@$t1+(@rcx>>63); r $t2=@$t2+(@rcx==0); g"')
-      $c += ('bu /c 60 ' + $modTokX + '+0x' + ('{0:X}' -f ($rvX['DELTA'] + $DUMPOFF_OFF)) + ' ".echo DN_SAMPLE; r rcx rbx; dq rbx+0x28 l4; g"')
+      $c += ('bu ' + $modTokX + '+0x' + ('{0:X}' -f ($rvX['DELTA'] + $DELTA_OFF)) + ' "r $t0=@$t0+1; r rcx; g"')
     }
     $c += 'bl'
     $c += 'g'
     for ($i = 0; $i -lt $Stops; $i++) { $c += '.echo ====XSTOP'; $c += '.lastevent'; $c += 'g' }
     $c += '.echo ====XML_END'
     $c += 'bl'
-    $c += '.printf "FDCOUNTERS calls=%d neg=%d zero=%d\n", @$t0, @$t1, @$t2'
+    $c += '.printf "FDCOUNTERS hits=%d\n", @$t0'
     $c += 'bl'
   }
   $c += '.echo ====END'
@@ -570,11 +569,19 @@ foreach ($f in $files) {
   $reuse = ([regex]::Matches($txt, '(?m)^REUSE')).Count
   $grown = ([regex]::Matches($txt, '(?m)^GROWN')).Count
   $xw = ([regex]::Matches($txt, '(?m)^XWRITE')).Count
-  $fdm = [regex]::Match($txt, 'FDCOUNTERS calls=(\d+) neg=(\d+) zero=(\d+)')
-  $fdcalls = $fdm.Groups[1].Value; $fdnegv = $fdm.Groups[2].Value
-  if (-not $fdcalls) { $fdcalls = 'na'; $fdnegv = 'na' }
-  $dnl = ([regex]::Matches($txt, '(?m)^DN_SAMPLE')).Count
-  ('FDCOUNTERS case=' + $f.BaseName + ' calls=' + $fdcalls + ' neg=' + $fdnegv + ' zero=' + $fdm.Groups[3].Value + ' dump_lines=' + $dnl) | Add-Content $log
+  $fdm = [regex]::Match($txt, 'FDCOUNTERS hits=(\d+)')
+  $fdcalls = $fdm.Groups[1].Value
+  if (-not $fdcalls) { $fdcalls = 'na' }
+  # sign/zero/min are computed from the per-hit rcx lines the debugger printed
+  $fdu = @([regex]::Matches($txt, '(?m)^rcx=([0-9a-fA-F]{16})') | ForEach-Object { [Convert]::ToUInt64($_.Groups[1].Value, 16) })
+  $fdnegv = 0; $fdzero = 0; $fdmin = 'na'
+  foreach ($u in $fdu) {
+    if ($u -ge 0x8000000000000000) { $fdnegv++ }
+    if ($u -eq 0) { $fdzero++ }
+    $sg = if ($u -ge 0x8000000000000000) { [int64]($u - [uint64]::MaxValue - 1) } else { [int64]$u }
+    if ($fdmin -eq 'na' -or $sg -lt [int64]$fdmin) { $fdmin = $sg }
+  }
+  ('FDCOUNTERS case=' + $f.BaseName + ' hits=' + $fdcalls + ' rcx_lines=' + $fdu.Count + ' neg=' + $fdnegv + ' zero=' + $fdzero + ' min=' + $fdmin) | Add-Content $log
   $xwbig = 0
   foreach ($mm in [regex]::Matches($txt, '(?m)^r8=([0-9a-fA-F]{16})')) {
     $v = [Convert]::ToUInt64($mm.Groups[1].Value, 16)
