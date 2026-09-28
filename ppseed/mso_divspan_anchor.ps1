@@ -21,6 +21,10 @@
 #     printed once at the end.
 param([string]$Base = '.', [string]$Corpus = 'corpus\html.txt', [string]$Records = '946',
       [string]$Tag = 'dsanchor', [string]$FlagValues = '0x20001D1,0x0',
+      # The importer entry is chosen by slot index.  Run 36386599477 proved the anchors bind
+      # (bl -> mso!Ordinal25108+0x148, deferred=0) while slot=17 never entered FCommitDivSpanCore
+      # over 946+273+25 records, so the driver slot itself is now the swept variable.
+      [string]$Slots = '17',
       [int]$Stops = 700)
 $ErrorActionPreference = 'Continue'
 $base = (Resolve-Path $Base).Path
@@ -130,8 +134,10 @@ $probe = & $gbx msohtml $Corpus 3 0 none norel noskip slot=17 2>&1 | Out-String
 Say ("PREARM_PROBE {0}" -f (($probe -split "`n" | Where-Object { $_ -match 'ARM |MSOHTML totals|handle=' }) -join ' / ').Trim())
 
 $vals = @($FlagValues.Split(',') | ForEach-Object { $_.Trim() })
+$slotL = @($Slots.Split(',') | ForEach-Object { $_.Trim() })
 foreach ($v in $vals) {
-  $suffix = ($v -replace '[^0-9a-fA-F]','')
+foreach ($sl in $slotL) {
+  $suffix = ($v -replace '[^0-9a-fA-F]','') + '_s' + $sl
   $cm = Join-Path $base ('out\cmds_' + $Tag + '_' + $suffix + '.txt')
   $tr = Join-Path $base ('out\trans_' + $Tag + '_' + $suffix + '.txt')
   $tmpl = @'
@@ -165,7 +171,7 @@ q
   Set-Content -Path $cm -Value ($c2 -join "`n") -Encoding ascii
   $env:GBFLAGS = $v
   $p = Start-Process -FilePath $cdbExe -ArgumentList @('-cf', $cm, '-o', $gbx, 'msohtml', (Join-Path $base $Corpus),
-                    $Records, '0', 'none', 'norel', 'noskip', 'slot=17') -NoNewWindow -PassThru -RedirectStandardOutput $tr
+                    $Records, '0', 'none', 'norel', 'noskip', ('slot=' + $sl)) -NoNewWindow -PassThru -RedirectStandardOutput $tr
   $p.WaitForExit()
   $txt = ''
   if (Test-Path $tr) { $txt = Get-Content $tr -Raw -EA SilentlyContinue }
@@ -192,11 +198,13 @@ q
   if ($fault.Length -gt 700) { $fault = $fault.Substring(0,700) }
   $samp = (($txt -split "`n" | Where-Object { $_ -match '^(NEG_HIT|r8=|rcx=|rax=|rdx=)' }) -join "`n")
   if ($samp.Length -gt 4000) { $samp = $samp.Substring(0, 4000) }
-  Say ("ARM={0} host={1} loaded_stop={2} bpset={3} deferred={4} fds={5} neg={6} cpy={7} neg_hit_lines={8} cpy_sample_lines={9} r8_captured={10} r8_ffff={11} av2={12} commit_max={13} cbs_max={14}" -f `
-        $v, $modFile, $loaded, $bpset, $unres, $cfds, $cneg, $ccpy, $negHits, $cpyHits, $r8s.Count, $giant.Count, $av2, $cmtmax, $cbsmax)
+  Say ("ARM={0} slot={12} host={1} loaded_stop={2} bpset={3} deferred={4} fds={5} neg={6} cpy={7} neg_hit_lines={8} cpy_sample_lines={9} r8_captured={10} r8_ffff={11} av2={12} commit_max={13} cbs_max={14}" -f `
+        $v, $modFile, $loaded, $bpset, $unres, $cfds, $cneg, $ccpy, $negHits, $cpyHits, $r8s.Count, $giant.Count, $av2, $cmtmax, $cbsmax, $sl)
   Say ("ARM={0} bl_list={1}" -f $v, $blTxt)
+  if ([int64]$cfds -gt 0) { Say ("REACHED slot={0} ARM={1} fds={2} neg={3} cpy={4}" -f $sl, $v, $cfds, $cneg, $ccpy) }
   Say ("ARM={0} anchor_disasm={1}" -f $v, $uTxt)
   Say ("ARM={0} faultlines={1}" -f $v, $fault)
   Say ("ARM={0} sample_lines=`n{1}" -f $v, $samp)
+}
 }
 Say 'ALLDONE'

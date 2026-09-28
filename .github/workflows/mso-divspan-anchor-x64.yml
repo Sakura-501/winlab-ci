@@ -18,6 +18,9 @@ on:
       flag_values:
         description: 'comma separated HICD+0x60 values'
         default: '0x20001D1,0x0,0x804,0x1000000,0x3FFFFFFF'
+      slots:
+        description: 'comma separated importer driver slot indices'
+        default: '17,25,26,27,28,29,30,31,32,33,34,35,36'
 jobs:
   anchor:
     runs-on: windows-latest
@@ -138,7 +141,7 @@ jobs:
       timeout-minutes: 120
       shell: pwsh
       run: |
-        pwsh -NoProfile -ExecutionPolicy Bypass -File ppseed\mso_divspan_anchor.ps1 -Base (Get-Location).Path -Corpus 'corpus\html.txt' -Records 946 -Tag dsdense -FlagValues '${{ inputs.flag_values }}' -Stops 700
+        pwsh -NoProfile -ExecutionPolicy Bypass -File ppseed\mso_divspan_anchor.ps1 -Base (Get-Location).Path -Corpus 'corpus\html.txt' -Records 946 -Tag dsdense -Slots ${{ inputs.slots }} -FlagValues '${{ inputs.flag_values }}' -Stops 700
     - name: Build the div/span-specific corpus
       shell: pwsh
       run: |
@@ -155,12 +158,12 @@ jobs:
       timeout-minutes: 60
       shell: pwsh
       run: |
-        pwsh -NoProfile -ExecutionPolicy Bypass -File ppseed\mso_divspan_anchor.ps1 -Base (Get-Location).Path -Corpus 'corpus\mime25.txt' -Records 25 -Tag dsmime -FlagValues '0x20001D1,0x0' -Stops 200
+        pwsh -NoProfile -ExecutionPolicy Bypass -File ppseed\mso_divspan_anchor.ps1 -Base (Get-Location).Path -Corpus 'corpus\mime25.txt' -Records 25 -Tag dsmime -Slots '17' -FlagValues '0x20001D1,0x0' -Stops 200
     - name: Anchored measurement over the div/span-specific corpus
       timeout-minutes: 90
       shell: pwsh
       run: |
-        pwsh -NoProfile -ExecutionPolicy Bypass -File ppseed\mso_divspan_anchor.ps1 -Base (Get-Location).Path -Corpus 'corpus\divneg.txt' -Records 273 -Tag dsdivneg -FlagValues '0x20001D1,0x0' -Stops 700
+        pwsh -NoProfile -ExecutionPolicy Bypass -File ppseed\mso_divspan_anchor.ps1 -Base (Get-Location).Path -Corpus 'corpus\divneg.txt' -Records 273 -Tag dsdivneg -Slots ${{ inputs.slots }} -FlagValues '0x20001D1,0x0' -Stops 700
     - name: Report
       if: always()
       shell: pwsh
