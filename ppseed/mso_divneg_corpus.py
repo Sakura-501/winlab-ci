@@ -2,7 +2,7 @@
 """Div/span commit-path corpus aimed at the fetched-count going negative.
 
 Target read on the shipping binary (mso 20430.20092 x64, STATE mso-html-import-20260923 SS92):
-FCommitDivSpanCore's commit loop calls the token fetch with {967,1104} (div/span) and an `int`
+FCommitDivSpanCore's commit loop calls the token fetch with {967(div),2037(span)} and an `int`
 out-count at [rbp+0x77]; the realloc branch then clamps that count through SafeInt for the
 capacity, while the copy length at rva 0x3E97D0 comes from the raw signed value
 (`movsxd r8, dword ptr [rbp+0x77] ; add r8, r8`).  The same pair exists in the ARM64 slice at
