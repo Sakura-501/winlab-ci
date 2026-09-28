@@ -151,6 +151,36 @@ for ch in ("&#xDCE0;", "&#xD800;", "&#xDFFF;", "&#x10000;", "&#xE000;", "&#xFDD0
         add("csstok_eof_%s_%s" % (shape, tag), b.replace("</style></head><body>x</body></html>", "")
                                             .replace("</div></body></html>", "</div>"))
 
+# Backslash-at-token-boundary shapes (STATE mso-html-import-20260923 SS122): the classifier's only
+# cursor rewind is `sub r13, 2` at rva 0x1E4C3, taken from the class-word bit-15 branch, and the store
+# at rva 0x1E957 then hands the signed difference straight to `2*(n+1)` bytes of allocation, a `2*n`
+# memcpy at rva 0x1E98F and a terminator word written at `buf + 2*n` (rva 0x1E99B).  U+005C is the
+# first of the 40 code units whose byte class is 11, so these records place a backslash (and the other
+# class-11 letters, and the CSS escapes that decode to the bit-15 surrogates) as the whole token, as
+# the last char before EOF, and as the char immediately before the token-closing delimiter, in each of
+# the six consumer positions.
+_BSL = ["\\", "\\\\", "\\ ", "\\a", "&#x5c;", "&#x5c;&#x5c;", "\\65 ", "\\005c "]
+_CLS11 = ["&#x5c;", "&#x4BE;", "&#x4C6;", "&#x5D6;", "&#x6DE;", "&#x700;", "&#x790;"]
+
+def _safe(_t):
+    return "".join(c if (c.isalnum()) else "_" for c in _t).strip("_") or "tok"
+
+_pos = {
+  "sheet_value":  lambda t: "<html><head><style>a{color:" + t + "}</style></head><body>x</body></html>",
+  "sheet_name":   lambda t: "<html><head><style>a{" + t + "}</style></head><body>x</body></html>",
+  "inline_value": lambda t: '<html><body><div style="color:' + t + '">t</div></body></html>',
+  "inline_name":  lambda t: '<html><body><span style="' + t + ':red">t</span></body></html>',
+  "at_page":      lambda t: "<html><head><style>@page {size:" + t + "}</style></head><body>x</body></html>",
+  "at_import":    lambda t: '<html><head><style>@import "' + t + '";</style></head><body>x</body></html>',
+  "class_attr":   lambda t: '<html><body><div class="' + t + '"><p id="' + t + '">q</p></div></body></html>',
+}
+for _shape, _mk in _pos.items():
+    for _ti, _tok in enumerate(_BSL + _CLS11):
+        _tag = "%02d_%s" % (_ti, _safe(_tok))
+        add("bsl_%s_%s" % (_shape, _tag), _mk(_tok))
+        add("bsl_eof_%s_%s" % (_shape, _tag),
+            _mk(_tok).replace("</body></html>", "").replace("</style></head><body>x", ""))
+
 # Window-edge sweep aimed at the producer's own arithmetic (STATE mso-html-import-20260923 SS117):
 # PwchFetchToIhtks computes the count as (LBS+0x60 - LBS+0x68)/2 after checking only that the cursor
 # LBS+0x68 lies in [LBS+0x50, LBS+0x50+0x4000], so the quantity goes negative when the cursor is inside

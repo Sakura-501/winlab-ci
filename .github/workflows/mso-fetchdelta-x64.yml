@@ -167,7 +167,7 @@ jobs:
       timeout-minutes: 90
       shell: pwsh
       run: |
-        pwsh -NoProfile -ExecutionPolicy Bypass -File ppseed\mso_fetchdelta_probe.ps1 -Base (Get-Location).Path -Corpus 'corpus\divneg.txt' -Records 889 -Tag fddivneg -Slots ${{ inputs.slots }} -FlagValues '0x20001D1,0x0' -Stops 700 -SampleFirst 6
+        pwsh -NoProfile -ExecutionPolicy Bypass -File ppseed\mso_fetchdelta_probe.ps1 -Base (Get-Location).Path -Corpus 'corpus\divneg.txt' -Records 1099 -Tag fddivneg -Slots ${{ inputs.slots }} -FlagValues '0x20001D1,0x0' -Stops 700 -SampleFirst 6
     - name: Read mso's indirect-call slots (callee identity behind the fetch)
       if: always()
       continue-on-error: true

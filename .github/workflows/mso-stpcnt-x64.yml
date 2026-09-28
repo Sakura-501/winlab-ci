@@ -135,7 +135,7 @@ jobs:
     - name: Build the div/span-specific corpus
       shell: pwsh
       run: |
-        # 889 records: the 273 div/span state shapes (closer without opener, crossed pairs, implied
+        # 1099 records: the 273 div/span state shapes (closer without opener, crossed pairs, implied
         # end tags, truncated tag or unterminated attribute quote at EOF, entity runs at the commit
         # boundary, nesting ladders around 4013/4014/4015), 224 CSS token shapes, and the 324
         # window-edge records that put the lexer cursor at 4096/8192/16384 +/- 4 bytes.
@@ -148,7 +148,7 @@ jobs:
       timeout-minutes: 150
       shell: pwsh
       run: |
-        pwsh -NoProfile -ExecutionPolicy Bypass -File ppseed\mso_stpcnt_probe.ps1 -Base (Get-Location).Path -Corpus 'corpus\divneg.txt' -Records 889 -Tag scdiv -Slots ${{ inputs.slots }} -FlagValues '${{ inputs.flag_values }}' -Stops 700 -WindowSamples 1200
+        pwsh -NoProfile -ExecutionPolicy Bypass -File ppseed\mso_stpcnt_probe.ps1 -Base (Get-Location).Path -Corpus 'corpus\divneg.txt' -Records 1099 -Tag scdiv -Slots ${{ inputs.slots }} -FlagValues '${{ inputs.flag_values }}' -Stops 700 -WindowSamples 1200
     - name: Count-domain measurement over the general html corpus
       timeout-minutes: 90
       shell: pwsh
