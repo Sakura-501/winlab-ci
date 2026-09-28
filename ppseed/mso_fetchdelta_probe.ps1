@@ -139,7 +139,7 @@ g
 ? <MODTOK>
 lm m <MODTOK>
 u <MODTOK>+0x<DELTA> L4
-bp <MODTOK>+0x<DELTA> "r $t0=@$t0+1; .echo DLTX; r rcx; g"
+bp <MODTOK>+0x<DELTA> "r $t0=@$t0+1; .echo DLTX; r rcx; dq @rbx+0x28 L4; g"
 bl
 .echo ====BREAKPOINTS_SET
 STOPS
@@ -175,6 +175,21 @@ q
     if ($cmin -eq 'na' -or $signed -lt [int64]$cmin) { $cmin = $signed }
   }
   $cdump = $rx.Count
+  # LBS field window at the same stop: +0x28 (window-limit field the guard reads), +0x30, +0x38 (the position
+  # the subtraction uses), +0x40 (the end of data). `dq` prints two qwords per line with the address first, so
+  # the five/ six backtick tokens after each rcx= line are read positionally.
+  $blocks = @([regex]::Matches($txt, '(?m)^DLTX\r?\nrcx=([0-9a-fA-F]{16})((?:\r?\n[^\r\n]*){0,2})'))
+  $npos = 0; $posgt = 0; $maxpast = [int64]0; $gapmin = [int64]0x7FFFFFFFFFFFFFFF
+  foreach ($m in $blocks) {
+    $toks = @([regex]::Matches($m.Groups[2].Value, '([0-9a-fA-F]{8})`([0-9a-fA-F]{8})') | ForEach-Object { [Convert]::ToUInt64($_.Groups[1].Value + $_.Groups[2].Value, 16) })
+    if ($toks.Count -lt 5) { continue }
+    $pos = $toks[3]; $endv = $toks[4]; $limitf = $toks[0]
+    $npos++
+    if ($pos -gt $endv) { $posgt++; $past = [int64]($pos - $endv); if ($past -gt $maxpast) { $maxpast = $past } }
+    $g = [int64]($endv - $pos)
+    if ($g -lt $gapmin) { $gapmin = $g }
+  }
+  if ($gapmin -eq 0x7FFFFFFFFFFFFFFF) { $gapmin = -1 }
   $negLines = @([regex]::Matches($txt, '(?m)^NEGDELTA')).Count
   $sampLines = @([regex]::Matches($txt, '(?m)^SAMPLE')).Count
   $av2 = @([regex]::Matches($txt, '(?m)^AV2')).Count
@@ -195,8 +210,8 @@ q
   if ($fault.Length -gt 700) { $fault = $fault.Substring(0,700) }
   $samp = (($txt -split "`n" | Where-Object { $_ -match '^(SAMPLE|rcx=|rbx=|[0-9a-f]{8}`)' }) -join "`n")
   if ($samp.Length -gt 6000) { $samp = $samp.Substring(0, 6000) }
-  Say ("ARM={0} slot={15} host={1} loaded_stop={2} bpset={3} deferred={4} hits={5} neg={6} zero={7} rcx_lines={8} rcx_min={9} av2={10} commit_max={11} cbs_max={12}" -f `
-        $v, $modFile, $loaded, $bpset, $unres, $ccalls, $cneg, $czero, $cdump, $rcxs.Count, $negr8.Count, $av2, $cmtmax, $cbsmax, $sl)
+  Say ("ARM={0} slot={14} host={1} loaded_stop={2} bpset={3} deferred={4} hits={5} neg={6} zero={7} rcx_lines={8} rcx_min={9} av2={10} commit_max={11} cbs_max={12} fld={15} pos_gt_end={16} max_past_end={17} min_end_minus_pos={18}" -f `
+        $v, $modFile, $loaded, $bpset, $unres, $ccalls, $cneg, $czero, $cdump, $rcxs.Count, $negr8.Count, $av2, $cmtmax, $cbsmax, $sl, $npos, $posgt, $maxpast, $gapmin)
   Say ("ARM={0} bl_list={1}" -f $v, $blTxt)
   Say ("ARM={0} anchor_disasm={1}" -f $v, $uTxt)
   Say ("ARM={0} faultlines={1}" -f $v, $fault)
