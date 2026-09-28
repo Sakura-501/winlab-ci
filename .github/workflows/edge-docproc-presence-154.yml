@@ -1,0 +1,72 @@
+name: edge-docproc-presence-154
+on:
+  workflow_dispatch: {}
+jobs:
+  probe:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - name: probe
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Continue'
+          function SH($m){ Write-Output ("| " + $m) }
+          $api = Invoke-RestMethod -Uri "https://edgeupdates.microsoft.com/api/products" -TimeoutSec 60
+          $rel = $api | Where-Object { $_.Product -eq 'Stable' } | ForEach-Object { $_.Releases | Where-Object { $_.Platform -eq 'Windows' -and $_.Architecture -eq 'x64' } } | Select-Object -First 1
+          $msi = Join-Path $env:RUNNER_TEMP "edge.msi"
+          Invoke-WebRequest -Uri $rel.Artifacts[0].Location -OutFile $msi -UseBasicParsing -TimeoutSec 600
+          $p = Start-Process msiexec.exe -ArgumentList @("/i",$msi,"/quiet","/norestart") -Wait -PassThru
+          $exe = "C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"
+          $dll = "C:\Program Files (x86)\Microsoft\Edge\Application\" + (Get-Item $exe).VersionInfo.FileVersion + "\msedge.dll"
+          SH ("stable_api=" + $rel.ProductVersion + " msiexec_exit=" + $p.ExitCode + " file=" + $dll + " size=" + (Get-Item $dll).Length)
+          $needles = @(
+            'edge_document_processing.mojom.DocumentProcessor',
+            'edge_document_processing.mojom.EdgeDocumentProcessingService',
+            'edge_document_processing.mojom.EdgeDocumentProcessingServiceFactory',
+            'edge_document_processing.mojom.DocumentOcrClientProvider',
+            'edge_document_processing.mojom.DocumentProcessingShutdownHandler',
+            'chrome\browser\edge_document_processing\edge_document_processing_service_router.cc',
+            'chrome\services\edge_document_processing\edge_document_processing_service_impl.cc',
+            'edge_document_docx_processor.cc',
+            'edge_document_pdf_processor.cc',
+            'InitializeDocumentProcessing',
+            'ProcessWithPassword',
+            'ReadAndProcessWithPassword',
+            'ProcessDocx',
+            'Document processing utility returned oversized extracted text',
+            'edge_pdf_ocr.mojom.EdgePdfOcrService',
+            'scannedPdfOcrMfbEnabled',
+            'aadrm.com',
+            'hostedrms.com',
+            'mip_cc_http_request',
+            'pdf.mojom.PdfHost',
+            'edge.copilot.undocked.pipe.v1.',
+            'ValidateLocalDirectoryRequest'
+          )
+          foreach($n in $needles){
+            $hits = (findstr /m /c:"$n" "$dll")
+            $cnt = (& "$env:SystemRoot\System32\findstr.exe" /c:"$n" "$dll" | Measure-Object -Line).Lines
+            SH ("NEEDLE " + $n + " -> present=" + [bool]$hits + " lines=" + $cnt)
+          }
+          $svc = Get-Item ("C:\Program Files (x86)\Microsoft\Edge\Application\" + (Get-Item $exe).VersionInfo.FileVersion + "\msedge.dll")
+          SH ("edge_dir=" + $svc.DirectoryName)
+          Get-ChildItem $svc.DirectoryName -Filter "*.dll" | Where-Object { $_.Name -match 'pdf|doc|ocr' } | ForEach-Object { SH ("MODULE " + $_.Name + " " + $_.Length) }
+          $tmp = Join-Path $env:RUNNER_TEMP "dp_profile"
+          $pdf = Join-Path $env:RUNNER_TEMP "dp_sample.pdf"
+          $pdfb64 = "JVBERi0xLjAKMSAwIG9iago8PC9UeXBlL0NhdGFsb2c+PgplbmRvYmoKdHJhaWxlcgo8PC9Sb290IDEgMCBSPj4KJSVFT0YK"
+          [IO.File]::WriteAllBytes($pdf, [Convert]::FromBase64String($pdfb64))
+          $psi = New-Object System.Diagnostics.ProcessStartInfo
+          $psi.FileName = $exe
+          $psi.Arguments = "--headless=new --disable-gpu --user-data-dir=`"$tmp`" --no-first-run `"$pdf`""
+          $psi.UseShellExecute = $false
+          [void][System.Diagnostics.Process]::Start($psi)
+          $seen = @()
+          for($i=0;$i -lt 24;$i++){
+            Start-Sleep -Seconds 2
+            $u = @(Get-CimInstance Win32_Process -Filter "Name='msedge.exe'" | Where-Object { $_.CommandLine -match 'utility-sub-type|service-player|mcp' })
+            if($u.Count){ $seen += $u | ForEach-Object { $_.CommandLine } }
+          }
+          SH ("utility_cmdlines_seen=" + (($seen | Select-Object -Unique).Count))
+          ($seen | Select-Object -Unique) | ForEach-Object { SH ("UTIL " + $_.Substring(0,[Math]::Min(240,$_.Length))) }
+          Get-Process msedge -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+          SH "docproc_presence_done"
