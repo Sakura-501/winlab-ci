@@ -23,6 +23,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 300
     steps:
+    - uses: actions/checkout@v4
     - name: Syntax gate for the anchor script
       shell: pwsh
       run: |
