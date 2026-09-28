@@ -44,7 +44,7 @@ $STOREOFF = 8          # `mov [rdi], eax` sits 8 bytes into the signature
 #   +84 call memcpy            (rcx = buffer, rdx = token start, r8 = 2*n sign-extended)
 #   +93 mov word ptr [rcx+rdx*2], r13w   (terminator word written at index n)
 $ARMS = [ordered]@{
-  CSN  = @{ sig = '4D2BEEB80000008049D1FDB9FFFFFF4903C5483BC10F8760030000'; off = 28 }  # +28 = mov [rdi+0x18], r13d
+  CSN  = @{ sig = '4D2BEEB80000008049D1FDB9FFFFFFFF4903C5483BC10F876003000044896F18'; off = 28 }  # +28 = mov [rdi+0x18], r13d
 }
 $hostCand = @(
   'C:\Program Files\Microsoft Office\root\vfs\ProgramFilesCommonX64\Microsoft Shared\OFFICE16\mso.dll',
