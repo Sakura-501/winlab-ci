@@ -169,7 +169,7 @@ q
   if (-not $txt) { $txt = '' }
   $cnt = [regex]::Match($txt, 'COUNTERS store_hits=(\d+) alloc_hits=(\d+)')
   $hits = $cnt.Groups[1].Value; $nAlloc = $cnt.Groups[2].Value
-  $ns = @([regex]::Matches($txt, '(?m)^CSN ([0-9a-fA-F]{8})') | ForEach-Object { [int64]([Convert]::ToUInt32($_.Groups[1].Value, 16)) })
+  $ns = @([regex]::Matches($txt, '(?m)^CSN ([0-9a-fA-F]{1,8})') | ForEach-Object { [int64]([Convert]::ToUInt32($_.Groups[1].Value, 16)) })
   $neg = @($ns | Where-Object { $_ -lt 0 }).Count
   $nmx = 0; $nmn = 0
   if ($ns.Count) { $nmx = ($ns | Measure-Object -Maximum).Maximum; $nmn = ($ns | Measure-Object -Minimum).Minimum }
@@ -179,7 +179,7 @@ q
   if ($allv.Count) { $almx = ($allv | Measure-Object -Maximum).Maximum; $almin = ($allv | Measure-Object -Minimum).Minimum }
   $cpyRows = @([regex]::Matches($txt, '(?m)^CPY dst=(\S+) dpo=([0-9a-fA-F]+) src=(\S+) len=(-?\d+)') | ForEach-Object {
       'dst={0} dpo={1} len={2} len_minus_dpo_avail={3}' -f $_.Groups[1].Value, $_.Groups[2].Value, $_.Groups[4].Value, ([int64]$_.Groups[4].Value - (0x1000 - [Convert]::ToInt32($_.Groups[2].Value, 16))) })
-  $trmRows = @([regex]::Matches($txt, '(?m)^TRM buf=(\S+) idx=(-?\d+) addr=(\S+) n=([0-9a-fA-F]{8})') | ForEach-Object {
+  $trmRows = @([regex]::Matches($txt, '(?m)^TRM buf=(\S+) idx=(-?\d+) addr=(\S+) n=([0-9a-fA-F]{1,8})') | ForEach-Object {
       $nv = [Convert]::ToUInt32($_.Groups[4].Value, 16)
       $nS = if ($nv -gt 2147483647) { [int64]$nv - 4294967296 } else { [int64]$nv }
       'idx={0} n={1} buf={2} word_addr={3} below_buf={4}' -f $_.Groups[2].Value, $nS, $_.Groups[1].Value, $_.Groups[3].Value, ([int64]$_.Groups[2].Value -lt 0) })

@@ -148,9 +148,9 @@ q
 '@
   $snap = @()
   if ($rv['SLP']) {
-    $snap += ('bp <MODTOK>+0x{0:X} "r $t1=@$t1+1; .printf \"SLP n=%x len=%I64d dst=%p dpo=%x src=%p\\n\", poi(@rbx+0x5c), @r8, @rcx, (@rcx&0xfff), @rdx; g"' -f $rv['SLP']) }
+    $snap += ('bp {0}+0x{1:X} "r $t1=@$t1+1; .printf \"SLP n=%x len=%I64d dst=%p dpo=%x src=%p\\n\", poi(@rbx+0x5c), @r8, @rcx, (@rcx&0xfff), @rdx; g"' -f $modTok, $rv['SLP']) }
   if ($rv['GLP']) {
-    $snap += ('bp <MODTOK>+0x{0:X} "r $t2=@$t2+1; .printf \"GLP n=%x len=%I64d dst=%p dpo=%x src=%p\\n\", poi(@rsi+0x5c), @r8, @rcx, (@rcx&0xfff), @rdx; g"' -f $rv['GLP']) }
+    $snap += ('bp {0}+0x{1:X} "r $t2=@$t2+1; .printf \"GLP n=%x len=%I64d dst=%p dpo=%x src=%p\\n\", poi(@rsi+0x5c), @r8, @rcx, (@rcx&0xfff), @rdx; g"' -f $modTok, $rv['GLP']) }
   if (-not $snap.Count) { $snap += '.echo NO_SNAP_ARMS' }
   $body = $tmpl.Replace('<STORE>', ('{0:X}' -f $rv['STOP'])).Replace('<WINS>', "$WindowSamples").
           Replace('<MODFILE>', $modFile).Replace('<MODTOK>', $modTok)
@@ -171,7 +171,7 @@ q
   if (-not $txt) { $txt = '' }
   $cnt = [regex]::Match($txt, 'COUNTERS store_hits=(\d+) slp=(\d+) glp=(\d+)')
   $hits = $cnt.Groups[1].Value; $nSlp = $cnt.Groups[2].Value; $nGlp = $cnt.Groups[3].Value
-  $vals2 = @([regex]::Matches($txt, '(?m)^CNT ([0-9a-fA-F]{8}) ') | ForEach-Object { [int64]([Convert]::ToUInt32($_.Groups[1].Value, 16)) })
+  $vals2 = @([regex]::Matches($txt, '(?m)^CNT ([0-9a-fA-F]{1,8}) ') | ForEach-Object { [int64]([Convert]::ToUInt32($_.Groups[1].Value, 16)) })
   $neg = @($vals2 | Where-Object { $_ -lt 0 -or $_ -gt 2147483647 }).Count
   $mx = 0; $mn = 0
   if ($vals2.Count) { $mx = ($vals2 | Measure-Object -Maximum).Maximum; $mn = ($vals2 | Measure-Object -Minimum).Minimum }
@@ -191,7 +191,7 @@ q
     Say ("{0} hits={1} len_max={2} len_neg={3} n_max={4} over_list={5}" -f $arm, $lens.Count, $lmx, $ln0, $nm, $snapRows.Count)
   }
   $rows = @()
-  $rx = '(?m)^WIN cnt=(?<cnt>[0-9a-fA-F]{8}) buf=(?<buf>[0-9a-fA-F`]+) p58=(?<p58>[0-9a-fA-F`]+) p98=(?<p98>[0-9a-fA-F`]+) pa0=(?<pa0>[0-9a-fA-F`]+) pa8=(?<pa8>[0-9a-fA-F`]+) pb8=(?<pb8>[0-9a-fA-F`]+) pc0=(?<pc0>[0-9a-fA-F`]+) pc8=(?<pc8>[0-9a-fA-F`]+) p70=(?<p70>[0-9a-fA-F`]+) rbx=(?<rbx>[0-9a-fA-F`]+)'
+  $rx = '(?m)^WIN cnt=(?<cnt>[0-9a-fA-F]{1,8}) buf=(?<buf>[0-9a-fA-F`]+) p58=(?<p58>[0-9a-fA-F`]+) p98=(?<p98>[0-9a-fA-F`]+) pa0=(?<pa0>[0-9a-fA-F`]+) pa8=(?<pa8>[0-9a-fA-F`]+) pb8=(?<pb8>[0-9a-fA-F`]+) pc0=(?<pc0>[0-9a-fA-F`]+) pc8=(?<pc8>[0-9a-fA-F`]+) p70=(?<p70>[0-9a-fA-F`]+) rbx=(?<rbx>[0-9a-fA-F`]+)'
   function Q([string]$v) { [Convert]::ToUInt64(($v -replace '`',''), 16) }
   foreach ($m in [regex]::Matches($txt, $rx)) {
     $g = $m.Groups
