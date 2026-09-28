@@ -122,21 +122,41 @@ $vals = @($FlagValues.Split(',') | ForEach-Object { $_.Trim() })
 foreach ($v in $vals) {
   $cm = Join-Path $base ('out\cmds_' + $Tag + '_' + ($v -replace '[^0-9a-fA-F]','') + '.txt')
   $tr = Join-Path $base ('out\trans_' + $Tag + '_' + ($v -replace '[^0-9a-fA-F]','') + '.txt')
+  # Two-stage setup: cdb will not bind `bu mso+<rva>` before the image is loaded
+  # ("contains symbols not qualified with module name", run 36384199036 transcript), so stop on the
+  # module-load event and only then set the anchors with `bp`.  Counters live in $t0..$t3 so the
+  # commit path (over a million hits per stage) costs one register bump each time, while register
+  # state is printed only for the first hit of the rare branches and for copies whose length passed
+  # 64 KiB.  Written as a literal here-string: cdb needs both quote flavours inside one line.
+  $tmpl = @'
+sxe ld:mso
+.echo ====WAITLOAD
+g
+.echo ====MSO_LOADED
+? mso
+r $t0=0; r $t1=0; r $t2=0
+bp <FDS> "r $t0=@$t0+1; g"
+bp /c 1 <FDS> ".echo FDS_SAMPLE; g"
+bp <NEG> "r $t1=@$t1+1; g"
+bp /c 200 <NEG> ".echo NEG_HIT; r rcx rax rdx r8; g"
+bp <CPY> "r $t2=@$t2+1; g"
+bp /c 3 <CPY> ".echo CPY_SAMPLE; r r8 rcx rdx; g"
+bl
+.echo ====BREAKPOINTS_SET
+sxs av ".echo AV2;r;k 12;.dump /ma C:\dsdbg\dav_av.dmp;g"
+.echo ====LOADED
+STOPS
+.printf "COUNTERS fds=%d neg=%d cpy=%d\n", @$t0, @$t1, @$t2
+q
+'@
+  $body = $tmpl.Replace('<FDS>', ('mso+0x{0:X}' -f $rv['FDS'])).Replace('<NEG>', ('mso+0x{0:X}' -f $rv['NEG'])).Replace('<CPY>', ('mso+0x{0:X}' -f $rv['CPY']))
+  $ladder = @()
+  for ($i = 0; $i -lt $Stops; $i++) { $ladder += '.echo ====STOP'; $ladder += 'g' }
   $c = @()
-  $c += 'sxe ld:mso'
-  $c += '.echo ====WAITLOAD'
-  $c += 'g'
-  $c += '.echo ====MSO_LOADED'
-  $c += '? mso'
-  $c += ('bp mso+0x{0:X} ".echo FDS;g"' -f $rv['FDS'])
-  $c += ('bp mso+0x{0:X} ".echo NEG;r r8 rax rcx rdx;g"' -f $rv['NEG'])
-  $c += ('bp mso+0x{0:X} ".echo CPY;r r8 rcx rdx;g"' -f $rv['CPY'])
-  $c += 'bl'
-  $c += '.echo ====BREAKPOINTS_SET'
-  $c += 'sxd av ".echo AV2;r;k 12;.dump /ma C:\dsdbg\dav.dmp;g"'
-  $c += '.echo ====LOADED'
-  for ($i = 0; $i -lt $Stops; $i++) { $c += '.echo ====STOP'; $c += 'g' }
-  Set-Content -Path $cm -Value ($c -join "`n") -Encoding ascii
+  $c += ($body -split "`n")
+  $c2 = @()
+  foreach ($ln in $c) { if ($ln.Trim() -eq 'STOPS') { $c2 += $ladder } else { $c2 += $ln } }
+  Set-Content -Path $cm -Value ($c2 -join "`n") -Encoding ascii
   $env:GBFLAGS = $v
   $p = Start-Process -FilePath $cdbExe -ArgumentList @('-cf', $cm, '-o', $gbx, 'msohtml', (Join-Path $base $Corpus),
                     $Records, '0', 'none', 'norel', 'noskip', 'slot=17') -NoNewWindow -PassThru -RedirectStandardOutput $tr
@@ -156,11 +176,17 @@ foreach ($v in $vals) {
   $blines = (($txt -split "`n" | Where-Object { $_ -match '^\s+\d+ \e? ' }) -join ' / ').Trim()
   $cmt = @([regex]::Matches($txt, 'commit=(\d+)') | ForEach-Object { [int64]$_.Groups[1].Value })
   $cbs = @([regex]::Matches($txt, 'cbs=(\d+)') | ForEach-Object { [int64]$_.Groups[1].Value })
+  $cnt = ([regex]::Match($txt, 'COUNTERS fds=(\d+) neg=(\d+) cpy=(\d+)'))
+  $cfds = ''; $cneg = ''; $ccpy = ''
+  if ($cnt.Success) { $cfds = $cnt.Groups[1].Value; $cneg = $cnt.Groups[2].Value; $ccpy = $cnt.Groups[3].Value }
   $cmtmax = 0; if ($cmt.Count) { $cmtmax = ($cmt | Measure-Object -Maximum).Maximum }
   $cbsmax = 0; if ($cbs.Count) { $cbsmax = ($cbs | Measure-Object -Maximum).Maximum }
   Say ("ARM={0} fds={1} neg={2} cpy={3} r8_captured={4} r8_ffff={5} av2={6} handle={7} recs={8} bpset={9} commit_max={10} cbs_max={11}" -f `
         $v, $fds, $neg, $cpy, $r8s.Count, $giant.Count, $av2, $hand, $recs, $bps, $cmtmax, $cbsmax)
-  Say ("ARM={0} bl_list={1}" -f $v, $blines.Substring(0, [Math]::Min(500, $blines.Length)))
+  Say ("ARM={0} COUNTERS_line fds={1} neg={2} cpy={3}" -f $v, $cfds, $cneg, $ccpy)
+  Say ("ARM={0} bl_list={1}" -f $v, $blines.Substring(0, [Math]::Min(600, $blines.Length)))
+  (("==== transcript head for ARM=" + $v + " ====\n") + ($txt.Substring(0, [Math]::Min(1200, $txt.Length)))) | Add-Content $log
+  (("==== NEG/CPY/AV sample lines ARM=" + $v + " ====\n") + (($txt -split "`n" | Where-Object { $_ -match '^(NEG_HIT|CPY_SAMPLE|AV2|r8=|rcx=)' }) -join "\n").Substring(0, 4000)) | Add-Content $log
   Say ("ARM={0} faultlines={1}" -f $v, $faultline.Substring(0, [Math]::Min(700, $faultline.Length)))
   if ($r8s.Count) {
     $top = ($r8s | Group-Object | Sort-Object Count -Descending | Select-Object -First 6 |
