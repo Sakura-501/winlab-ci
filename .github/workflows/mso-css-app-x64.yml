@@ -1,0 +1,125 @@
+name: mso-css-app-x64
+# Product-path measurement of the same three anchors that mso-divspan-anchor-x64 uses in-process:
+# FCommitDivSpanCore's entry, its clamped-negative branch, and the memcpy argument, resolved by code
+# signature in the installed shared core, with Word / PowerPoint / Outlook (.eml) opening the
+# div/span carriers themselves.
+#
+# Why this runs next to the in-process arm: run 36386599477 showed the anchors bind
+# (`bl` -> mso!Ordinal25108+0x148, deferred=0) and the harness's own commit counter climbs past a
+# million while slot=17 never enters the committer -- so the product side has to say how often that
+# committer runs for ordinary div/span markup and what length reaches the copy.
+#
+# Install and carrier-generation steps are reused verbatim from mso-htmllen-probe-x64;
+# mso_html_len_probe.ps1 already waits for `sxe ld:mso.dll` before setting its anchors.  Case counts
+# are deliberately small: its anchor payloads print register state, and a wide filter made one stage
+# of the earlier wave run over an hour.
+on: [workflow_dispatch]
+jobs:
+  p:
+    runs-on: windows-latest
+    timeout-minutes: 240
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Syntax gate for the probe script
+      shell: pwsh
+      run: |
+        $errs = $null
+        [void][System.Management.Automation.Language.Parser]::ParseFile("$PWD\ppseed\mso_html_len_probe.ps1", [ref]$null, [ref]$errs)
+        if ($errs) { $errs | ForEach-Object { "PARSE " + $_.Extent.StartLineNumber + " " + $_.Message }; exit 1 }
+        "PARSE_OK"
+
+    - name: Download ODT
+      shell: pwsh
+      run: |
+        $page = (Invoke-WebRequest -Uri "https://www.microsoft.com/en-us/download/details.aspx?id=49117" -UseBasicParsing).Content
+        if ($page -match 'href="(https://download\.microsoft\.com/download/[^"]+officedeploymenttool[^"]*\.exe)"') {
+          Invoke-WebRequest -Uri $Matches[1] -OutFile odt.exe
+        } else { throw 'odt link not found' }
+        Start-Process -Wait -FilePath .\odt.exe -ArgumentList "/extract:odtx /quiet"
+
+    - name: Install CurrentPreview Office (x64)
+      shell: pwsh
+      run: |
+        $cfg = '<Configuration><Add OfficeClientEdition="64" Channel="{0}"><Product ID="O365ProPlusRetail"><Language ID="en-us" /><ExcludeApp ID="Excel" /><ExcludeApp ID="OneNote" /><ExcludeApp ID="Access" /><ExcludeApp ID="Publisher" /><ExcludeApp ID="Teams" /><ExcludeApp ID="SharePointDesigner" /><ExcludeApp ID="FormConverter" /></Product></Add><Display Level="None" AcceptEULA="TRUE" /><Updates Enabled="FALSE" /></Configuration>'
+        foreach ($ch in @('CurrentChannelPreview','CurrentChannel','MonthlyChannel')) {
+          $xml = $cfg -f $ch
+          Set-Content -Path cfg.xml -Value $xml
+          "trying channel=$ch"
+          $r = Start-Process -Wait -PassThru -FilePath .\odtx\setup.exe -ArgumentList "/configure","cfg.xml"
+          "setup exit=$($r.ExitCode)"
+          $msoCand = @('C:\Program Files\Common Files\Microsoft Shared\OFFICE16\mso.dll','C:\Program Files\Microsoft Office\root\vfs\ProgramFilesCommonX64\Microsoft Shared\OFFICE16\mso.dll','C:\Program Files\Microsoft Office\root\vfs\ProgramFilesCommonX86\Microsoft Shared\OFFICE16\mso.dll','C:\Program Files\Microsoft Office\root\Office16\mso.dll')
+          $m = $null
+          foreach ($cp in $msoCand) { $t = Get-Item $cp -EA SilentlyContinue; if ($t) { $m = $t; break } }
+          if (-not $m) { $m = Get-ChildItem 'C:\Program Files\Microsoft Office\root' -Recurse -Filter mso.dll -EA SilentlyContinue | Sort-Object Length -Descending | Select-Object -First 1 }
+          if ($m) {
+            "mso v{0} size={1} path={2}" -f $m.VersionInfo.FileVersion, $m.Length, $m.FullName
+            ("{0} {1}" -f $ch, $m.VersionInfo.FileVersion) | Out-File ver.txt
+            break
+          }
+          (Get-Content setup.log -EA SilentlyContinue | Select-Object -Last 25) -join "`n"
+          $pp = Get-Item "C:\Program Files\Microsoft Office\root\Office16\POWERPNT.EXE" -EA SilentlyContinue
+          "after $ch : mso=$([bool]$m) pp=$([bool]$pp)"
+          Start-Process -Wait -FilePath .\odtx\setup.exe -ArgumentList "/configure","cfg.xml","/force-downgrade" -EA SilentlyContinue
+        }
+        $found = @($msoCand | Where-Object { Test-Path $_ })
+        if ($found.Count -eq 0) {
+          $h = Get-ChildItem 'C:\Program Files\Microsoft Office\root' -Recurse -Filter mso.dll -EA SilentlyContinue | Sort-Object Length -Descending | Select-Object -First 1
+          if ($h) { $found = @($h.FullName) }
+        }
+        "mso locations: $($found -join ' | ')"
+        if ($found.Count -eq 0) {
+          "Office16 listing:"; ((Get-ChildItem "C:\Program Files\Microsoft Office\root\Office16" -EA SilentlyContinue | Select-Object -First 40).Name -join " ")
+          throw "mso missing after all channels"
+        }
+
+    - name: Build HTML carriers
+      shell: pwsh
+      run: |
+        python ppseed\ppt_html_carriers.py carriers_h
+        $n = @(Get-ChildItem carriers_h -File).Count
+        # eml_from_htm.py wraps the .htm bodies; the corpus also carries one .mht (h11) whose bytes are
+        # already a MIME container, so the assertion compares against the .htm count, not the total.
+        $nh = @(Get-ChildItem carriers_h -Filter *.htm -File).Count
+        "carriers=$n htm=$nh"
+        if ($nh -lt 12) { throw "carrier generation failed ($n)" }
+        python ppseed\eml_from_htm.py carriers_h carriers_e
+        $e = @(Get-ChildItem carriers_e -Filter *.eml -File).Count
+        "eml_carriers=$e"
+        if ($e -ne $nh) { throw "eml wrapping lost files ($e of $nh)" }
+    - name: Emit the div/span-specific carriers and probe them (Word)
+      continue-on-error: true
+      shell: pwsh
+      run: |
+        python ppseed\mso_divneg_corpus.py carriers_dn\all.htm carriers_dn
+        $n = @(Get-ChildItem carriers_dn -Filter *.htm -File).Count
+        "htm_carriers=$n"
+        if ($n -lt 200) { throw "div/span carrier generation failed ($n)" }
+        pwsh -NoProfile -ExecutionPolicy Bypass -File ppseed\mso_html_len_probe.ps1 -Dir carriers_dn -Tag csswd -App WINWORD.EXE -Base (Get-Location).Path -WaitSec 150 -MaxCases 14 -NameFilter "^(css_rule_4013|css_rule_1|css_open_str_4014|css_close_str_256|css_comment_eof_4015|css_import_trunc_64|css_no_close_tag_2|css_in_div_4013|css_deep_braces|css_brace_no_semi|css_only_at|css_utf16_mix|css_empty_rule|css_rule_4014)$"
+    - name: Report
+      if: always()
+      shell: pwsh
+      run: |
+        foreach ($t in @('dspp','dswd','dsdn','dsol')) {
+          $f = "out\$($t)_log.txt"
+          "##### $t"
+          if (Test-Path $f) { Get-Content $f | Select-String 'SIG |TRY |WARMUP|NODEBUG|state=|cases=|av2=|FDS|NEG|CPY|dump_total|GlobalFlag|ALLDONE|NO_CARRIERS|protectedview' } else { "missing" }
+        }
+        "dumps=" + @(Get-ChildItem dumps -Filter *.dmp -EA SilentlyContinue).Count
+        (Get-ChildItem dumps -Filter *.dmp -EA SilentlyContinue | ForEach-Object { $_.Name + ':' + $_.Length }) -join ' '
+    - name: Keep the transcripts and dumps
+      if: always()
+      shell: pwsh
+      run: |
+        New-Item -ItemType Directory -Force -Path keep | Out-Null
+        Copy-Item out\ds*_log.txt keep\ -EA SilentlyContinue
+        foreach ($x in @(Get-ChildItem out -Filter '*_log.txt' -EA SilentlyContinue)) { Copy-Item $x.FullName keep\ -Force -EA SilentlyContinue }
+        Copy-Item dumps keep\ -Recurse -EA SilentlyContinue
+        (Get-ChildItem keep -Recurse | Select-Object FullName, Length | Out-String)
+    - name: Upload evidence
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: dsappwide-out
+        path: keep/
+        if-no-files-found: warn

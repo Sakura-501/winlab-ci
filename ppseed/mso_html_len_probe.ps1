@@ -70,7 +70,12 @@ $SIG = [ordered]@{
   # tag passes through here, so TAGS>0 with FDS=0 separates "importer ran, no div/span commit" from
   # "importer never ran".  Optional (the imm8 form may have become imm32 on the installed build).
   TAGS = '40534883EC??4D8BD8B8????????448BC24D8BD1488BD9BA01000000443BC0'
-}
+
+  # CSS table importer (mso 20092 x64 view: ?FImportStyleSheet@@ @0x7F9250).  The allocation site computes
+  # 2*(n+2) with a 32-bit add, the memcpy length is 2*n from the same int* out-param of ?FClassifyRgwch@@,
+  # so pairing the two dumps measures 'writes more than allocated' without any debugger arithmetic.
+  CSSALLOC = '8B45F883C0024863C84803C9'
+  CSSCOPY  = '4C6345F84D03C0488D4802488B55F0E8'}
 $REQUIRED = @('FDS','NEG','CPY')
 
 # The xml-item scratch routine lives in the Mso98Win32Client module and mso reaches it through an
@@ -461,6 +466,8 @@ foreach ($f in $files) {
   $c += ("bu {1}+0x{0:X} `".echo FDS;g`"" -f $rv['FDS'], $modTok)
   $c += ("bu {1}+0x{0:X} `".echo NEG;r;g`"" -f $rv['NEG'], $modTok)
   $c += ("bu {1}+0x{0:X} `".echo CPY;r;g`"" -f $rv['CPY'], $modTok)
+  if ($rv['CSSALLOC']) { $c += ('bu /c 4000 ' + $modTok + '+0x' + ('{0:X}' -f $rv['CSSALLOC']) + ' "r $t4=@$t4+1; .echo SZAL; r rcx; g"') }
+  if ($rv['CSSCOPY'])  { $c += ('bu /c 4000 ' + $modTok + '+0x' + ('{0:X}' -f $rv['CSSCOPY'])  + ' "r $t5=@$t5+1; .echo SZCP; r r8 rcx; g"') }
   if ($xwRva) {
     $c += ("bu {1}+0x{0:X} `".echo XWRITE;r;g`"" -f $xwRva, $modTok)
   }
@@ -611,6 +618,14 @@ foreach ($f in $files) {
   $xs = ($xpairs -join ';')
   if ($xs.Length -gt 190) { $xs = $xs.Substring(0, 190) }
   $fds = ([regex]::Matches($txt, '(?m)^FDS')).Count
+  $cal = @([regex]::Matches($txt, '(?m)^SZAL\r?\nrcx=([0-9a-fA-F]{16})') | ForEach-Object { [Convert]::ToUInt64($_.Groups[1].Value, 16) })
+  $ccp = @([regex]::Matches($txt, '(?m)^SZCP\r?\nr8=([0-9a-fA-F]{16})') | ForEach-Object { [Convert]::ToUInt64($_.Groups[1].Value, 16) })
+  $cpair = [Math]::Min($cal.Count, $ccp.Count); $cover = 0; $cneg = 0; $cworst = [int64]0
+  for ($q = 0; $q -lt $cpair; $q++) {
+    if ($ccp[$q] -ge 0x8000000000000000) { $cneg++ }
+    if ($ccp[$q] -gt $cal[$q]) { $cover++; $dd = [int64]($ccp[$q] - $cal[$q]); if ($dd -gt $cworst) { $cworst = $dd } }
+  }
+  ('CSSPAIR case=' + $f.BaseName + ' alloc=' + $cal.Count + ' copy=' + $ccp.Count + ' pairs=' + $cpair + ' copy_gt_alloc=' + $cover + ' copy_topbit=' + $cneg + ' worst_excess=' + $cworst) | Add-Content $log
   $neg = ([regex]::Matches($txt, '(?m)^NEG')).Count
   $cpy = ([regex]::Matches($txt, '(?m)^CPY')).Count
   $lex = ([regex]::Matches($txt, '(?m)^LEX')).Count
