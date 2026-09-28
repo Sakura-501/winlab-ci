@@ -47,16 +47,18 @@ function Get-FetchAnchor([string]$path, [string]$sig) {
     $ok = $true
     for ($m = 0; $m -lt $bts.Count; $m++) {
       if ($bts[$m] -ge 0 -and [int][byte]$latin[$c + $m] -ne $bts[$m]) { $ok = $false; break } }
-    if ($ok) { $all += (@{ rva = ($tva + ($c - $tpraw)); file = $c }) }
+    if ($ok) { $all += ('{0},{1}' -f ($tva + ($c - $tpraw)), $c) }
     $from = $c + 1 }
   return $all
 }
 $msoPath = 'C:\Program Files\Microsoft Office\root\Office16\mso.dll'
 $fa = @(Get-FetchAnchor $msoPath $FETCH_SIG)
-Say ("FETCH anchor hits={0}" -f $fa.Count)
-if (-not $fa[0] -or -not $fa[0].rva -or $fa.Count -ne 1) { Say 'FETCH_ANCHOR_NOT_UNIQUE_OR_MISSING'; exit 1 }
-$fetchRva = $fa[0].rva
-$disp = [BitConverter]::ToInt32([IO.File]::ReadAllBytes($msoPath), $fa[0].file + 2)
+Say ("FETCH anchor hits={0} raw={1}" -f $fa.Count, (($fa -join ';') -replace '\s+',' '))
+if ($fa.Count -ne 1 -or -not $fa[0]) { Say 'FETCH_ANCHOR_NOT_UNIQUE_OR_MISSING'; exit 1 }
+$pp = ($fa[0] -split ',')
+$fetchRva = [int]$pp[0]
+$mb = [IO.File]::ReadAllBytes($msoPath)
+$disp = [BitConverter]::ToInt32($mb, ([int]$pp[1]) + 2)
 $slotRva = $fetchRva + 6 + $disp
 Say ("FETCH rva=0x{0:X} disp32=0x{1:X} slot_rva=0x{2:X}" -f $fetchRva, ($disp -band 0xFFFFFFFF), $slotRva)
 
