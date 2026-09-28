@@ -125,7 +125,7 @@ g
 lm m <MODTOK>
 u <MODTOK>+0x<STORE> L4
 bp <MODTOK>+0x<STORE> "r $t0=@$t0+1; r $t1=@$t1+(@eax/1024); .printf \"CNT %x %d\\n\", @eax, @eax; g"
-bp /c <WINS> <MODTOK>+0x<STORE> ".printf \"WIN cnt=%x buf=%p f98=%p fa0=%p fa8=%p fb0=%p fc0=%p fc8=%p rdi=%p rbx=%p\\n\", @eax, poi(@rbx+0xb0), poi(@rbx+0x98), poi(@rbx+0xa0), poi(@rbx+0xa8), poi(@rbx+0xb0), poi(@rbx+0xc0), poi(@rbx+0xc8), @rdi, @rbx; g"
+bp /c <WINS> <MODTOK>+0x<STORE> ".printf \"WIN cnt=%x buf=%p p58=%p p98=%p pa0=%p pa8=%p pb8=%p pc0=%p pc8=%p p70=%p p78=%p rbx=%p\\n\", @eax, poi(@rbx+0xb0), poi(@rbx+0x58), poi(@rbx+0x98), poi(@rbx+0xa0), poi(@rbx+0xa8), poi(@rbx+0xb8), poi(@rbx+0xc0), poi(@rbx+0xc8), poi(@rbx+0x70), poi(@rbx+0x78), @rbx; g"
 bl
 .echo ====BREAKPOINTS_SET
 STOPS
@@ -154,16 +154,23 @@ q
   $mx = 0; $mn = 0
   if ($vals2.Count) { $mx = ($vals2 | Measure-Object -Maximum).Maximum; $mn = ($vals2 | Measure-Object -Minimum).Minimum }
   $rows = @()
-  foreach ($m in [regex]::Matches($txt, '(?m)^WIN cnt=([0-9a-fA-F]{8}) buf=([0-9a-fA-F`]+) .*?fa8=([0-9a-fA-F`]+) fb0=([0-9a-fA-F`]+) fc0=([0-9a-fA-F`]+) fc8=([0-9a-fA-F`]+)')) {
-    $u = [Convert]::ToUInt32($m.Groups[1].Value, 16)
+  $rx = '(?m)^WIN cnt=(?<cnt>[0-9a-fA-F]{8}) buf=(?<buf>[0-9a-fA-F`]+) p58=(?<p58>[0-9a-fA-F`]+) p98=(?<p98>[0-9a-fA-F`]+) pa0=(?<pa0>[0-9a-fA-F`]+) pa8=(?<pa8>[0-9a-fA-F`]+) pb8=(?<pb8>[0-9a-fA-F`]+) pc0=(?<pc0>[0-9a-fA-F`]+) pc8=(?<pc8>[0-9a-fA-F`]+) p70=(?<p70>[0-9a-fA-F`]+) rbx=(?<rbx>[0-9a-fA-F`]+)'
+  function Q([string]$v) { [Convert]::ToUInt64(($v -replace '`',''), 16) }
+  foreach ($m in [regex]::Matches($txt, $rx)) {
+    $g = $m.Groups
+    $u = [Convert]::ToUInt32($g['cnt'].Value, 16)
     $s = if ($u -gt 2147483647) { [int64]$u - 4294967296 } else { [int64]$u }
-    $buf = [Convert]::ToUInt64(($m.Groups[2].Value -replace '`',''), 16)
-    $po = [int]($buf -band 0xFFF); $tg = 0x1000 - $po
-    $copyBytes = $s * 2
-    $rows += ('cnt={0} copy_bytes={1} buf=0x{2:x} po={3} to_guard={4} fa8=0x{5:x} fc0=0x{6:x} fc8=0x{7:x}' -f `
-              $s, $copyBytes, $buf, $po, $tg, `
-              ($m.Groups[3].Value -replace '`','').PadLeft(16,'0'), ($m.Groups[4].Value -replace '`','').PadLeft(16,'0'), `
-              ($m.Groups[5].Value -replace '`','').PadLeft(16,'0'))
+    $buf = Q $g['buf'].Value
+    $p58 = Q $g['p58'].Value
+    $pb8 = Q $g['pb8'].Value
+    $po  = [int]($buf -band 0xFFF); $tg = 0x1000 - $po
+    $cap = [int64](($pb8 -shr 32) -band 0xFFFFFFFF)      # LBS+0xBC: sub_18040BBC4's capacity field
+    $f5c = [int64](($p58 -shr 32) -band 0xFFFFFFFF)      # LBS+0x5C: SetLexPos/GetLexPos use 2*n+224 into a 0x40E0 block
+    $szmod = $tg -band 0xFFF                             # page heap: size % 0x1000 == this
+    $rows += ('cnt={0} copy_bytes={1} cap={2} f5c={3} snap_bytes_if_f5c={4} buf={5:x} po={6} to_guard={7} size_mod={8} 2cap_mod={9} p98={10:x} pa0={11:x} pa8={12:x} pc0={13:x} pc8={14:x} p70={15:x} rbx={16:x}' -f `
+              $s, ($s * 2), $cap, $f5c, (2 * $f5c + 224), $buf, $po, $tg, $szmod, (($cap * 2) -band 0xFFF), `
+              (Q $g['p98'].Value), (Q $g['pa0'].Value), (Q $g['pa8'].Value), (Q $g['pc0'].Value), `
+              (Q $g['pc8'].Value), (Q $g['p70'].Value), (Q $g['rbx'].Value))
   }
   $av2 = @([regex]::Matches($txt, '(?m)^AV2')).Count
   $loaded = ([regex]::Match($txt, '(?m)^====LOADED_STOP')).Success
