@@ -128,7 +128,8 @@ add("css_deep_braces", "<html><head><style>" + ("a{b:" * 60) + "v" * 300)
 # (FSetListId/FSetListLfo).  Numeric character references are used so the corpus stays byte-safe;
 # &#x10000; is emitted as the surrogate pair D800/DC00, which exercises the pair path itself.
 for ch in ("&#xDCE0;", "&#xD800;", "&#xDFFF;", "&#x10000;", "&#xE000;", "&#xFDD0;", "&#xFFFF;",
-           "&#xFEFF;", "&#x0;", "\\d800 ", "\\ffff ", "\\ "):
+           "&#xFEFF;", "&#x0;", "\\d800 ", "\\ffff ", "\\ ",
+           "&#x4BE;", "&#x5D6;", "&#x6DE;", "&#x700;"):
     for shape in ("sheet_value", "sheet_name", "inline_value", "inline_name", "at_page",
                   "at_import", "class_attr"):
         if shape == "sheet_value":
