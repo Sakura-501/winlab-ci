@@ -139,16 +139,33 @@ jobs:
       shell: pwsh
       run: |
         pwsh -NoProfile -ExecutionPolicy Bypass -File ppseed\mso_divspan_anchor.ps1 -Base (Get-Location).Path -Corpus 'corpus\html.txt' -Records 946 -Tag dsdense -FlagValues '${{ inputs.flag_values }}' -Stops 700
+    - name: Build the div/span-specific corpus
+      shell: pwsh
+      run: |
+        # 273 records aimed at the states where the div/span committer's fetched count can come back
+        # negative: closer without opener, opener without closer, crossed pairs, implied end tags
+        # (p/li/td inside div/span), truncated tag or unterminated attribute quote at EOF, entity runs
+        # at the commit boundary, div/span after </body>, and nesting ladders around 4013/4014/4015.
+        python ppseed\mso_divneg_corpus.py corpus\divneg.txt
+        $n = (Get-Item corpus\divneg.txt).Length
+        "divneg_bytes=$n"
+        if ($n -lt 100000) { throw "divneg corpus too small ($n)" }
+
     - name: Anchored measurement over the MIME tail corpus
       timeout-minutes: 60
       shell: pwsh
       run: |
         pwsh -NoProfile -ExecutionPolicy Bypass -File ppseed\mso_divspan_anchor.ps1 -Base (Get-Location).Path -Corpus 'corpus\mime25.txt' -Records 25 -Tag dsmime -FlagValues '0x20001D1,0x0' -Stops 200
+    - name: Anchored measurement over the div/span-specific corpus
+      timeout-minutes: 90
+      shell: pwsh
+      run: |
+        pwsh -NoProfile -ExecutionPolicy Bypass -File ppseed\mso_divspan_anchor.ps1 -Base (Get-Location).Path -Corpus 'corpus\divneg.txt' -Records 273 -Tag dsdivneg -FlagValues '0x20001D1,0x0' -Stops 700
     - name: Report
       if: always()
       shell: pwsh
       run: |
-        foreach ($t in @('dsdense','dsmime')) {
+        foreach ($t in @('dsdense','dsmime','dsdivneg')) {
           $f = "out\$($t)_log.txt"
           "##### $t"
           if (Test-Path $f) { Get-Content $f } else { "missing" }

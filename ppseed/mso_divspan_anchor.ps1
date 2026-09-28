@@ -1,14 +1,26 @@
-# mso_divspan_anchor.ps1 - measure the mso div/span commit length path with the *in-process*
+# mso_divspan_anchor.ps1 - measure mso's div/span commit length path with the *in-process*
 # importer harness (gbx.exe msohtml), so coverage does not depend on an Office UI instance.
 #
-# Anchors are resolved from the installed mso.dll by code signature (no PDB, no symbol server).
-#   FDS  ?FCommitDivSpanCore@ prologue        -- every div/span commit
-#   NEG  the `neg ecx / mov edx,ecx / cmp rdx,rax / ja / sub rax,rdx` block
-#                                            -- commits whose fetched count came out negative
-#   CPY  `lea rcx,[rax+rcx*2] ; call memcpy`  -- the copy actually issued, r8 = 2*count
-# Positive control for the anchors themselves: FDS>0 while the harness reports handle=>0.
+# The sink shape is on disk in findings/MSRC/M365-Insider/mso-html-import-20260923/STATE.md SS92
+# (x64, instruction level) and SS93 (ARM64 slice of the same in-service build): the realloc branch
+# clamps the fetched count, the copy length comes from the raw signed value doubled.
+#   FDS  ?FCommitDivSpanCore@ prologue          -- every div/span commit
+#   NEG  neg ecx / mov edx,ecx / cmp rdx,rax / ja / sub rax,rdx
+#                                              -- commits whose fetched count came out negative
+#   CPY  lea rcx,[rax+rcx*2] ; call memcpy      -- the copy issued, r8 = 2*count (sign-extended)
+#
+# Two things earlier runs of this script proved from their own cdb transcripts, and both are
+# encoded here:
+#   * cdb will not bind `bu/bp <name>+<rva>` while that image is absent ("contains symbols not
+#     qualified with module name" / "adding deferred bp"), and `sxe ld:mso` prefix-matched
+#     mso20win32client.dll -- so the load filter uses the exact file name, and after that stop the
+#     script prints `? mod`, `lm m mod` and `u mod+rva L3` before setting the anchors, so every
+#     later count carries proof of where it was bound.
+#   * the commit path runs over a million times per stage (harness reports commit_max=1.27e6), so
+#     per-hit register dumps are bounded with `bp /c N` and the totals live in debugger variables
+#     printed once at the end.
 param([string]$Base = '.', [string]$Corpus = 'corpus\html.txt', [string]$Records = '946',
-      [string]$Tag = 'dsanchor', [string]$FlagValues = '0x20001D1,0x0,0x804,0x1000000',
+      [string]$Tag = 'dsanchor', [string]$FlagValues = '0x20001D1,0x0',
       [int]$Stops = 700)
 $ErrorActionPreference = 'Continue'
 $base = (Resolve-Path $Base).Path
@@ -16,21 +28,16 @@ New-Item -ItemType Directory -Force -Path (Join-Path $base 'out'), (Join-Path $b
 $log = Join-Path $base ('out\' + $Tag + '_log.txt')
 function Say([string]$s) { ("{0} {1}" -f (Get-Date -Format HH:mm:ss), $s) | Add-Content $log; $s }
 
-# ---- mso.dll location (same candidate set as mso_html_len_probe.ps1) ----
-$msoCand = @(
+$hostCand = @(
   'C:\Program Files\Common Files\Microsoft Shared\OFFICE16\mso.dll',
   'C:\Program Files\Microsoft Office\root\vfs\ProgramFilesCommonX64\Microsoft Shared\OFFICE16\mso.dll',
-  'C:\Program Files\Microsoft Office\root\vfs\ProgramFilesCommonX86\Microsoft Shared\OFFICE16\mso.dll',
-  'C:\Program Files\Microsoft Office\root\Office16\mso.dll')
-$mso = $null
-foreach ($c in $msoCand) { $t = Get-Item $c -EA SilentlyContinue; if ($t) { $mso = $t; break } }
-if (-not $mso) {
-  $mso = Get-ChildItem 'C:\Program Files\Microsoft Office\root' -Recurse -Filter 'mso.dll' -EA SilentlyContinue |
-         Sort-Object Length -Descending | Select-Object -First 1
-}
-if (-not $mso) { Say 'MSO_NOT_FOUND'; exit 1 }
-Say ("START mso={0} size={1} path={2}" -f $mso.VersionInfo.FileVersion, $mso.Length, $mso.FullName)
-
+  'C:\Program Files\Microsoft Office\root\Office16\mso.dll',
+  'C:\Program Files\Microsoft Office\root\Office16\mso98win32client.dll',
+  'C:\Program Files\Microsoft Office\root\Office16\mso40uiwin32client.dll',
+  'C:\Program Files\Microsoft Office\root\Office16\mso20win32client.dll',
+  'C:\Program Files\Microsoft Office\root\Office16\mso30win32client.dll',
+  'C:\Program Files\Microsoft Office\root\Office16\mso50win32client.dll',
+  'C:\Program Files\Common Files\Microsoft Shared\Office16\mso98win32client.dll')
 $SIG = [ordered]@{
   FDS = '4C894C2420488954241055535657415441554157488D6C24'
   NEG = 'F7D98BD1483BD077E2482BC2'
@@ -73,9 +80,18 @@ function Get-Anchors([string]$path, $table) {
   }
   return $out
 }
-$rv = Get-Anchors $mso.FullName $SIG
-foreach ($k in $SIG.Keys) { if ($rv[$k]) { Say ("SIG {0} rva=0x{1:X}" -f $k, $rv[$k]) } else { Say ("SIG {0} MISSING" -f $k) } }
-foreach ($q in @('FDS','NEG','CPY')) { if (-not $rv[$q]) { Say "ANCHOR_$q`_MISSING"; exit 1 } }
+$rv = @{}; $modFile = ''; $modTok = ''
+foreach ($h in ($hostCand | Where-Object { Test-Path $_ })) {
+  $r = Get-Anchors $h $SIG
+  $have = @(@('FDS','NEG','CPY') | Where-Object { $r[$_] }).Count
+  $it = Get-Item $h
+  $extra = ''
+  if ($have) { $extra = (@('FDS','NEG','CPY') | Where-Object { $r[$_] } | ForEach-Object { $_ + '=0x' + ('{0:X}' -f $r[$_]) }) -join ',' }
+  Say ("TRY {0} v={1} size={2} hits={3}/3 {4}" -f $it.Name, $it.VersionInfo.FileVersion, $it.Length, $have, $extra)
+  if ($have -eq 3) { $rv = $r; $modFile = $it.Name; $modTok = $it.BaseName; break }
+}
+if (-not $modTok) { Say 'ANCHOR_FAIL_NO_HOST'; exit 1 }
+Say ("HOST selected: {0} token={1} FDS=0x{2:X} NEG=0x{3:X} CPY=0x{4:X}" -f $modFile, $modTok, $rv['FDS'], $rv['NEG'], $rv['CPY'])
 
 # ---- cdb ----
 $cdb = $null
@@ -97,7 +113,6 @@ Copy-Item $cdb (Join-Path $priv 'cdb.exe') -Force
 Get-ChildItem (Split-Path $cdb) -Filter *.dll -EA SilentlyContinue | Copy-Item -Destination $priv -Force
 $cdbExe = Join-Path $priv 'cdb.exe'
 
-# ---- IFEO page heap for the harness (gflags is used when present, registry otherwise) ----
 $g = Get-ChildItem 'C:\Program Files (x86)\Windows Kits\10\Debuggers' -Recurse -Filter gflags.exe -EA SilentlyContinue |
      Where-Object { $_.DirectoryName -match '\\(x64|amd64)$' } | Select-Object -First 1
 if ($g) { & $g.FullName /p /enable gbx.exe /full | Out-Null; Say "gflags=$($g.FullName) /enable gbx.exe /full" }
@@ -106,93 +121,82 @@ else {
   New-Item -Path $ifeo -Force | Out-Null
   New-ItemProperty -Path $ifeo -Name GlobalFlag -PropertyType DWord -Value 0x02000000 -Force | Out-Null
   New-ItemProperty -Path $ifeo -Name PageHeapFlags -PropertyType DWord -Value 3 -Force | Out-Null
-  Say 'gflags missing, IFEO keys written directly'
+  Say 'gflags missing, IFEO written directly'
 }
-
-# ---- selftest that the arming actually faults (harness mode-free check via the shim's own line) ----
 $env:PATH = 'C:\Program Files\Microsoft Office\root\Office16;' + $env:PATH
 $gbx = Join-Path $base 'bin\gbx.exe'
 if (-not (Test-Path $gbx)) { Say "GBX_MISSING $gbx"; exit 1 }
 $probe = & $gbx msohtml $Corpus 3 0 none norel noskip slot=17 2>&1 | Out-String
-$armedLine = (($probe -split "`n" | Where-Object { $_ -match 'ARM |pageheap_bit|verifier_dll' }) -join ' / ').Trim()
-Say "PREARM_PROBE $armedLine"
-if ($probe -notmatch 'handle=([1-9])') { Say 'PREARM_NO_CALLBACKS (instrument would be blind)' }
+Say ("PREARM_PROBE {0}" -f (($probe -split "`n" | Where-Object { $_ -match 'ARM |MSOHTML totals|handle=' }) -join ' / ').Trim())
 
 $vals = @($FlagValues.Split(',') | ForEach-Object { $_.Trim() })
 foreach ($v in $vals) {
-  $cm = Join-Path $base ('out\cmds_' + $Tag + '_' + ($v -replace '[^0-9a-fA-F]','') + '.txt')
-  $tr = Join-Path $base ('out\trans_' + $Tag + '_' + ($v -replace '[^0-9a-fA-F]','') + '.txt')
-  # Two-stage setup: cdb will not bind `bu mso+<rva>` before the image is loaded
-  # ("contains symbols not qualified with module name", run 36384199036 transcript), so stop on the
-  # module-load event and only then set the anchors with `bp`.  Counters live in $t0..$t3 so the
-  # commit path (over a million hits per stage) costs one register bump each time, while register
-  # state is printed only for the first hit of the rare branches and for copies whose length passed
-  # 64 KiB.  Written as a literal here-string: cdb needs both quote flavours inside one line.
+  $suffix = ($v -replace '[^0-9a-fA-F]','')
+  $cm = Join-Path $base ('out\cmds_' + $Tag + '_' + $suffix + '.txt')
+  $tr = Join-Path $base ('out\trans_' + $Tag + '_' + $suffix + '.txt')
   $tmpl = @'
-sxe ld:mso
+sxd av ".echo AV2;r;k 12;.dump /ma C:\dsdbg\dav_av.dmp;g"
+sxe ld:<MODFILE>
 .echo ====WAITLOAD
 g
-.echo ====MSO_LOADED
-? mso
-r $t0=0; r $t1=0; r $t2=0
-bp <FDS> "r $t0=@$t0+1; g"
-bp /c 1 <FDS> ".echo FDS_SAMPLE; g"
-bp <NEG> "r $t1=@$t1+1; g"
-bp /c 200 <NEG> ".echo NEG_HIT; r rcx rax rdx r8; g"
-bp <CPY> "r $t2=@$t2+1; g"
-bp /c 3 <CPY> ".echo CPY_SAMPLE; r r8 rcx rdx; g"
+.echo ====LOADED_STOP
+? <MODTOK>
+lm m <MODTOK>
+u <MODTOK>+0x<FDS> L3
+bp <MODTOK>+0x<FDS> "r $t0=@$t0+1; g"
+bp /c 1 <MODTOK>+0x<FDS> ".echo FDS_SAMPLE; g"
+bp <MODTOK>+0x<NEG> "r $t1=@$t1+1; g"
+bp /c 200 <MODTOK>+0x<NEG> ".echo NEG_HIT; r rcx rax rdx r8; g"
+bp <MODTOK>+0x<CPY> "r $t2=@$t2+1; g"
+bp /c 3 <MODTOK>+0x<CPY> ".echo CPY_SAMPLE; r r8 rcx rdx; g"
 bl
 .echo ====BREAKPOINTS_SET
-sxs av ".echo AV2;r;k 12;.dump /ma C:\dsdbg\dav_av.dmp;g"
-.echo ====LOADED
 STOPS
 .printf "COUNTERS fds=%d neg=%d cpy=%d\n", @$t0, @$t1, @$t2
 q
 '@
-  $body = $tmpl.Replace('<FDS>', ('mso+0x{0:X}' -f $rv['FDS'])).Replace('<NEG>', ('mso+0x{0:X}' -f $rv['NEG'])).Replace('<CPY>', ('mso+0x{0:X}' -f $rv['CPY']))
+  $body = $tmpl.Replace('<FDS>', ('{0:X}' -f $rv['FDS'])).Replace('<NEG>', ('{0:X}' -f $rv['NEG']))
+  $body = $body.Replace('<CPY>', ('{0:X}' -f $rv['CPY'])).Replace('<MODFILE>', $modFile).Replace('<MODTOK>', $modTok)
   $ladder = @()
   for ($i = 0; $i -lt $Stops; $i++) { $ladder += '.echo ====STOP'; $ladder += 'g' }
-  $c = @()
-  $c += ($body -split "`n")
   $c2 = @()
-  foreach ($ln in $c) { if ($ln.Trim() -eq 'STOPS') { $c2 += $ladder } else { $c2 += $ln } }
+  foreach ($ln in @($body -split "`n")) {
+    if ($ln.Trim() -eq 'STOPS') { $c2 += $ladder } else { $c2 += ($ln -replace "`r",'') } }
   Set-Content -Path $cm -Value ($c2 -join "`n") -Encoding ascii
   $env:GBFLAGS = $v
   $p = Start-Process -FilePath $cdbExe -ArgumentList @('-cf', $cm, '-o', $gbx, 'msohtml', (Join-Path $base $Corpus),
                     $Records, '0', 'none', 'norel', 'noskip', 'slot=17') -NoNewWindow -PassThru -RedirectStandardOutput $tr
   $p.WaitForExit()
-  $txt = Get-Content $tr -Raw -EA SilentlyContinue
+  $txt = ''
+  if (Test-Path $tr) { $txt = Get-Content $tr -Raw -EA SilentlyContinue }
   if (-not $txt) { $txt = '' }
-  $fds = ([regex]::Matches($txt, '(?m)^FDS')).Count
-  $neg = ([regex]::Matches($txt, '(?m)^NEG')).Count
-  $cpy = ([regex]::Matches($txt, '(?m)^CPY')).Count
+  $cnt = [regex]::Match($txt, 'COUNTERS fds=(\d+) neg=(\d+) cpy=(\d+)')
+  $cfds = $cnt.Groups[1].Value; $cneg = $cnt.Groups[2].Value; $ccpy = $cnt.Groups[3].Value
+  $negHits = @([regex]::Matches($txt, '(?m)^NEG_HIT')).Count
+  $cpyHits = @([regex]::Matches($txt, '(?m)^CPY_SAMPLE')).Count
+  $av2 = @([regex]::Matches($txt, '(?m)^AV2')).Count
   $r8s = @([regex]::Matches($txt, '(?m)^r8=([0-9a-fA-F]{16})') | ForEach-Object { $_.Groups[1].Value })
   $giant = @($r8s | Where-Object { $_ -like 'ffff*' })
-  $av2 = ([regex]::Matches($txt, '(?m)^AV2')).Count
-  $hand = ([regex]::Match($txt, 'handle=(\d+)')).Groups[1].Value
-  $recs = ([regex]::Match($txt, 'recs=(\d+)')).Groups[1].Value
-  $faultline = (($txt -split "`n" | Where-Object { $_ -match 'MSOHTML faults|MSOHTML totals|\[g\] AV-' }) -join ' | ')
-  $bps = ([regex]::Match($txt, '(?m)^====BREAKPOINTS_SET')).Success
-  $blines = (($txt -split "`n" | Where-Object { $_ -match '^\s+\d+ \e? ' }) -join ' / ').Trim()
+  $loaded = ([regex]::Match($txt, '(?m)^====LOADED_STOP')).Success
+  $bpset = ([regex]::Match($txt, '(?m)^====BREAKPOINTS_SET')).Success
+  $unres = @([regex]::Matches($txt, 'could not be resolved')).Count
+  $blTxt = (($txt -split "`n" | Where-Object { $_ -match '^\s+\d+ [eu]' }) -join ' // ').Trim()
+  if ($blTxt.Length -gt 700) { $blTxt = $blTxt.Substring(0,700) }
+  $uTxt = (($txt -split "`n" | Where-Object { $_ -match '^00000' }) -join ' // ').Trim()
+  if ($uTxt.Length -gt 500) { $uTxt = $uTxt.Substring(0,500) }
   $cmt = @([regex]::Matches($txt, 'commit=(\d+)') | ForEach-Object { [int64]$_.Groups[1].Value })
   $cbs = @([regex]::Matches($txt, 'cbs=(\d+)') | ForEach-Object { [int64]$_.Groups[1].Value })
-  $cnt = ([regex]::Match($txt, 'COUNTERS fds=(\d+) neg=(\d+) cpy=(\d+)'))
-  $cfds = ''; $cneg = ''; $ccpy = ''
-  if ($cnt.Success) { $cfds = $cnt.Groups[1].Value; $cneg = $cnt.Groups[2].Value; $ccpy = $cnt.Groups[3].Value }
   $cmtmax = 0; if ($cmt.Count) { $cmtmax = ($cmt | Measure-Object -Maximum).Maximum }
   $cbsmax = 0; if ($cbs.Count) { $cbsmax = ($cbs | Measure-Object -Maximum).Maximum }
-  Say ("ARM={0} fds={1} neg={2} cpy={3} r8_captured={4} r8_ffff={5} av2={6} handle={7} recs={8} bpset={9} commit_max={10} cbs_max={11}" -f `
-        $v, $fds, $neg, $cpy, $r8s.Count, $giant.Count, $av2, $hand, $recs, $bps, $cmtmax, $cbsmax)
-  Say ("ARM={0} COUNTERS_line fds={1} neg={2} cpy={3}" -f $v, $cfds, $cneg, $ccpy)
-  Say ("ARM={0} bl_list={1}" -f $v, $blines.Substring(0, [Math]::Min(600, $blines.Length)))
-  (("==== transcript head for ARM=" + $v + " ====\n") + ($txt.Substring(0, [Math]::Min(1200, $txt.Length)))) | Add-Content $log
-  (("==== NEG/CPY/AV sample lines ARM=" + $v + " ====\n") + (($txt -split "`n" | Where-Object { $_ -match '^(NEG_HIT|CPY_SAMPLE|AV2|r8=|rcx=)' }) -join "\n").Substring(0, 4000)) | Add-Content $log
-  Say ("ARM={0} faultlines={1}" -f $v, $faultline.Substring(0, [Math]::Min(700, $faultline.Length)))
-  if ($r8s.Count) {
-    $top = ($r8s | Group-Object | Sort-Object Count -Descending | Select-Object -First 6 |
-            ForEach-Object { $_.Name + 'x' + $_.Count }) -join ' '
-    Say ("ARM={0} r8_top={1}" -f $v, $top)
-  }
-  ($r8s | Where-Object { $_ -like 'ffff*' } | Select-Object -First 5) | ForEach-Object { Say ("ARM={0} GIANT_r8={1}" -f $v, $_) }
+  $fault = (($txt -split "`n" | Where-Object { $_ -match 'MSOHTML totals|\[g\] AV-' }) -join ' | ')
+  if ($fault.Length -gt 700) { $fault = $fault.Substring(0,700) }
+  $samp = (($txt -split "`n" | Where-Object { $_ -match '^(NEG_HIT|r8=|rcx=|rax=|rdx=)' }) -join "`n")
+  if ($samp.Length -gt 4000) { $samp = $samp.Substring(0, 4000) }
+  Say ("ARM={0} host={1} loaded_stop={2} bpset={3} deferred={4} fds={5} neg={6} cpy={7} neg_hit_lines={8} cpy_sample_lines={9} r8_captured={10} r8_ffff={11} av2={12} commit_max={13} cbs_max={14}" -f `
+        $v, $modFile, $loaded, $bpset, $unres, $cfds, $cneg, $ccpy, $negHits, $cpyHits, $r8s.Count, $giant.Count, $av2, $cmtmax, $cbsmax)
+  Say ("ARM={0} bl_list={1}" -f $v, $blTxt)
+  Say ("ARM={0} anchor_disasm={1}" -f $v, $uTxt)
+  Say ("ARM={0} faultlines={1}" -f $v, $fault)
+  Say ("ARM={0} sample_lines=`n{1}" -f $v, $samp)
 }
 Say 'ALLDONE'
