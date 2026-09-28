@@ -32,6 +32,14 @@ function Say([string]$s) { ("{0} {1}" -f (Get-Date -Format HH:mm:ss), $s) | Add-
 # 28 bytes ending at the function's ret; unique exactly once in the archived 20092 client DLL.
 $STORESIG = '88000000000000008907488B83B0000000488B5C24304883C4205FC3'
 $STOREOFF = 8          # `mov [rdi], eax` sits 8 bytes into the signature
+# Two more arms, both measuring the same unclamped field: SetLexPos/GetLexPos build their memcpy
+# length as 2*[LBS+0x5C] + 0xE0 while the destination block is the fixed AllocateEx(0x40E0) snapshot
+# that FLexMarkPos creates (0xE0 + 2*8192 = 0x40E0 exactly), and neither site tests that length.
+$ARMS = [ordered]@{
+  STOP = @{ sig = $STORESIG; off = 8 }
+  SLP  = @{ sig = '4C63435C4E8D0445E0000000488BD3488BCF'; off = 18 }   # SetLexPos: call memcpy
+  GLP  = @{ sig = '4C63465C488BD6488BCB4E8D0445E0000000'; off = 18 }   # GetLexPos: call memcpy
+}
 $hostCand = @(
   'C:\Program Files\Common Files\Microsoft Shared\Office16\mso98win32client.dll',
   'C:\Program Files\Microsoft Office\root\Office16\mso98win32client.dll',
@@ -65,13 +73,18 @@ function Get-SigRva([string]$path, [string]$sig) {
 }
 $rv = @{}; $modFile = ''; $modTok = ''
 foreach ($h in ($hostCand | Where-Object { Test-Path $_ })) {
-  $all = @(Get-SigRva $h $STORESIG)
+  $found = @{}; $desc = @()
+  foreach ($k in $ARMS.Keys) {
+    $all = @(Get-SigRva $h $ARMS[$k].sig)
+    $rvas = (($all | ForEach-Object { '0x{0:X}' -f ([int](($_ -split ',')[0]) + $ARMS[$k].off) }) -join ' ')
+    $desc += ('{0}[{1}]{2}' -f $k, $all.Count, $rvas)
+    if ($all.Count -eq 1) { $found[$k] = [int](($all[0] -split ',')[0]) + $ARMS[$k].off } }
   $it = Get-Item $h
-  Say ("TRY {0} v={1} size={2} sig_hits={3} rvas={4}" -f $it.Name, $it.VersionInfo.FileVersion, $it.Length, $all.Count,
-        (($all | ForEach-Object { (($_ -split ',')[0] | ForEach-Object { '0x{0:X}' -f ([int]$_ + $STOREOFF) }) }) -join ' '))
-  if ($all.Count -eq 1) { $rv['STOP'] = [int](($all[0] -split ',')[0]) + $STOREOFF; $modFile = $it.Name; $modTok = $it.BaseName; break } }
+  Say ("TRY {0} v={1} size={2} {3}" -f $it.Name, $it.VersionInfo.FileVersion, $it.Length, ($desc -join ' '))
+  if ($found.ContainsKey('STOP')) { $rv = $found; $modFile = $it.Name; $modTok = $it.BaseName; break } }
 if (-not $modTok) { Say 'ANCHOR_FAIL_NO_HOST'; exit 1 }
-Say ("HOST selected: {0} token={1} STORE=0x{2:X}" -f $modFile, $modTok, $rv['STOP'])
+Say ("HOST selected: {0} token={1} arms={2}" -f $modFile, $modTok,
+     ((@($rv.Keys | Sort-Object) | ForEach-Object { '{0}=0x{1:X}' -f $_, $rv[$_] }) -join ' '))
 
 $cdb = $null
 foreach ($c in @('C:\Program Files (x86)\Windows Kits\10\Debuggers\x64\cdb.exe','C:\Program Files\Windows Kits\10\Debuggers\x64\cdb.exe')) {
@@ -124,21 +137,30 @@ g
 ? <MODTOK>
 lm m <MODTOK>
 u <MODTOK>+0x<STORE> L4
-bp <MODTOK>+0x<STORE> "r $t0=@$t0+1; r $t1=@$t1+(@eax/1024); .printf \"CNT %x %d\\n\", @eax, @eax; g"
+bp <MODTOK>+0x<STORE> "r $t0=@$t0+1; .printf \"CNT %x %d\\n\", @eax, @eax; g"
 bp /c <WINS> <MODTOK>+0x<STORE> ".printf \"WIN cnt=%x buf=%p p58=%p p98=%p pa0=%p pa8=%p pb8=%p pc0=%p pc8=%p p70=%p p78=%p rbx=%p\\n\", @eax, poi(@rbx+0xb0), poi(@rbx+0x58), poi(@rbx+0x98), poi(@rbx+0xa0), poi(@rbx+0xa8), poi(@rbx+0xb8), poi(@rbx+0xc0), poi(@rbx+0xc8), poi(@rbx+0x70), poi(@rbx+0x78), @rbx; g"
+SNAPBPS
 bl
 .echo ====BREAKPOINTS_SET
 STOPS
-.printf "COUNTERS store_hits=%d kb_sum=%d\n", @$t0, @$t1
+.printf "COUNTERS store_hits=%d slp=%d glp=%d\n", @$t0, @$t1, @$t2
 q
 '@
+  $snap = @()
+  if ($rv['SLP']) {
+    $snap += ('bp <MODTOK>+0x{0:X} "r $t1=@$t1+1; .printf \"SLP n=%x len=%I64d dst=%p dpo=%x src=%p\\n\", poi(@rbx+0x5c), @r8, @rcx, (@rcx&0xfff), @rdx; g"' -f $rv['SLP']) }
+  if ($rv['GLP']) {
+    $snap += ('bp <MODTOK>+0x{0:X} "r $t2=@$t2+1; .printf \"GLP n=%x len=%I64d dst=%p dpo=%x src=%p\\n\", poi(@rsi+0x5c), @r8, @rcx, (@rcx&0xfff), @rdx; g"' -f $rv['GLP']) }
+  if (-not $snap.Count) { $snap += '.echo NO_SNAP_ARMS' }
   $body = $tmpl.Replace('<STORE>', ('{0:X}' -f $rv['STOP'])).Replace('<WINS>', "$WindowSamples").
           Replace('<MODFILE>', $modFile).Replace('<MODTOK>', $modTok)
   $ladder = @()
   for ($i = 0; $i -lt $Stops; $i++) { $ladder += '.echo ====STOP'; $ladder += 'g' }
   $c2 = @()
   foreach ($ln in @($body -split "`n")) {
-    if ($ln.Trim() -eq 'STOPS') { $c2 += $ladder } else { $c2 += ($ln -replace "`r",'') } }
+    if ($ln.Trim() -eq 'STOPS') { $c2 += $ladder }
+    elseif ($ln.Trim() -eq 'SNAPBPS') { $c2 += $snap }
+    else { $c2 += ($ln -replace "`r",'') } }
   Set-Content -Path $cm -Value ($c2 -join "`n") -Encoding ascii
   $env:GBFLAGS = $v
   $p = Start-Process -FilePath $cdbExe -ArgumentList @('-cf', $cm, '-o', $gbx, 'msohtml', (Join-Path $base $Corpus),
@@ -147,12 +169,27 @@ q
   $txt = ''
   if (Test-Path $tr) { $txt = Get-Content $tr -Raw -EA SilentlyContinue }
   if (-not $txt) { $txt = '' }
-  $cnt = [regex]::Match($txt, 'COUNTERS store_hits=(\d+) kb_sum=(\d+)')
-  $hits = $cnt.Groups[1].Value; $kbs = $cnt.Groups[2].Value
+  $cnt = [regex]::Match($txt, 'COUNTERS store_hits=(\d+) slp=(\d+) glp=(\d+)')
+  $hits = $cnt.Groups[1].Value; $nSlp = $cnt.Groups[2].Value; $nGlp = $cnt.Groups[3].Value
   $vals2 = @([regex]::Matches($txt, '(?m)^CNT ([0-9a-fA-F]{8}) ') | ForEach-Object { [int64]([Convert]::ToUInt32($_.Groups[1].Value, 16)) })
   $neg = @($vals2 | Where-Object { $_ -lt 0 -or $_ -gt 2147483647 }).Count
   $mx = 0; $mn = 0
   if ($vals2.Count) { $mx = ($vals2 | Measure-Object -Maximum).Maximum; $mn = ($vals2 | Measure-Object -Minimum).Minimum }
+  $snapRows = @()
+  foreach ($arm in @('SLP','GLP')) {
+    $lens = @(); $ns = @()
+    foreach ($m in [regex]::Matches($txt, "(?m)^$arm n=([0-9a-fA-F]+) len=(-?\d+) dst=([0-9a-fA-F``]+) dpo=([0-9a-fA-F]+)")) {
+      $nv = [Convert]::ToUInt32($m.Groups[1].Value, 16)
+      $nS = if ($nv -gt 2147483647) { [int64]$nv - 4294967296 } else { [int64]$nv }
+      $lv = [int64]$m.Groups[2].Value
+      $lens += $lv; $ns += $nS
+      if ($lv -gt 0x40E0 -or $lv -lt 0) {
+        $snapRows += ('{0} n={1} len={2} over_0x40E0_by={3} dst={4} dpo={5}' -f $arm, $nS, $lv, ($lv - 0x40E0), $m.Groups[3].Value, $m.Groups[4].Value) } }
+    $lmx = 0; $ln0 = 0
+    if ($lens.Count) { $lmx = ($lens | Measure-Object -Maximum).Maximum; $ln0 = @($lens | Where-Object { $_ -lt 0 }).Count }
+    $nm = 0; if ($ns.Count) { $nm = ($ns | Measure-Object -Maximum).Maximum }
+    Say ("{0} hits={1} len_max={2} len_neg={3} n_max={4} over_list={5}" -f $arm, $lens.Count, $lmx, $ln0, $nm, $snapRows.Count)
+  }
   $rows = @()
   $rx = '(?m)^WIN cnt=(?<cnt>[0-9a-fA-F]{8}) buf=(?<buf>[0-9a-fA-F`]+) p58=(?<p58>[0-9a-fA-F`]+) p98=(?<p98>[0-9a-fA-F`]+) pa0=(?<pa0>[0-9a-fA-F`]+) pa8=(?<pa8>[0-9a-fA-F`]+) pb8=(?<pb8>[0-9a-fA-F`]+) pc0=(?<pc0>[0-9a-fA-F`]+) pc8=(?<pc8>[0-9a-fA-F`]+) p70=(?<p70>[0-9a-fA-F`]+) rbx=(?<rbx>[0-9a-fA-F`]+)'
   function Q([string]$v) { [Convert]::ToUInt64(($v -replace '`',''), 16) }
@@ -182,11 +219,14 @@ q
   if ($uTxt.Length -gt 400) { $uTxt = $uTxt.Substring(0,400) }
   $fault = (($txt -split "`n" | Where-Object { $_ -match 'MSOHTML totals|\[g\] AV-' }) -join ' | ')
   if ($fault.Length -gt 700) { $fault = $fault.Substring(0,700) }
-  Say ("ARM={0} host={1} STORE=0x{2:X} loaded_stop={3} bpset={4} deferred={5} store_hits={6} cnt_lines={7} neg={8} cnt_min={9} cnt_max={10} kb_sum={11} av2={12} window_blocks={13}" -f `
-        $v, $modFile, $rv['STOP'], $loaded, $bpset, $unres, $hits, $vals2.Count, $neg, $mn, $mx, $kbs, $av2, $rows.Count)
+  Say ("ARM={0} host={1} STORE=0x{2:X} loaded_stop={3} bpset={4} deferred={5} store_hits={6} cnt_lines={7} neg={8} cnt_min={9} cnt_max={10} slp_counters={11} glp_counters={12} av2={13} window_blocks={14}" -f `
+        $v, $modFile, $rv['STOP'], $loaded, $bpset, $unres, $hits, $vals2.Count, $neg, $mn, $mx, $nSlp, $nGlp, $av2, $rows.Count)
   Say ("ARM={0} bl_list={1}" -f $v, $blTxt)
   Say ("ARM={0} anchor_disasm={1}" -f $v, $uTxt)
   Say ("ARM={0} faultlines={1}" -f $v, $fault)
+  $ov = $snapRows
+  if ($ov.Count -gt 40) { $ov = @($ov[0..39]) }
+  Say ("ARM={0} snap_over_rows=`n{1}" -f $v, ($ov -join "`n"))
   $take = $rows
   if ($take.Count -gt 60) { $take = @($take[0..29]) + @($take[-30..-1]) }
   Say ("ARM={0} window_rows=`n{1}" -f $v, ($take -join "`n"))
