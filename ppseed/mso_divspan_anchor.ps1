@@ -198,7 +198,7 @@ q
   if ($fault.Length -gt 700) { $fault = $fault.Substring(0,700) }
   $samp = (($txt -split "`n" | Where-Object { $_ -match '^(NEG_HIT|r8=|rcx=|rax=|rdx=)' }) -join "`n")
   if ($samp.Length -gt 4000) { $samp = $samp.Substring(0, 4000) }
-  Say ("ARM={0} slot={12} host={1} loaded_stop={2} bpset={3} deferred={4} fds={5} neg={6} cpy={7} neg_hit_lines={8} cpy_sample_lines={9} r8_captured={10} r8_ffff={11} av2={12} commit_max={13} cbs_max={14}" -f `
+  Say ("ARM={0} slot={15} host={1} loaded_stop={2} bpset={3} deferred={4} fds={5} neg={6} cpy={7} neg_hit_lines={8} cpy_sample_lines={9} r8_captured={10} r8_ffff={11} av2={12} commit_max={13} cbs_max={14}" -f `
         $v, $modFile, $loaded, $bpset, $unres, $cfds, $cneg, $ccpy, $negHits, $cpyHits, $r8s.Count, $giant.Count, $av2, $cmtmax, $cbsmax, $sl)
   Say ("ARM={0} bl_list={1}" -f $v, $blTxt)
   if ([int64]$cfds -gt 0) { Say ("REACHED slot={0} ARM={1} fds={2} neg={3} cpy={4}" -f $sl, $v, $cfds, $cneg, $ccpy) }

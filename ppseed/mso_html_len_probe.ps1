@@ -101,7 +101,15 @@ $SIGX = [ordered]@{
   # Offsets from the match: `cmp eax,[r9]` +3, the "return the previous buffer" pair +8.
   XGATE  = '8d4301413b017f'
   XGROWN = '8d045d210000008906'
+  # PwchFetchToIhtks's count producer: `sub rcx,[rbx+0x38] ; sar rcx,1 ; mov [rbp-..],.. ; call CastThrow`.
+  # Break on the `sar` (+4), where rcx is still the raw byte difference end-cursor; negative there is the
+  # condition the div/span committer's copy length has no guard against.
+  DELTA  = '482b4b4048d1f9897db8e8????????'
 }
+$DELTA_OFF = 0x4
+# the CastThrow call site inside the same 14-byte signature window: rcx there is the character count that
+# is stored through the caller's int*, i.e. the value the committer doubles for memcpy.
+$DUMPOFF_OFF = 0xA
 $XREQ_OFF = 0x3; $XREUSE_OFF = 0x8
 function Get-Anchors([string]$path, $table) {
   $out = @{}
@@ -479,10 +487,17 @@ foreach ($f in $files) {
     $c += ("bu {1}+0x{0:X} `".echo REQ;r;dq @r9 l1;dq @rsp+48 l1;g`"" -f ($rvX['XGATE'] + $XREQ_OFF), $modTokX)
     $c += ("bu {1}+0x{0:X} `".echo REUSE;r;dq @r9 l1;dq @rsp+48 l1;g`"" -f ($rvX['XGATE'] + $XREUSE_OFF), $modTokX)
     $c += ("bu {1}+0x{0:X} `".echo GROWN;r;g`"" -f $rvX['XGROWN'], $modTokX)
+    if ($rvX['DELTA']) {
+      ('DELTA armed at {0}+0x{1:X}' -f $modTokX, ($rvX['DELTA'] + $DELTA_OFF)) | Add-Content $log
+      $c += ('bu ' + $modTokX + '+0x' + ('{0:X}' -f ($rvX['DELTA'] + $DELTA_OFF)) + ' "r $t0=@$t0+1; r $t1=@$t1+(@rcx>>63); r $t2=@$t2+(@rcx==0); g"')
+      $c += ('bu /c 60 ' + $modTokX + '+0x' + ('{0:X}' -f ($rvX['DELTA'] + $DUMPOFF_OFF)) + ' ".echo DN_SAMPLE; r rcx rbx; dq rbx+0x28 l4; g"')
+    }
     $c += 'bl'
     $c += 'g'
     for ($i = 0; $i -lt $Stops; $i++) { $c += '.echo ====XSTOP'; $c += '.lastevent'; $c += 'g' }
     $c += '.echo ====XML_END'
+    $c += 'bl'
+    $c += '.printf "FDCOUNTERS calls=%d neg=%d zero=%d\n", @$t0, @$t1, @$t2'
     $c += 'bl'
   }
   $c += '.echo ====END'
@@ -555,6 +570,11 @@ foreach ($f in $files) {
   $reuse = ([regex]::Matches($txt, '(?m)^REUSE')).Count
   $grown = ([regex]::Matches($txt, '(?m)^GROWN')).Count
   $xw = ([regex]::Matches($txt, '(?m)^XWRITE')).Count
+  $fdm = [regex]::Match($txt, 'FDCOUNTERS calls=(\d+) neg=(\d+) zero=(\d+)')
+  $fdcalls = $fdm.Groups[1].Value; $fdnegv = $fdm.Groups[2].Value
+  if (-not $fdcalls) { $fdcalls = 'na'; $fdnegv = 'na' }
+  $dnl = ([regex]::Matches($txt, '(?m)^DN_SAMPLE')).Count
+  ('FDCOUNTERS case=' + $f.BaseName + ' calls=' + $fdcalls + ' neg=' + $fdnegv + ' zero=' + $fdm.Groups[3].Value + ' dump_lines=' + $dnl) | Add-Content $log
   $xwbig = 0
   foreach ($mm in [regex]::Matches($txt, '(?m)^r8=([0-9a-fA-F]{16})')) {
     $v = [Convert]::ToUInt64($mm.Groups[1].Value, 16)

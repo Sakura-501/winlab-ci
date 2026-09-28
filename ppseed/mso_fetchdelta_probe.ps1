@@ -30,7 +30,11 @@ $hostCand = @(
   'C:\Program Files\Microsoft Office\root\vfs\ProgramFilesCommonX64\Microsoft Shared\OFFICE16\Mso98win32client.dll')
 # pattern starts at the `sub`; the breakpoint belongs on the following `sar rcx,1` (+4 bytes)
 $SIG = [ordered]@{ DELTA = '482B4B4048D1F9897DB8E8????????' }
+# +4 = the `sar rcx,1` (rcx still holds the raw byte difference); +13 = the CastThrow call site
+# (rcx already holds the character count that is stored through the caller's int*, i.e. the value the
+# committer later doubles for memcpy).
 $SIGOFF = @{ DELTA = 4 }
+$DUMPOFF = 10
 function Get-Anchors([string]$path, $table) {
   $out = @{}
   $bytes = [IO.File]::ReadAllBytes($path)
@@ -135,15 +139,16 @@ g
 ? <MODTOK>
 lm m <MODTOK>
 u <MODTOK>+0x<DELTA> L4
-bp <MODTOK>+0x<DELTA> "r $t0=@$t0+1; .if (@rcx > 0x7fffffffffffffff) { r $t1=@$t1+1; .echo NEGDELTA; r rcx rbx; dq rbx+0x28 L4 }; .if (@$t0 < 6) { .echo SAMPLE; r rcx rbx; dq rbx+0x28 L4 }; g"
+bp <MODTOK>+0x<DELTA> "r $t0=@$t0+1; r $t1=@$t1+(@rcx>>63); r $t2=@$t2+(@rcx==0); g"
+bp /c 40 <MODTOK>+0x<DUMP> "r $t3=@$t3+1; .echo SAMPLE; r rcx rbx; dq rbx+0x28 L4; g"
 bl
 .echo ====BREAKPOINTS_SET
 STOPS
-.printf "COUNTERS calls=%d neg=%d\n", @$t0, @$t1
+.printf "COUNTERS calls=%d neg=%d zero=%d dump=%d\n", @$t0, @$t1, @$t2, @$t3
 q
 '@
   $body = $tmpl.Replace('<DELTA>', ('{0:X}' -f $rv['DELTA'])).Replace('<MODFILE>', $modFile).Replace('<MODTOK>', $modTok)
-  $body = $body.Replace('.if (@$t0 < 6)', ('.if (@$t0 < {0})' -f $SampleFirst))
+  $body = $body.Replace('<DUMP>', ('{0:X}' -f ($rv['DELTA'] + $DUMPOFF - 4)))
   $ladder = @()
   for ($i = 0; $i -lt $Stops; $i++) { $ladder += '.echo ====STOP'; $ladder += 'g' }
   $c2 = @()
@@ -157,8 +162,8 @@ q
   $txt = ''
   if (Test-Path $tr) { $txt = Get-Content $tr -Raw -EA SilentlyContinue }
   if (-not $txt) { $txt = '' }
-  $cnt = [regex]::Match($txt, 'COUNTERS calls=(\d+) neg=(\d+)')
-  $ccalls = $cnt.Groups[1].Value; $cneg = $cnt.Groups[2].Value
+  $cnt = [regex]::Match($txt, 'COUNTERS calls=(\d+) neg=(\d+) zero=(\d+) dump=(\d+)')
+  $ccalls = $cnt.Groups[1].Value; $cneg = $cnt.Groups[2].Value; $czero = $cnt.Groups[3].Value; $cdump = $cnt.Groups[4].Value
   $negLines = @([regex]::Matches($txt, '(?m)^NEGDELTA')).Count
   $sampLines = @([regex]::Matches($txt, '(?m)^SAMPLE')).Count
   $av2 = @([regex]::Matches($txt, '(?m)^AV2')).Count
@@ -177,10 +182,10 @@ q
   $cbsmax = 0; if ($cbs.Count) { $cbsmax = ($cbs | Measure-Object -Maximum).Maximum }
   $fault = (($txt -split "`n" | Where-Object { $_ -match 'MSOHTML totals|\[g\] AV-' }) -join ' | ')
   if ($fault.Length -gt 700) { $fault = $fault.Substring(0,700) }
-  $samp = (($txt -split "`n" | Where-Object { $_ -match '^(NEGDELTA|SAMPLE|rcx=|rbx=|[0-9a-f]{8}`)' }) -join "`n")
+  $samp = (($txt -split "`n" | Where-Object { $_ -match '^(SAMPLE|rcx=|rbx=|[0-9a-f]{8}`)' }) -join "`n")
   if ($samp.Length -gt 6000) { $samp = $samp.Substring(0, 6000) }
-  Say ("ARM={0} slot={15} host={1} loaded_stop={2} bpset={3} deferred={4} calls={5} neg={6} neg_lines={7} sample_lines={8} rcx_captured={9} rcx_topbit={10} av2={11} commit_max={12} cbs_max={13}" -f `
-        $v, $modFile, $loaded, $bpset, $unres, $ccalls, $cneg, $negLines, $sampLines, $rcxs.Count, $negr8.Count, $av2, $cmtmax, $cbsmax, $sl)
+  Say ("ARM={0} slot={15} host={1} loaded_stop={2} bpset={3} deferred={4} calls={5} neg={6} zero={7} dump={8} rcx_captured={9} rcx_topbit={10} av2={11} commit_max={12} cbs_max={13}" -f `
+        $v, $modFile, $loaded, $bpset, $unres, $ccalls, $cneg, $czero, $cdump, $rcxs.Count, $negr8.Count, $av2, $cmtmax, $cbsmax, $sl)
   Say ("ARM={0} bl_list={1}" -f $v, $blTxt)
   Say ("ARM={0} anchor_disasm={1}" -f $v, $uTxt)
   Say ("ARM={0} faultlines={1}" -f $v, $fault)
