@@ -138,8 +138,7 @@ g
 lm m <MODTOK>
 u <MODTOK>+0x<STORE> L4
 bp <MODTOK>+0x<STORE> "r $t0=@$t0+1; .printf \"CNT %x %d\\n\", @eax, @eax; g"
-bp /c 8 <MODTOK>+0x<STORE> ".echo STOPK;k 16;g"
-bp /c <WINS> <MODTOK>+0x<STORE> ".printf \"WIN cnt=%x buf=%p p58=%p p98=%p pa0=%p pa8=%p pb8=%p pc0=%p pc8=%p p70=%p p78=%p rbx=%p\\n\", @eax, poi(@rbx+0xb0), poi(@rbx+0x58), poi(@rbx+0x98), poi(@rbx+0xa0), poi(@rbx+0xa8), poi(@rbx+0xb8), poi(@rbx+0xc0), poi(@rbx+0xc8), poi(@rbx+0x70), poi(@rbx+0x78), @rbx; g"
+bp /c <WINS> <MODTOK>+0x<STORE> ".echo STOPK; .printf \"WIN cnt=%x buf=%p p58=%p p98=%p pa0=%p pa8=%p pb8=%p pc0=%p pc8=%p p70=%p p78=%p rbx=%p\\n\", @eax, poi(@rbx+0xb0), poi(@rbx+0x58), poi(@rbx+0x98), poi(@rbx+0xa0), poi(@rbx+0xa8), poi(@rbx+0xb8), poi(@rbx+0xc0), poi(@rbx+0xc8), poi(@rbx+0x70), poi(@rbx+0x78), @rbx; g"
 SNAPBPS
 bl
 .echo ====BREAKPOINTS_SET
