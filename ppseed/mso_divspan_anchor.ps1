@@ -123,10 +123,17 @@ foreach ($v in $vals) {
   $cm = Join-Path $base ('out\cmds_' + $Tag + '_' + ($v -replace '[^0-9a-fA-F]','') + '.txt')
   $tr = Join-Path $base ('out\trans_' + $Tag + '_' + ($v -replace '[^0-9a-fA-F]','') + '.txt')
   $c = @()
-  $c += 'sxd av ".echo AV2;r ip; k 12; .dump /ma C:\dsdbg\dav.dmp;g"'
-  $c += ('bu mso+0x{0:X} ".echo FDS;g"' -f $rv['FDS'])
-  $c += ('bu mso+0x{0:X} ".echo NEG;r r8 rax rcx rdx;g"' -f $rv['NEG'])
-  $c += ('bu mso+0x{0:X} ".echo CPY;r r8 rcx rdx;g"' -f $rv['CPY'])
+  $c += 'sxe ld:mso'
+  $c += '.echo ====WAITLOAD'
+  $c += 'g'
+  $c += '.echo ====MSO_LOADED'
+  $c += '? mso'
+  $c += ('bp mso+0x{0:X} ".echo FDS;g"' -f $rv['FDS'])
+  $c += ('bp mso+0x{0:X} ".echo NEG;r r8 rax rcx rdx;g"' -f $rv['NEG'])
+  $c += ('bp mso+0x{0:X} ".echo CPY;r r8 rcx rdx;g"' -f $rv['CPY'])
+  $c += 'bl'
+  $c += '.echo ====BREAKPOINTS_SET'
+  $c += 'sxd av ".echo AV2;r;k 12;.dump /ma C:\dsdbg\dav.dmp;g"'
   $c += '.echo ====LOADED'
   for ($i = 0; $i -lt $Stops; $i++) { $c += '.echo ====STOP'; $c += 'g' }
   Set-Content -Path $cm -Value ($c -join "`n") -Encoding ascii
@@ -145,8 +152,15 @@ foreach ($v in $vals) {
   $hand = ([regex]::Match($txt, 'handle=(\d+)')).Groups[1].Value
   $recs = ([regex]::Match($txt, 'recs=(\d+)')).Groups[1].Value
   $faultline = (($txt -split "`n" | Where-Object { $_ -match 'MSOHTML faults|MSOHTML totals|\[g\] AV-' }) -join ' | ')
-  Say ("ARM={0} fds={1} neg={2} cpy={3} r8_captured={4} r8_ffff={5} av2={6} handle={7} recs={8}" -f `
-        $v, $fds, $neg, $cpy, $r8s.Count, $giant.Count, $av2, $hand, $recs)
+  $bps = ([regex]::Match($txt, '(?m)^====BREAKPOINTS_SET')).Success
+  $blines = (($txt -split "`n" | Where-Object { $_ -match '^\s+\d+ \e? ' }) -join ' / ').Trim()
+  $cmt = @([regex]::Matches($txt, 'commit=(\d+)') | ForEach-Object { [int64]$_.Groups[1].Value })
+  $cbs = @([regex]::Matches($txt, 'cbs=(\d+)') | ForEach-Object { [int64]$_.Groups[1].Value })
+  $cmtmax = 0; if ($cmt.Count) { $cmtmax = ($cmt | Measure-Object -Maximum).Maximum }
+  $cbsmax = 0; if ($cbs.Count) { $cbsmax = ($cbs | Measure-Object -Maximum).Maximum }
+  Say ("ARM={0} fds={1} neg={2} cpy={3} r8_captured={4} r8_ffff={5} av2={6} handle={7} recs={8} bpset={9} commit_max={10} cbs_max={11}" -f `
+        $v, $fds, $neg, $cpy, $r8s.Count, $giant.Count, $av2, $hand, $recs, $bps, $cmtmax, $cbsmax)
+  Say ("ARM={0} bl_list={1}" -f $v, $blines.Substring(0, [Math]::Min(500, $blines.Length)))
   Say ("ARM={0} faultlines={1}" -f $v, $faultline.Substring(0, [Math]::Min(700, $faultline.Length)))
   if ($r8s.Count) {
     $top = ($r8s | Group-Object | Sort-Object Count -Descending | Select-Object -First 6 |
