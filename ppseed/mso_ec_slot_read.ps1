@@ -17,6 +17,49 @@ New-Item -ItemType Directory -Force -Path (Join-Path $base 'out') | Out-Null
 $log = Join-Path $base ('out\' + $Tag + '_log.txt')
 function Say([string]$s) { ("{0} {1}" -f (Get-Date -Format HH:mm:ss), $s) | Add-Content $log; $s }
 
+# The div/span committer's fetch call is `call qword ptr [rip+disp32]` followed by `mov r15,rax` and
+# `test r13b,r13b`.  That 10-byte run matches exactly once in the installed mso.dll (rva 0x3E999E on
+# 20430.20092 x64; the same call with no `test` tail matches 2093 times, so the tail is what makes it
+# unique), which means both the slot index and the call site come out of the file instead of being
+# assumed.  Stepping through that one call at runtime is what names the callee.
+$FETCH_SIG = 'FF15????????4C8BF84584ED'
+function Get-FetchAnchor([string]$path, [string]$sig) {
+  $bytes = [IO.File]::ReadAllBytes($path)
+  $pe = [BitConverter]::ToInt32($bytes, 0x3C)
+  $nsec = [BitConverter]::ToInt16($bytes, $pe + 6)
+  $sh = $pe + 24 + [BitConverter]::ToInt16($bytes, $pe + 20)
+  $tva = 0; $tpraw = 0
+  for ($i = 0; $i -lt $nsec; $i++) {
+    $o = $sh + $i * 40
+    if ([Text.Encoding]::ASCII.GetString($bytes, $o, 8).Trim([char]0) -eq '.text') {
+      $tva = [BitConverter]::ToInt32($bytes, $o + 12); $tpraw = [BitConverter]::ToInt32($bytes, $o + 20); break } }
+  if (-not $tpraw) { return $null }
+  $bts = @(); for ($j = 0; $j -lt $sig.Length; $j += 2) {
+    $pair = $sig.Substring($j, 2)
+    if ($pair -eq '??') { $bts += -1 } else { $bts += [Convert]::ToInt32($pair, 16) } }
+  $lit = ''
+  foreach ($v in $bts) { if ($v -lt 0) { break }; $lit += [char]$v }
+  $latin = [Text.Encoding]::GetEncoding(28591).GetString($bytes)
+  $all = @(); $from = 0
+  while ($true) {
+    $c = $latin.IndexOf($lit, $from, [StringComparison]::Ordinal)
+    if ($c -lt 0) { break }
+    $ok = $true
+    for ($m = 0; $m -lt $bts.Count; $m++) {
+      if ($bts[$m] -ge 0 -and [int][byte]$latin[$c + $m] -ne $bts[$m]) { $ok = $false; break } }
+    if ($ok) { $all += (@{ rva = ($tva + ($c - $tpraw)); file = $c }) }
+    $from = $c + 1 }
+  return $all
+}
+$msoPath = 'C:\Program Files\Microsoft Office\root\Office16\mso.dll'
+$fa = @(Get-FetchAnchor $msoPath $FETCH_SIG)
+Say ("FETCH anchor hits={0}" -f $fa.Count)
+if (-not $fa[0] -or -not $fa[0].rva -or $fa.Count -ne 1) { Say 'FETCH_ANCHOR_NOT_UNIQUE_OR_MISSING'; exit 1 }
+$fetchRva = $fa[0].rva
+$disp = [BitConverter]::ToInt32([IO.File]::ReadAllBytes($msoPath), $fa[0].file + 2)
+$slotRva = $fetchRva + 6 + $disp
+Say ("FETCH rva=0x{0:X} disp32=0x{1:X} slot_rva=0x{2:X}" -f $fetchRva, ($disp -band 0xFFFFFFFF), $slotRva)
+
 $gbx = Join-Path $base 'bin\gbx.exe'
 if (-not (Test-Path $gbx)) { Say "GBX_MISSING $gbx"; exit 1 }
 $cdb = $null
@@ -48,16 +91,21 @@ sxe ld:mso.dll
 g
 .echo ====MSO_LOADED
 ? mso
-lm
 lm m mso
 lm m mso98win32client
+u <MODTOK>+0x<FETCH> L4
+bp /c 12 <MODTOK>+0x<FETCH> "r $t0=@$t0+1; .echo ECT; t; .echo C1; ln @rip; u @rip L3; t; .echo C2; ln @rip; u @rip L3; g"
+bl
+.echo ====BP_SET
 SLOTREAD
+.printf "FETCH_HITS=%d\n", @$t0
 q
 '@
+$tmpl = $tmpl.Replace('<FETCH>', ('{0:X}' -f $fetchRva)).Replace('<MODTOK>', 'mso')
 $reads = @()
-foreach ($sv in ($Slots.Split(',') | ForEach-Object { $_.Trim() })) {
+foreach ($sv in (@($Slots.Split(',')) + ('0x{0:X}' -f $slotRva)) | ForEach-Object { $_.Trim() }) {
   $reads += ('.echo SLOT_' + $sv)
-  $reads += ('dqs mso+' + $sv + ' L1')
+  $reads += ('dq mso+' + $sv + ' L1')
 }
 $lines = @()
 foreach ($ln in ($tmpl -split "`n")) {
@@ -71,11 +119,25 @@ $p = Start-Process -FilePath $cdbExe -ArgumentList @('-y', $symLocal, '-cf', $cm
 $p.WaitForExit()
 $txt = ''
 if (Test-Path $tr) { $txt = Get-Content $tr -Raw -EA SilentlyContinue }
-Say ('transcript_bytes=' + $txt.Length + ' mso_loaded=' + ([regex]::Match($txt, '(?m)^====MSO_LOADED')).Success)
-foreach ($m in [regex]::Matches($txt, '(?m)^SLOT_(0x[0-9a-fA-F]+)\s*\r?\n([0-9a-fA-F`]+)\s+([0-9a-fA-F`]+)')) {
+Say ('transcript_bytes=' + $txt.Length + ' mso_loaded=' + ([regex]::Match($txt, '(?m)^====MSO_LOADED')).Success + ' bp_set=' + ([regex]::Match($txt, '(?m)^====BP_SET')).Success)
+Say ('FETCH_HITS ' + (([regex]::Matches($txt, 'FETCH_HITS=(\d+)') | ForEach-Object { $_.Groups[1].Value }) -join ','))
+foreach ($m in [regex]::Matches($txt, '(?m)^SLOT_(0x[0-9a-fA-F]+)[\r\n]+([0-9a-fA-F`]+)\s+([0-9a-fA-F`]+)')) {
   Say ('SLOT rva=' + $m.Groups[1].Value + ' slot_va=' + $m.Groups[2].Value + ' target=' + $m.Groups[3].Value)
 }
+# each step-into gives two labeled stops; `ln` prints "module+0x…" when the symbol server is empty, which
+# is exactly the module+rva pair that the local publics dump resolves to a name.
+foreach ($m in [regex]::Matches($txt, '(?m)^(C[12])[\r\n]+([^\r\n]*)[\r\n]+(mso\+0x[0-9a-fA-F]+|[^ ]+)')) {
+  Say ('STEP ' + $m.Groups[1].Value + ' ln=' + $m.Groups[2].Value.Trim() + ' first=' + $m.Groups[3].Value)
+}
+foreach ($m in [regex]::Matches($txt, '(?m)^(C[12])[\r\n]+.*[\r\n]+.*[\r\n]+\s*([0-9a-fA-F`]+)\s+([0-9a-fA-F ]+)')) {
+  Say ('CODE ' + $m.Groups[1].Value + ' at=' + $m.Groups[2].Value + ' bytes=' + ($m.Groups[3].Value -replace '\s+', ' '))
+}
 $modlines = (($txt -split "`n") | Where-Object { $_ -match '^\s*[0-9a-fA-F`]+\s+[0-9a-fA-F`]+\s+mso' }) -join ' ;; '
+# raw window around every step-into marker, so the callee's first instructions are readable even when the
+# `ln`/`u` line shapes differ from the regexes above
+$ectRaw = (($txt -split "`n") | Where-Object { $_ -match '^(ECT|C1|C2)\b|^\s*[0-9a-fA-F`]+\s+(endbr|mov|push|sub|jmp|test|ret|nop|db )|No symbols|^\s+mso' }) -join "`n"
+if ($ectRaw.Length -gt 3000) { $ectRaw = $ectRaw.Substring(0, 3000) }
+Say ("ECT_RAW=`n" + $ectRaw)
 Say ('MODULES ' + $modlines.Substring(0, [Math]::Min(900, $modlines.Length)))
 $u = (($txt -split "`n") | Where-Object { $_ -match '^\s*Evaluate expression' }) -join ' ;; '
 Say ('MSO_BASE ' + $u)
