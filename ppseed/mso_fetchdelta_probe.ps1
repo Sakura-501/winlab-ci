@@ -139,7 +139,7 @@ g
 ? <MODTOK>
 lm m <MODTOK>
 u <MODTOK>+0x<DELTA> L4
-bp <MODTOK>+0x<DELTA> "r $t0=@$t0+1; r rcx; g"
+bp <MODTOK>+0x<DELTA> "r $t0=@$t0+1; .echo DLTX; r rcx; g"
 bl
 .echo ====BREAKPOINTS_SET
 STOPS
@@ -165,10 +165,8 @@ q
   $ccalls = $cnt.Groups[1].Value
   # every hit's rcx is in the transcript (the debugger prints the register; the sign/zero/min are
   # computed here so nothing depends on cdb expression syntax inside a breakpoint command).
-  $rx = [int64[]]@([regex]::Matches($txt, '(?m)^rcx=([0-9a-fA-F]{16})') | ForEach-Object {
-        $u = [Convert]::ToUInt64($_.Groups[1].Value, 16)
-        if ($u -gt [uint64]::MaxValue) { 0 } else { [int64]$u - 0 } })
-  $rx = @([regex]::Matches($txt, '(?m)^rcx=([0-9a-fA-F]{16})') | ForEach-Object { [Convert]::ToUInt64($_.Groups[1].Value, 16) })
+  # only the rcx line that follows a DLTX marker belongs to the delta site
+  $rx = @([regex]::Matches($txt, '(?m)^DLTX\r?\nrcx=([0-9a-fA-F]{16})') | ForEach-Object { [Convert]::ToUInt64($_.Groups[1].Value, 16) })
   $cneg = 0; $czero = 0; $cmin = 'na'
   foreach ($u in $rx) {
     if ($u -ge 0x8000000000000000) { $cneg++ }

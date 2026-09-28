@@ -489,7 +489,7 @@ foreach ($f in $files) {
     $c += ("bu {1}+0x{0:X} `".echo GROWN;r;g`"" -f $rvX['XGROWN'], $modTokX)
     if ($rvX['DELTA']) {
       ('DELTA armed at {0}+0x{1:X}' -f $modTokX, ($rvX['DELTA'] + $DELTA_OFF)) | Add-Content $log
-      $c += ('bu ' + $modTokX + '+0x' + ('{0:X}' -f ($rvX['DELTA'] + $DELTA_OFF)) + ' "r $t0=@$t0+1; r rcx; g"')
+      $c += ('bu ' + $modTokX + '+0x' + ('{0:X}' -f ($rvX['DELTA'] + $DELTA_OFF)) + ' "r $t0=@$t0+1; .echo DLTX; r rcx; g"')
     }
     $c += 'bl'
     $c += 'g'
@@ -573,7 +573,7 @@ foreach ($f in $files) {
   $fdcalls = $fdm.Groups[1].Value
   if (-not $fdcalls) { $fdcalls = 'na' }
   # sign/zero/min are computed from the per-hit rcx lines the debugger printed
-  $fdu = @([regex]::Matches($txt, '(?m)^rcx=([0-9a-fA-F]{16})') | ForEach-Object { [Convert]::ToUInt64($_.Groups[1].Value, 16) })
+  $fdu = @([regex]::Matches($txt, '(?m)^DLTX\r?\nrcx=([0-9a-fA-F]{16})') | ForEach-Object { [Convert]::ToUInt64($_.Groups[1].Value, 16) })
   $fdnegv = 0; $fdzero = 0; $fdmin = 'na'
   foreach ($u in $fdu) {
     if ($u -ge 0x8000000000000000) { $fdnegv++ }
