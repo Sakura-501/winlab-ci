@@ -76,7 +76,11 @@ $SIG = [ordered]@{
   # 2*(n+2) with a 32-bit add, the memcpy length is 2*n from the same int* out-param of ?FClassifyRgwch@@,
   # so pairing the two dumps measures 'writes more than allocated' without any debugger arithmetic.
   CSSALLOC = '8B45F883C0024863C84803C9'
-  CSSCOPY  = '4C6345F84D03C0488D4802488B55F0E8'}
+  CSSCOPY  = '4C6345F84D03C0488D4802488B55F0E8'
+  # `mov rcx,[rdi+0x81f0] ; call ?FClassifyRgwch@@ ; test eax,eax ; jne short +7` -- unique in mso 20092
+  # (1 hit; the short form without the 7-byte prefix matches 128 times).  +12 lands on the `test`, where
+  # rax is that routine's BOOL and [rbp-8] holds the signed count the committer doubles for memcpy.
+  CSSRET   = '488B8FF0810000E8????????85C07507'}
 $REQUIRED = @('FDS','NEG','CPY')
 
 # The xml-item scratch routine lives in the Mso98Win32Client module and mso reaches it through an
@@ -99,6 +103,10 @@ $SIGW = [ordered]@{
   XREQ = '4c8d8f100200004c8d87f80100008b55????????ff15????????'
 }
 $XWRITE_OFF = 0x30
+# CSS arm: +12 past the ALLOC signature = right after `mov eax,[rbp-8]; add eax,2; movsxd rcx,eax;
+# add rcx,rcx`, so rcx is the requested byte count; +15 past the COPY signature = right before the
+# memcpy call, so r8 = byte length, rcx = destination, rdx = source.
+$CSSALLOC_OFF = 12; $CSSCOPY_OFF = 15; $CSSRET_OFF = 12
 $SIGX = [ordered]@{
   # Reuse gate, taken from the `lea eax,[rbx+1] ; cmp eax,[r9] ; jg` triple itself (8 bytes, no register
   # shuffling before it).  The 24-byte prologue run is the tighter form but the installed
@@ -467,8 +475,9 @@ foreach ($f in $files) {
   $c += ("bu {1}+0x{0:X} `".echo FDS;g`"" -f $rv['FDS'], $modTok)
   $c += ("bu {1}+0x{0:X} `".echo NEG;r;g`"" -f $rv['NEG'], $modTok)
   $c += ("bu {1}+0x{0:X} `".echo CPY;r;g`"" -f $rv['CPY'], $modTok)
-  if ($rv['CSSALLOC']) { $c += ('bu /c 4000 ' + $modTok + '+0x' + ('{0:X}' -f $rv['CSSALLOC']) + ' "r $t4=@$t4+1; .echo SZAL; r rcx; g"') }
-  if ($rv['CSSCOPY'])  { $c += ('bu /c 4000 ' + $modTok + '+0x' + ('{0:X}' -f $rv['CSSCOPY'])  + ' "r $t5=@$t5+1; .echo SZCP; r r8 rcx; g"') }
+  if ($rv['CSSALLOC']) { $c += ('bu /c 4000 ' + $modTok + '+0x' + ('{0:X}' -f ($rv['CSSALLOC'] + $CSSALLOC_OFF)) + ' "r $t4=@$t4+1; .echo SZAL; r rcx; g"') }
+  if ($rv['CSSCOPY'])  { $c += ('bu /c 4000 ' + $modTok + '+0x' + ('{0:X}' -f ($rv['CSSCOPY'] + $CSSCOPY_OFF))  + ' "r $t5=@$t5+1; .echo SZCP; r r8 rcx rdx; g"') }
+  if ($rv['CSSRET'])   { $c += ('bu /c 4000 ' + $modTok + '+0x' + ('{0:X}' -f ($rv['CSSRET'] + $CSSRET_OFF))   + ' "r $t6=@$t6+1; .echo CSN; r rax; dd @rbp-8 L1; g"') }
   if ($xwRva) {
     $c += ("bu {1}+0x{0:X} `".echo XWRITE;r;g`"" -f $xwRva, $modTok)
   }
@@ -629,7 +638,20 @@ foreach ($f in $files) {
     if ($ccp[$q] -ge 0x8000000000000000) { $cneg++ }
     if ($ccp[$q] -gt $cal[$q]) { $cover++; $dd = [int64]($ccp[$q] - $cal[$q]); if ($dd -gt $cworst) { $cworst = $dd } }
   }
-  ('CSSPAIR case=' + $f.BaseName + ' alloc=' + $cal.Count + ' copy=' + $ccp.Count + ' pairs=' + $cpair + ' copy_gt_alloc=' + $cover + ' copy_topbit=' + $cneg + ' worst_excess=' + $cworst) | Add-Content $log
+  $csn = @([regex]::Matches($txt, '(?m)^CSN\r?\nrax=([0-9a-fA-F]{16})\r?\n[0-9a-fA-F`]+\s+([0-9a-fA-F]{8})'))
+  $cretNZ = 0; $cnNeg = 0; $cnM1 = 0; $cnMin = [int64]2147483647; $csamp = ''
+  foreach ($m in $csn) {
+    if ($m.Groups[1].Value -ne '0000000000000000') { $cretNZ++ }
+    $nv = [Convert]::ToUInt32($m.Groups[2].Value, 16)
+    $sv = [int64]$nv
+    if ($nv -gt 0x7FFFFFFF) { $sv = $sv - 4294967296 }
+    if ($sv -lt 0) { $cnNeg++ }
+    if ($sv -eq -1) { $cnM1++ }
+    if ($sv -lt $cnMin) { $cnMin = $sv }
+    if ($csamp.Length -lt 120) { $csamp += ('(ret=' + $m.Groups[1].Value.Substring(15,1) + ',n=' + $sv + ')') }
+  }
+  if ($csn.Count -eq 0) { $cnMin = 0 }
+  ('CSSPAIR case=' + $f.BaseName + ' alloc=' + $cal.Count + ' copy=' + $ccp.Count + ' pairs=' + $cpair + ' copy_gt_alloc=' + $cover + ' copy_topbit=' + $cneg + ' worst_excess=' + $cworst + ' csn=' + $csn.Count + ' ret_nonzero=' + $cretNZ + ' n_neg=' + $cnNeg + ' n_minus1=' + $cnM1 + ' n_min=' + $cnMin + ' samp=' + $csamp) | Add-Content $log
   $neg = ([regex]::Matches($txt, '(?m)^NEG')).Count
   $cpy = ([regex]::Matches($txt, '(?m)^CPY')).Count
   $lex = ([regex]::Matches($txt, '(?m)^LEX')).Count
