@@ -359,7 +359,7 @@ jobs:
         $dirs = @('corpus', 'corpus2', 'corpus3')
         $want = '${{ github.event.inputs.dirs }}'
         if ($want -ne 'both') { $dirs = @($want.Split(',')) }
-        $files = @(Get-ChildItem $dirs -Filter *.one | Sort-Object @{E={ if ($_.Name -like '*p35cd*') { '0' + $_.Name } elseif ($_.Name -like 'tbl_*') { '1' + $_.Name } else { '9' + $_.Name } }}, Name | Select-Object -First $cap)
+        $files = @(Get-ChildItem $dirs -Filter *.one | Sort-Object @{E={ if ($_.Name -like '*p35cd*L21*') { '00' + $_.Name } elseif ($_.Name -like '*p35cd*') { '01' + $_.Name } elseif ($_.Name -like 'tbl_*') { '1' + $_.Name } else { '9' + $_.Name } }}, Name | Select-Object -First $cap)
         "cases=$($files.Count) dirs=$($dirs -join ',')" | Tee-Object -FilePath $log
         if ($files.Count -lt 1) { throw "corpus not materialized in $($dirs -join ' and ') (cases=$($files.Count))" }
         $bad = @(); $unopened = @(); $nosend = @(); $docSeen = 0
@@ -448,6 +448,11 @@ jobs:
               # 先枚举可用 Edit，SetFocus + SetValue + ENTER；一个都取不到就 INSTRUMENT_FAIL 退出，
               # 绝不再产出"零故障"这种无法自证的读数。
               [void](UiaScope $f.BaseName $query)
+              try {
+                [void]$w32::SetForegroundWindow($h); Start-Sleep -Milliseconds 400
+                [System.Windows.Forms.SendKeys]::SendWait($prim); Start-Sleep -Seconds 2
+                "open_search_pane_first " + $f.Name | Add-Content out\sweep_extra.txt
+              } catch { }
               $edits = @()
               foreach ($w3 in (UiaAllWins)) {
                 foreach ($e3 in (UiaDesc $w3)) {
