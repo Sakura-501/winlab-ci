@@ -225,6 +225,40 @@ jobs:
           }
           return $n
         }
+        function UiaModal {
+          $m = 0
+          foreach ($w in (UiaWins)) { foreach ($e in (UiaDesc $w)) { try { if ($e.Current.Name -match 'Welcome to free|Continue for free|How do you want to start|Get more with a trial|View plan options') { $m = 1 } } catch { } } }
+          return $m
+        }
+        function UiaClickDismiss {
+          $n = 0
+          foreach ($w in (UiaWins)) {
+            foreach ($e in (UiaDesc $w)) {
+              try {
+                $nm = $e.Current.Name
+                if ($nm -match 'Continue for free|Skip|Later|Not now|No thanks|Maybe later|Notebooks on this PC|This PC|Start using|OK') {
+                  $done = $false
+                  try {
+                    if ($e.Current.IsLegacyIAccessiblePatternAvailable) { ($e.GetCurrentPattern([System.Windows.Automation.LegacyIAccessiblePattern]::Pattern)).DoDefaultAction(); $done = $true; $n++ }
+                  } catch { }
+                  if (-not $done) {
+                    try {
+                      $cp = $e.Current.ClickablePoint
+                      if ($cp.IsEmpty) { $r = $e.Current.BoundingRectangle; $cx = [int](($r.Left + $r.Right) / 2); $cy = [int](($r.Top + $r.Bottom) / 2) } else { $cx = [int]$cp.X; $cy = [int]$cp.Y }
+                      [void]$script:w32::SetForegroundWindow($w.Current.NativeWindowHandle)
+                      [void]$script:w32::SetCursorPos($cx, $cy); Start-Sleep -Milliseconds 250
+                      [void]$script:w32::mouse_event(0x0002, 0, 0, 0, 0); [void]$script:w32::mouse_event(0x0004, 0, 0, 0, 0)
+                      $done = $true; $n++
+                    } catch { }
+                  }
+                  "click_dismiss name=$nm done=$done" | Add-Content out\sweep_extra.txt
+                  Start-Sleep -Seconds 2
+                }
+              } catch { }
+            }
+          }
+          return $n
+        }
         function UiaNames([string]$tag) {
           $lines = @()
           foreach ($w in (UiaWins)) {
@@ -264,7 +298,7 @@ jobs:
           }
           return $n
         }
-        $sig = '[DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h); [DllImport("user32.dll")] public static extern bool ShowWindowAsync(IntPtr h, int n);'
+        $sig = '[DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h); [DllImport("user32.dll")] public static extern bool ShowWindowAsync(IntPtr h, int n); [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y); [DllImport("user32.dll")] public static extern void mouse_event(uint f, uint x, uint y, uint d, int e);'
         $w32 = Add-Type -MemberDefinition $sig -Name W32b -Namespace Win2 -PassThru
         function DumpList { @(Get-ChildItem C:\dumps -EA SilentlyContinue | ForEach-Object { $_.Name }) }
         function Shot($tag) {
@@ -313,7 +347,15 @@ jobs:
             # The free-OneNote upsell ("Welcome to free Microsoft OneNote" / Continue for free) and the
             # first-run picker are modal and take the foreground, so keystrokes never reach OneNote's
             # search box. Dismiss every dialog button we can name, up to three rounds.
-            for ($r = 0; $r -lt 3; $r++) { $d = UiaDismiss; if ($d -eq 0) { break }; Start-Sleep -Seconds 2 }
+            $mg = 1
+            for ($r = 0; $r -lt 6; $r++) {
+              [void](UiaDismiss); [void](UiaClickDismiss)
+              $mg = UiaModal
+              "modal_gate round=$r still_modal=$mg" | Add-Content out\sweep_extra.txt
+              if ($mg -eq 0) { break }
+              Start-Sleep -Seconds 2
+            }
+            if ($mg -ne 0) { "INSTRUMENT_FAIL $($f.Name) modal_never_dismissed" | Add-Content out\sweep_extra.txt; throw "instrument fail: upsell modal still on top for $($f.Name)" }
             "upsell_dismissed $($f.Name)" | Add-Content out\sweep_extra.txt
             $h = 0
             foreach ($pr in @(Get-Process ONENOTE -EA SilentlyContinue)) { if ($pr.MainWindowHandle -ne 0) { $h = $pr.MainWindowHandle; break } }
