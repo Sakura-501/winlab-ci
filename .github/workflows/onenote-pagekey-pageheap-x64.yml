@@ -233,7 +233,7 @@ jobs:
         foreach ($d in @(Get-ChildItem out\bad -Filter *.dmp -EA SilentlyContinue)) {
           "== $($d.Name) ==" | Tee-Object -FilePath $out -Append
           if ($cdb) {
-            & $cdb -z $d.FullName -c ".ecxr; k 20; lmvm onmain; |; q" 2>&1 | Select-Object -Last 60 | Tee-Object -FilePath $out -Append
+            & $cdb -z $d.FullName -c ".symfix srv*C:\\symbols*https://msdl.microsoft.com/download/symbols; .reload /f onmain.dll; |; .ecxr; k 24; lmvm onmain; q" 2>&1 | Select-Object -Last 80 | Tee-Object -FilePath $out -Append
           } else { "no cdb" | Tee-Object -FilePath $out -Append }
         }
         if (-not @(Get-ChildItem out\bad -Filter *.dmp -EA SilentlyContinue).Count) { "no dumps to attribute" | Tee-Object -FilePath $out -Append }
