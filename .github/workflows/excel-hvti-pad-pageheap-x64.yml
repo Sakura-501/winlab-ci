@@ -58,10 +58,10 @@ jobs:
         Set-ItemProperty -Path $ld -Name DumpCount -Value 40 -Type DWord
         "pageheap GlobalFlag=$((Get-ItemProperty $k).GlobalFlag) verifier=$((Get-ItemProperty $k).EnableVerifier)" | Tee-Object -FilePath $log -Append
 
-        - name: Build carriers
+    - name: Build carriers
       shell: pwsh
       run: |
-        New-Item -ItemType Directory -Force -Path corpus | Out-Null
+        New-Item -ItemType Directory -Force -Path corpus, tools | Out-Null
         Copy-Item ppseed\mk_hvti_pad.py tools\mk_hvti_pad.py -Force
         "gen_lines=" + (@(Get-Content tools\mk_hvti_pad.py).Count)
         python tools\mk_hvti_pad.py corpus
@@ -98,13 +98,14 @@ jobs:
         function DumpList { @(Get-ChildItem C:\dumps -EA SilentlyContinue | ForEach-Object { $_.Name }) }
         $files = @(Get-ChildItem corpus | Where-Object { $_.Name -notlike 'ctrl_*' } | Sort-Object Name | Select-Object -First $cap)
         "cases=$($files.Count)" | Tee-Object -FilePath $log
+        # A sweep that opens nothing must never read as "no faults": the generator wrote to a
+        # different directory than the loop globbed once, and the job was green with cases=0.
         if ($files.Count -lt 25) { throw "corpus not materialized in corpus\ (cases=$($files.Count))" }
         $bad = @()
         $unopened = @()
         foreach ($f in $files) {
           $before = DumpList
           Set-Content -Path ($f.FullName + ':Zone.Identifier') -Value "[ZoneTransfer]`r`nZoneId=3" -Encoding ASCII
-          $streams = (@(Get-Item -LiteralPath $f.FullName -Stream * | ForEach-Object { $_.Stream })) -join ","
           $t0 = Get-Date
           $p = Start-Process -FilePath $exe -ArgumentList ('"' + $f.FullName + '"') -PassThru
           $alive = 1; $opened = 0; $ver = 0; $exit = ''; $title = ''; $shot = 0
@@ -119,7 +120,8 @@ jobs:
           }
           $after = DumpList
           $new = @($after | Where-Object { $before -notcontains $_ })
-          $line = '{0,-26} alive={1} opened={2} verifier={3} dumps={4} exit={5} s={6} streams={7} title={8}' -f $f.Name, $alive, $opened, $ver, $new.Count, $exit, [int]((Get-Date) - $t0).TotalSeconds, $streams, $title
+          $streams = (@(Get-Item -LiteralPath $f.FullName -Stream * -EA SilentlyContinue | ForEach-Object { $_.Stream })) -join ","
+          $line = '{0,-24} alive={1} opened={2} verifier={3} dumps={4} exit={5} s={6} streams={7} title={8}' -f $f.Name, $alive, $opened, $ver, $new.Count, $exit, [int]((Get-Date) - $t0).TotalSeconds, $streams, $title
           $line | Tee-Object -FilePath $log -Append
           if (-not $opened) { $unopened += $f.Name }
           if ($new.Count -or ($alive -eq 0 -and $opened -eq 0)) {
