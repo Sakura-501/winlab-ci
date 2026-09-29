@@ -135,58 +135,6 @@ jobs:
         ("bambino HKCU16={0} HKCU15={1}" -f (Get-ItemProperty 'HKCU:\Software\Microsoft\Office\16.0\ONENOTE\Options' -EA SilentlyContinue).EnableBambino,
           (Get-ItemProperty 'HKCU:\Software\Microsoft\Office\15.0\ONENOTE\Options' -EA SilentlyContinue).EnableBambino) | Tee-Object -FilePath out\control.txt
         Add-Type -AssemblyName System.Windows.Forms,System.Drawing
-        Add-Type -AssemblyName UIAutomationClient,UIAutomationTypes,WindowsBase
-        $AE = [System.Windows.Automation.AutomationElement]
-        $TRUEC = [System.Windows.Automation.Condition]::TrueCondition
-        $SC = [System.Windows.Automation.TreeScope]
-        $INVP = [System.Windows.Automation.InvokePattern]
-        $VALP = [System.Windows.Automation.ValuePattern]
-        function UiaWins {
-          $pids = @(Get-Process ONENOTE -EA SilentlyContinue | ForEach-Object { $_.Id })
-          $r = @()
-          try {
-            foreach ($w in $script:AE::RootElement.FindAll($script:SC::Children, $script:TRUEC)) {
-              try { if ($pids -contains $w.Current.ProcessId) { $r += $w } } catch { }
-            }
-          } catch { }
-          return ,$r
-        }
-        function UiaDesc($w) { try { return @($w.FindAll($script:SC::Descendants, $script:TRUEC)) } catch { return @() } }
-        function UiaDismiss {
-          $n = 0
-          foreach ($w in (UiaWins)) {
-            foreach ($e in (UiaDesc $w)) {
-              try {
-                if ($e.Current.IsInvokePatternAvailable -and $e.Current.Name -match 'Skip|Later|Set up|Keep|Start using|No thanks') {
-                  ($e.GetCurrentPattern($script:INVP::Pattern)).Invoke(); $n++; Start-Sleep -Seconds 2
-                }
-              } catch { }
-            }
-          }
-          return $n
-        }
-        function UiaSearch([string]$q) {
-          $n = 0
-          foreach ($w in (UiaWins)) {
-            foreach ($e in (UiaDesc $w)) {
-              try {
-                if ($e.Current.IsInvokePatternAvailable -and $e.Current.Name -match 'Search|Find|Look up') {
-                  ($e.GetCurrentPattern($script:INVP::Pattern)).Invoke(); $n++; Start-Sleep -Seconds 2; break
-                }
-              } catch { }
-            }
-            foreach ($e in (UiaDesc $w)) {
-              try {
-                if ($e.Current.IsValuePatternAvailable -and $e.Current.ControlType.ProgrammaticName -match 'Edit|ComboBox') {
-                  ($e.GetCurrentPattern($script:VALP::Pattern)).SetValue($q); $n++; Start-Sleep -Seconds 2
-                  try { if ($e.Current.IsInvokePatternAvailable) { ($e.GetCurrentPattern($script:INVP::Pattern)).Invoke() } } catch { }
-                  break
-                }
-              } catch { }
-            }
-          }
-          return $n
-        }
         $sig = '[DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h); [DllImport("user32.dll")] public static extern bool ShowWindowAsync(IntPtr h, int n);'
         $w32pre = Add-Type -MemberDefinition $sig -Name W32a -Namespace WinA -PassThru
         $p = Start-Process -FilePath $exe -ArgumentList "/nologo" -PassThru
@@ -239,6 +187,58 @@ jobs:
         $cap = [int]('${{ github.event.inputs.cap }}')
         if ($cap -le 0) { $cap = 31 }
         Add-Type -AssemblyName System.Windows.Forms,System.Drawing
+        Add-Type -AssemblyName UIAutomationClient,UIAutomationTypes,WindowsBase
+        $AE = [System.Windows.Automation.AutomationElement]
+        $TRUEC = [System.Windows.Automation.Condition]::TrueCondition
+        $SC = [System.Windows.Automation.TreeScope]
+        $INVP = [System.Windows.Automation.InvokePattern]
+        $VALP = [System.Windows.Automation.ValuePattern]
+        function UiaWins {
+          $pids = @(Get-Process ONENOTE -EA SilentlyContinue | ForEach-Object { $_.Id })
+          $r = @()
+          try {
+            foreach ($w in $script:AE::RootElement.FindAll($script:SC::Children, $script:TRUEC)) {
+              try { if ($pids -contains $w.Current.ProcessId) { $r += $w } } catch { }
+            }
+          } catch { }
+          return ,$r
+        }
+        function UiaDesc($w) { try { return @($w.FindAll($script:SC::Descendants, $script:TRUEC)) } catch { return @() } }
+        function UiaDismiss {
+          $n = 0
+          foreach ($w in (UiaWins)) {
+            foreach ($e in (UiaDesc $w)) {
+              try {
+                if ($e.Current.IsInvokePatternAvailable -and $e.Current.Name -match 'Skip|Later|Set up|Keep|Start using|No thanks') {
+                  ($e.GetCurrentPattern($script:INVP::Pattern)).Invoke(); $n++; Start-Sleep -Seconds 2
+                }
+              } catch { }
+            }
+          }
+          return $n
+        }
+        function UiaSearch([string]$q) {
+          $n = 0
+          foreach ($w in (UiaWins)) {
+            foreach ($e in (UiaDesc $w)) {
+              try {
+                if ($e.Current.IsInvokePatternAvailable -and $e.Current.Name -match 'Search|Find|Look up') {
+                  ($e.GetCurrentPattern($script:INVP::Pattern)).Invoke(); $n++; Start-Sleep -Seconds 2; break
+                }
+              } catch { }
+            }
+            foreach ($e in (UiaDesc $w)) {
+              try {
+                if ($e.Current.IsValuePatternAvailable -and $e.Current.ControlType.ProgrammaticName -match 'Edit|ComboBox') {
+                  ($e.GetCurrentPattern($script:VALP::Pattern)).SetValue($q); $n++; Start-Sleep -Seconds 2
+                  try { if ($e.Current.IsInvokePatternAvailable) { ($e.GetCurrentPattern($script:INVP::Pattern)).Invoke() } } catch { }
+                  break
+                }
+              } catch { }
+            }
+          }
+          return $n
+        }
         $sig = '[DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h); [DllImport("user32.dll")] public static extern bool ShowWindowAsync(IntPtr h, int n);'
         $w32 = Add-Type -MemberDefinition $sig -Name W32b -Namespace Win2 -PassThru
         function DumpList { @(Get-ChildItem C:\dumps -EA SilentlyContinue | ForEach-Object { $_.Name }) }
