@@ -387,7 +387,12 @@ jobs:
             }
             if ((DumpList).Count -gt $before.Count) { break }
           }
-          if ($opened -eq 1 -and $alive -eq 1) {
+          # OneNote 的窗口标题在文档已渲染时仍是应用名（截图实证），开没开不能按标题判；
+          # 只要进程活着且有主窗就走 UIA 路线，$opened 仅作信息位保留。
+          $hwndNow = 0
+          foreach ($pr in @(Get-Process ONENOTE -EA SilentlyContinue)) { if ($pr.MainWindowHandle -ne 0) { $hwndNow = $pr.MainWindowHandle; break } }
+          if ($hwndNow -ne 0) { $opened = 1 }
+          if ($alive -eq 1 -and $hwndNow -ne 0) {
             # The free-OneNote upsell ("Welcome to free Microsoft OneNote" / Continue for free) and the
             # first-run picker are modal and take the foreground, so keystrokes never reach OneNote's
             # search box. Dismiss every dialog button we can name, up to three rounds.
