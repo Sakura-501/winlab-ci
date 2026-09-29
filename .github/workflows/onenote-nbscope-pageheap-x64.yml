@@ -148,6 +148,14 @@ jobs:
         Start-Sleep -Seconds 4
         Get-Process ONENOTE -EA SilentlyContinue | Stop-Process -Force -EA SilentlyContinue
         Start-Sleep -Seconds 4
+        # OneNote 自己可能在首跑选择"这台电脑上的笔记本"后落过本地笔记本；先把盘面上的 .onetoc2/.one 全部列出来。
+        $dirs = @("$env:USERPROFILE\Documents", "$env:LOCALAPPDATA", "$env:APPDATA")
+        $found = @()
+        foreach ($dd in $dirs) {
+          try { $found += @(Get-ChildItem $dd -Recurse -Include *.onetoc2,*.one -File -EA SilentlyContinue) } catch { }
+        }
+        L ("disk_probe_found=" + $found.Count)
+        foreach ($q in ($found | Select-Object -First 60)) { L ("  NBFILE " + $q.FullName + " size=" + $q.Length + " mtime=" + (Get-Date -Format s -Date $q.LastWriteTime)) }
         # runner 实测：OneNote 从未被真正启动过时，COM 激活返回 Unexpected HRESULT；
         # 先把应用拉起一次（首跑窗由 UIA 清），关掉之后再建 COM 对象。
         $oneExe = "C:\Program Files\Microsoft Office\root\Office16\ONENOTE.EXE"
