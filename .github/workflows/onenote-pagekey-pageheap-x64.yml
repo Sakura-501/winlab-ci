@@ -94,9 +94,12 @@ jobs:
         "base_one=$($b.Length) bytes base_two=$($b2.Length) bytes"
         if ($b.Length -lt 10000 -or $b2.Length -lt 10000) { throw "base .one did not materialize" }
         $env:PK_ONE_PER_PID = "1"
+        [IO.File]::WriteAllBytes("base_four.one", [Convert]::FromBase64String((Get-Content data\onebase4.b64 -Raw)))
+        "base_four=" + (Get-Item base_four.one).Length + " bytes"
         python ppseed\mk_pagekey_carriers.py base_one.one corpus pk
         python ppseed\mk_pagekey_carriers.py base_two.one corpus2 qk
-        $n = @(Get-ChildItem corpus, corpus2 -Filter *.one -File).Count
+        python ppseed\mk_ty9_carriers.py base_four.one corpus3 t9
+        $n = @(Get-ChildItem corpus, corpus2, corpus3 -Filter *.one -File).Count
         Copy-Item base_one.one corpus\zz_baseline.one -Force
         Copy-Item base_two.one corpus2\zz_baseline.one -Force
         "carriers=$n (plus 2 baselines)"
@@ -150,10 +153,11 @@ jobs:
           } catch { "shot_failed $tag " + $_.Exception.Message | Add-Content out\sweep_extra.txt }
         }
         New-Item -ItemType Directory -Force -Path out\shots | Out-Null
-        $dirs = @('corpus', 'corpus2')
+        $dirs = @('corpus', 'corpus2', 'corpus3')
         $want = '${{ github.event.inputs.dirs }}'
         if ($want -eq 'corpus') { $dirs = @('corpus') }
         if ($want -eq 'corpus2') { $dirs = @('corpus2') }
+        if ($want -eq 'corpus3') { $dirs = @('corpus3') }
         $files = @(Get-ChildItem $dirs -Filter *.one | Sort-Object Name | Select-Object -First $cap)
         "cases=$($files.Count) dirs=$($dirs -join ',')" | Tee-Object -FilePath $log
         if ($files.Count -lt 12) { throw "corpus not materialized in $($dirs -join ' and ') (cases=$($files.Count))" }
