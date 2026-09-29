@@ -68,6 +68,35 @@ jobs:
         $f=@(Get-ChildItem tbl -Filter *.one -File); "carriers=$($f.Count) sizes=$(($f.Length) -join ',')"
         if ($f.Count -lt 2) { throw "carriers not materialized" }
 
+    - name: Run the wrapping-count carriers under cdb
+      shell: pwsh
+      run: |
+        New-Item -ItemType Directory -Force -Path out | Out-Null
+        $cdb = @(Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\Debuggers" -Recurse -Include cdb.exe -EA SilentlyContinue | Where-Object { $_.FullName -match '\x64\' } | Select-Object -First 1)
+        "cdb=$($cdb.FullName)" | Add-Content out\cdb_log.txt
+        $exe = "C:\Program Files\Microsoft Office\root\Office16\ONENOTE.EXE"
+        foreach ($n in @('c40','c80','c20')) {
+          $f = "tbl\$n.one"
+          if (-not (Test-Path $f)) { "skip missing $f" | Add-Content out\cdb_log.txt; continue }
+          Get-Process ONENOTE,cdb -EA SilentlyContinue | Stop-Process -Force -EA SilentlyContinue
+          Start-Sleep -Seconds 2
+          Set-Content -Path $f -Stream Zone.Identifier -Value "[ZoneTransfer]`r`nZoneId=3" -Encoding ASCII -EA SilentlyContinue
+          "===== $n start " + (Get-Date -Format s) | Add-Content out\cdb_log.txt
+          $cmds = 'sxe av; sxe -c 2 E06D7363; g; k 30; .ecxr; r; dq @rsp L12; lmvm onmain; q'
+          $p = Start-Process -FilePath $cdb.FullName -ArgumentList @('-G','-g','-norecord','-c', $cmds, $exe, ('"' + (Resolve-Path $f).Path + '"')) -PassThru -RedirectStandardOutput ("out\cdb_" + $n + ".txt") -RedirectStandardError ("out\cdb_" + $n + "_err.txt")
+          for ($i = 0; $i -lt 100; $i++) {
+            Start-Sleep -Seconds 2
+            if ($p.HasExited) { break }
+          }
+          if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force -EA SilentlyContinue }
+          Get-Process ONENOTE -EA SilentlyContinue | Stop-Process -Force -EA SilentlyContinue
+          $t = "out\cdb_" + $n + ".txt"
+          $sz = 0; if (Test-Path $t) { $sz = (Get-Item $t).Length }
+          $av = 0; if (Test-Path $t) { $av = @(Select-String -Path $t -Pattern 'Access violation|ModLoad.*onmain|EXCEPTION_CODE' -EA SilentlyContinue).Count }
+          "$n exited=$($p.HasExited) outbytes=$sz hits=$av" | Add-Content out\cdb_log.txt
+        }
+        "cdb_step_done" | Add-Content out\cdb_log.txt
+
     - name: Warm the first run then open each carrier
       shell: pwsh
       run: |
