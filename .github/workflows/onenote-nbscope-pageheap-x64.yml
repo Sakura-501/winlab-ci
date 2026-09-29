@@ -73,6 +73,64 @@ jobs:
         $secName = 'pocsec'
         $pageWord = 'pocword'
         L ("start " + (Get-Date -Format s))
+        $oneExe2 = "C:\Program Files\Microsoft Office\root\Office16\ONENOTE.EXE"
+        try { Start-Process $oneExe2 -EA SilentlyContinue | Out-Null } catch { L ("warm_FAIL " + $_.Exception.Message) }
+        for ($z = 0; $z -lt 30; $z++) { Start-Sleep -Seconds 2; if (@(Get-Process ONENOTE -EA SilentlyContinue).Count -gt 0) { break } }
+        Start-Sleep -Seconds 8
+        Add-Type -AssemblyName UIAutomationClient,UIAutomationTypes
+        $script:TRUEC = [System.Windows.Automation.Condition]::TrueCondition
+        $script:SC = [System.Windows.Automation.TreeScope]
+        $script:INVP = [System.Windows.Automation.InvokePattern]
+        $script:AE = [System.Windows.Automation.AutomationElement]
+        $sigw = '[DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h); [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y); [DllImport("user32.dll")] public static extern void mouse_event(uint f, uint x, uint y, uint d, int e);'
+        $script:w32 = Add-Type -MemberDefinition $sigw -Name W32n2 -Namespace WinN2 -PassThru
+        function UiaWins { $r=@(); try { $pids=@(@(Get-Process ONENOTE -EA SilentlyContinue).Id); foreach ($w in $script:AE::RootElement.FindAll($script:SC::Children, $script:TRUEC)) { try { if ($pids -contains $w.Current.ProcessId) { $r += $w } } catch { } } } catch { }; return ,$r }
+        function UiaDesc($w) { try { return @($w.FindAll($script:SC::Descendants, $script:TRUEC)) } catch { return @() } }
+        function UiaModal {
+          $m = 0
+          foreach ($w in (UiaAllWins)) { foreach ($e in (UiaDesc $w)) { try { if ($e.Current.Name -match 'Welcome to free|Continue for free|How do you want to start|Get more with a trial|View plan options') { $m = 1 } } catch { } } }
+          return $m
+        }
+        function UiaClickDismiss {
+          $n = 0
+          foreach ($w in (UiaAllWins)) {
+            foreach ($e in (UiaDesc $w)) {
+              try {
+                $nm = $e.Current.Name
+                if ($nm -match '^(Continue for free|Not now|No thanks|Maybe later|Skip|Later|Start using|I have a subscription or product key)$') {
+                  $done = $false
+                  try {
+                    if ($e.Current.IsLegacyIAccessiblePatternAvailable) { ($e.GetCurrentPattern([System.Windows.Automation.LegacyIAccessiblePattern]::Pattern)).DoDefaultAction(); $done = $true; $n++ }
+                  } catch { }
+                  if (-not $done) {
+                    try {
+                      $cp = $e.Current.ClickablePoint
+                      if ($cp.IsEmpty) { $r = $e.Current.BoundingRectangle; $cx = [int](($r.Left + $r.Right) / 2); $cy = [int](($r.Top + $r.Bottom) / 2) } else { $cx = [int]$cp.X; $cy = [int]$cp.Y }
+                      [void]$script:w32::SetForegroundWindow($w.Current.NativeWindowHandle)
+                      [void]$script:w32::SetCursorPos($cx, $cy); Start-Sleep -Milliseconds 250
+                      [void]$script:w32::mouse_event(0x0002, 0, 0, 0, 0); [void]$script:w32::mouse_event(0x0004, 0, 0, 0, 0)
+                      $done = $true; $n++
+                    } catch { }
+                  }
+                  "click_dismiss name=$nm done=$done" | Add-Content out\sweep_extra.txt
+                  Start-Sleep -Seconds 2
+                }
+              } catch { }
+            }
+          }
+          return $n
+        }
+        $mg = 1
+        for ($z2 = 0; $z2 -lt 8; $z2++) {
+          $mg = UiaModal
+          if ($mg -eq 0) { break }
+          [void](UiaClickDismiss)
+          L ("nbmodal_gate round=$z2 still_modal=$mg")
+          Start-Sleep -Seconds 2
+        }
+        L ("nbmodal_final=" + (UiaModal))
+        Get-Process ONENOTE -EA SilentlyContinue | Stop-Process -Force -EA SilentlyContinue
+        Start-Sleep -Seconds 4
         # runner 实测：OneNote 从未被真正启动过时，COM 激活返回 Unexpected HRESULT；
         # 先把应用拉起一次（首跑窗由 UIA 清），关掉之后再建 COM 对象。
         $oneExe = "C:\Program Files\Microsoft Office\root\Office16\ONENOTE.EXE"
