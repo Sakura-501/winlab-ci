@@ -158,6 +158,24 @@ jobs:
         L "kept_alive_for_com"
         Start-Sleep -Seconds 3
         try {
+                  # 把 "Unexpected HRESULT" 变成可诊断的码：显式 CoCreateInstance 并落 HResult；再试 PIA 类。
+                  try {
+                    $tCL = [Type]::GetTypeFromCLSID([Guid]'DC67E480-C3CB-49F8-8232-60B0C2056C8E')
+                    $oCL = [Activator]::CreateInstance($tCL)
+                    L ("clsid_create_ok type=" + $oCL.GetType().FullName)
+                  } catch { L ("clsid_create_HRESULT=0x" + ('{0:x8}' -f ($_.Exception.HResult -band 0xFFFFFFFF)) + " msg=" + $_.Exception.Message) }
+                  try {
+                    $pia = Get-ChildItem "C:\Program Files\Microsoft Office\root\Office16" -Filter "Microsoft.Office.Interop.OneNote.dll" -File -EA SilentlyContinue | Select-Object -First 1
+                    L ("pia_found=" + [bool]$pia + " path=" + $pia.FullName)
+                    if ($pia) {
+                      Add-Type -Path $pia.FullName -EA Stop
+                      $appP = New-Object -TypeName Microsoft.Office.Interop.OneNote.ApplicationClass
+                      L ("pia_created type=" + $appP.GetType().FullName)
+                      $mm = @($appP | Get-Member -MemberType Method | ForEach-Object { $_.Name })
+                      L ("pia_methods=" + ($mm -join ','))
+                      try { $appP.CreateNewPage("pocnb929\pocsec\pocword"); L "pia_CNP_ok" } catch { L ("pia_CNP_FAIL " + $_.Exception.Message) }
+                    }
+                  } catch { L ("pia_FAIL HRESULT=0x" + ('{0:x8}' -f ($_.Exception.HResult -band 0xFFFFFFFF)) + " msg=" + $_.Exception.Message) }
           $app = New-Object -ComObject OneNote.Application
           L ("com_created type=" + $app.GetType().FullName)
           $mn = @($app | Get-Member -MemberType Method | ForEach-Object { $_.Name })
