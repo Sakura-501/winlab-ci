@@ -451,6 +451,25 @@ jobs:
               try {
                 [void]$w32::SetForegroundWindow($h); Start-Sleep -Milliseconds 400
                 [System.Windows.Forms.SendKeys]::SendWait($prim); Start-Sleep -Seconds 2
+                foreach ($w9 in (UiaAllWins)) {
+                  foreach ($e9 in (UiaDesc $w9)) {
+                    try {
+                      if ($e9.Current.Name -eq 'Search' -and (-not $e9.Current.IsOffscreen)) {
+                        $did = $false
+                        try { if ($e9.Current.IsLegacyIAccessiblePatternAvailable) { ($e9.GetCurrentPattern([System.Windows.Automation.LegacyIAccessiblePattern]::Pattern)).DoDefaultAction(); $did = $true } } catch { }
+                        if (-not $did) {
+                          $cp = $e9.Current.ClickablePoint
+                          if ($cp.IsEmpty) { $r9 = $e9.Current.BoundingRectangle; $cx = [int](($r9.Left + $r9.Right)/2); $cy = [int](($r9.Top + $r9.Bottom)/2) } else { $cx = [int]$cp.X; $cy = [int]$cp.Y }
+                          [void]$w32::SetCursorPos($cx,$cy); Start-Sleep -Milliseconds 250
+                          [void]$w32::mouse_event(2,0,0,0,0); [void]$w32::mouse_event(4,0,0,0,0); $did = $true
+                        }
+                        "search_btn_click " + $f.Name + " done=" + $did | Add-Content out\sweep_extra.txt
+                        Start-Sleep -Seconds 3
+                        break
+                      }
+                    } catch { }
+                  }
+                }
                 "open_search_pane_first " + $f.Name | Add-Content out\sweep_extra.txt
               } catch { }
               $edits = @()
