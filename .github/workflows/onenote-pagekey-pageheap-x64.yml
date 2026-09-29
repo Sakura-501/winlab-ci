@@ -30,6 +30,10 @@ name: onenote-pagekey-pageheap-x64
         description: 'which carrier dirs to sweep (corpus | corpus2 | both)'
         required: false
         default: 'both'
+      mode:
+        description: 'both = Ctrl+E then Ctrl+F; findpage = only the in-page find accelerator'
+        required: false
+        default: 'both'
 jobs:
   t:
     runs-on: windows-latest
@@ -186,6 +190,10 @@ jobs:
         $query = '${{ github.event.inputs.query }}'
         $cap = [int]('${{ github.event.inputs.cap }}')
         if ($cap -le 0) { $cap = 31 }
+        $mode = '${{ github.event.inputs.mode }}'
+        $prim = '^e'
+        if ($mode -eq 'findpage') { $prim = '^f' }
+        "mode=$mode prim=$prim"
         Add-Type -AssemblyName System.Windows.Forms,System.Drawing
         Add-Type -AssemblyName UIAutomationClient,UIAutomationTypes,WindowsBase
         $AE = [System.Windows.Automation.AutomationElement]
@@ -316,13 +324,13 @@ jobs:
               # search-box accelerator differs by version (Ctrl+E in the desktop client, Ctrl+F in
               # others), so both are fired and each is followed by its own query+Enter.
               try {
-                [System.Windows.Forms.SendKeys]::SendWait("^e")
+                [System.Windows.Forms.SendKeys]::SendWait($prim)
                 Start-Sleep -Milliseconds 1500
                 [System.Windows.Forms.SendKeys]::SendWait($query)
                 Start-Sleep -Milliseconds 800
                 [System.Windows.Forms.SendKeys]::SendWait("{ENTER}")
                 Start-Sleep -Seconds 4
-                [System.Windows.Forms.SendKeys]::SendWait("^e")
+                [System.Windows.Forms.SendKeys]::SendWait($prim)
                 Start-Sleep -Milliseconds 800
                 [System.Windows.Forms.SendKeys]::SendWait("{ESC}")
                 [System.Windows.Forms.SendKeys]::SendWait("^f")
@@ -336,7 +344,7 @@ jobs:
               for ($r = 0; $r -lt 2; $r++) { if ((UiaDismiss) -eq 0) { break }; Start-Sleep -Seconds 2 }
               try {
                 [void]$w32::SetForegroundWindow($h); Start-Sleep -Milliseconds 500
-                [System.Windows.Forms.SendKeys]::SendWait("^e")
+                [System.Windows.Forms.SendKeys]::SendWait($prim)
                 Start-Sleep -Milliseconds 1500
                 [System.Windows.Forms.SendKeys]::SendWait($query)
                 Start-Sleep -Milliseconds 800
