@@ -1,0 +1,134 @@
+name: onenote-ui-premise-x64
+# Environment premise for the OneNote find-path arm: can ONENOTE.EXE on a runner be started,
+# observed and driven from a keyboard the way the Excel/Word sweeps are?
+# The VM cannot answer this today - `query user` shows the console session but LogonUI is running,
+# so keystroke-driven UI experiments there return no readings (that channel needs an unlocked
+# console). The runner's job runs in a real interactive session, which is the other channel the
+# project already uses for browser-window measurements.
+#
+# Steps: install x64 Office (OneNote included), start ONENOTE, read its window title, take a
+# screenshot, send Ctrl+F / a query string / Enter through SendKeys, then re-read the window list
+# and take a second screenshot. Nothing is asserted about any document here.
+'on':
+  workflow_dispatch:
+    inputs:
+      hold:
+        description: 'seconds to observe after the find keystrokes'
+        required: false
+        default: '40'
+jobs:
+  t:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Session self-test
+      shell: pwsh
+      run: |
+        New-Item -ItemType Directory -Force -Path out | Out-Null
+        $l = "out\premise_log.txt"
+        ("session={0} who={1} admin={2} os={3}" -f (Get-Process -Id $PID).SessionId, [System.Security.Principal.WindowsIdentity]::GetCurrent().Name,
+          ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator),
+          (Get-CimInstance Win32_OperatingSystem).Caption) | Tee-Object -FilePath $l
+
+    - name: Download ODT
+      shell: pwsh
+      run: |
+        $page = (Invoke-WebRequest -Uri "https://www.microsoft.com/en-us/download/details.aspx?id=49117" -UseBasicParsing).Content
+        if ($page -match 'href="(https://download\.microsoft\.com/download/[^"]+officedeploymenttool[^"]*\.exe)"') {
+          Invoke-WebRequest -Uri $Matches[1] -OutFile odt.exe
+        } else { throw "odt link not found" }
+        Start-Process -Wait -FilePath .\odt.exe -ArgumentList "/extract:odtx /quiet"
+
+    - name: Install x64 Office (OneNote needed)
+      shell: pwsh
+      run: |
+        $xml = '<Configuration><Add OfficeClientEdition="64" Channel="CurrentChannel"><Product ID="O365ProPlusRetail"><Language ID="en-us" /><ExcludeApp ID="OneDrive" /><ExcludeApp ID="Lync" /><ExcludeApp ID="Bing" /></Product></Add><Display Level="None" AcceptEULA="TRUE" /><Updates Enabled="FALSE" /></Configuration>'
+        Set-Content -Path cfg.xml -Value $xml
+        Start-Process -Wait -FilePath .\odtx\setup.exe -ArgumentList "/configure","cfg.xml"
+        $o = Get-Item "C:\Program Files\Microsoft Office\root\Office16\ONENOTE.EXE" -EA SilentlyContinue
+        if (-not $o) { throw "onenote install failed" }
+        $om = Get-Item "C:\Program Files\Microsoft Office\root\Office16\onmain.dll" -EA SilentlyContinue
+        "onenote: v=$($o.VersionInfo.FileVersion) size=$($o.Length)" | Tee-Object -FilePath out\premise_log.txt -Append
+        "onmain: v=$($om.VersionInfo.FileVersion) size=$($om.Length)" | Tee-Object -FilePath out\premise_log.txt -Append
+        $om.VersionInfo.FileVersion | Out-File ver.txt
+
+    - name: Start OneNote and drive the Find UI
+      shell: pwsh
+      run: |
+        $log = "out\ui_log.txt"
+        Add-Type -AssemblyName System.Windows.Forms,System.Drawing
+        function Shot($tag) {
+          try {
+            $b = [System.Windows.Forms.SystemInformation]::VirtualScreen
+            $bmp = New-Object System.Drawing.Bitmap $b.Width, $b.Height
+            $g = [System.Drawing.Graphics]::FromImage($bmp)
+            $g.CopyFromScreen($b.X, $b.Y, 0, 0, $bmp.Size)
+            $bmp.Save(("out\shots\" + $tag + ".png"))
+            $g.Dispose(); $bmp.Dispose()
+          } catch { "shot_failed $tag " + $_.Exception.Message | Tee-Object -FilePath $log -Append }
+        }
+        function WinList($tag) {
+          $ps = @(Get-Process ONENOTE -EA SilentlyContinue)
+          ("{0} procs={1} titles={2}" -f $tag, $ps.Count, (($ps | ForEach-Object { $_.MainWindowTitle }) -join " // ")) | Tee-Object -FilePath $log -Append
+          $all = @(Get-Process -EA SilentlyContinue | Where-Object { $_.MainWindowTitle })
+          ("{0} top_windows={1}" -f $tag, $all.Count) | Tee-Object -FilePath $log -Append
+        }
+        New-Item -ItemType Directory -Force -Path out, out\shots | Out-Null
+        $exe = "C:\Program Files\Microsoft Office\root\Office16\ONENOTE.EXE"
+        $p = Start-Process -FilePath $exe -ArgumentList "/nologo" -PassThru
+        $seen = 0
+        for ($i = 0; $i -lt 60; $i++) {
+          Start-Sleep -Seconds 2
+          $t = @(Get-Process ONENOTE -EA SilentlyContinue | ForEach-Object { $_.MainWindowTitle } | Where-Object { $_ })
+          if ($t.Count) { $seen = 1; break }
+          if ($p.HasExited) { break }
+        }
+        ("STARTED exited={0} title_seen={1} exit={2}" -f $p.HasExited, $seen, $(if ($p.HasExited) { '0x' + ('{0:X8}' -f $p.ExitCode) } else { '' })) | Tee-Object -FilePath $log -Append
+        WinList "after_start"
+        Shot "01_started"
+        if ($seen -ne 1) { "PREMISE window never appeared: OneNote did not present a main window within 120 s" | Tee-Object -FilePath $log -Append }
+        # keystrokes go to whatever OneNote window has focus; bring it forward first
+        try {
+          $sig = "[DllImport(\"user32.dll\")] public static extern bool SetForegroundWindow(IntPtr h); [DllImport(\"user32.dll\")] public static extern bool ShowWindowAsync(IntPtr h, int n); [DllImport(\"user32.dll\")] public static extern IntPtr GetForegroundWindow();"
+          $w = Add-Type -MemberDefinition $sig -Name W32 -Namespace Win -PassThru
+          $h = 0
+          foreach ($pr in @(Get-Process ONENOTE -EA SilentlyContinue)) { if ($pr.MainWindowHandle -ne 0) { $h = $pr.MainWindowHandle; break } }
+          ("hwnd=0x{0:X}" -f $h) | Tee-Object -FilePath $log -Append
+          if ($h) {
+            [void]$w::ShowWindowAsync($h, 9)
+            Start-Sleep -Milliseconds 500
+            [void]$w::SetForegroundWindow($h)
+            Start-Sleep -Milliseconds 500
+            [System.Windows.Forms.SendKeys]::SendWait("^f")
+            Start-Sleep -Milliseconds 1200
+            [System.Windows.Forms.SendKeys]::SendWait("findpremise{ENTER}")
+            $hold = [int]('${{ github.event.inputs.hold }}')
+            for ($i = 0; $i -lt $hold; $i++) { Start-Sleep -Seconds 1 }
+            WinList "after_find"
+            Shot "02_after_find"
+          }
+        } catch { "SENDKEYS_FAIL " + $_.Exception.Message | Tee-Object -FilePath $log -Append }
+        ("onenote_still_running={0}" -f (@(Get-Process ONENOTE -EA SilentlyContinue).Count -gt 0)) | Tee-Object -FilePath $log -Append
+        ("dumps_dir_files={0}" -f @(Get-ChildItem C:\dumps -EA SilentlyContinue).Count) | Tee-Object -FilePath $log -Append
+        Get-Process ONENOTE -EA SilentlyContinue | Stop-Process -Force -EA SilentlyContinue
+
+    - name: Report
+      if: always()
+      shell: pwsh
+      run: |
+        foreach ($f in @('out\premise_log.txt','out\ui_log.txt')) {
+          "##### $f"
+          if (Test-Path $f) { Get-Content $f } else { "missing" }
+        }
+        "shots=" + ((@(Get-ChildItem out\shots -EA SilentlyContinue | ForEach-Object { $_.Name + ":" + $_.Length })) -join " ")
+
+    - name: Upload evidence
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: onenote-ui-premise
+        path: |
+          out
+          ver.txt
