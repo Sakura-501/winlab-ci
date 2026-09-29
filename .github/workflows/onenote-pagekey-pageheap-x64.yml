@@ -342,6 +342,35 @@ jobs:
                 $sent = 1
               } catch { "sendkeys_fail $($f.Name) " + $_.Exception.Message | Add-Content out\sweep_extra.txt }
               for ($r = 0; $r -lt 2; $r++) { if ((UiaDismiss) -eq 0) { break }; Start-Sleep -Seconds 2 }
+              # 模态窗在按键时仍在最前（05:43 截图实证），所以这里改成用 UIA 直接操作查找控件本身：
+              # 先枚举可用 Edit，SetFocus + SetValue + ENTER；一个都取不到就 INSTRUMENT_FAIL 退出，
+              # 绝不再产出"零故障"这种无法自证的读数。
+              $edits = @()
+              foreach ($w3 in (UiaWins)) {
+                foreach ($e3 in (UiaDesc $w3)) {
+                  try { if ($e3.Current.ControlType.ProgrammaticName -match 'Edit|ComboBox' -and $e3.Current.IsValuePatternAvailable) { $edits += $e3 } } catch { }
+                }
+              }
+              "edit_ctl " + $f.Name + " n=" + $edits.Count + " names=" + ((@($edits | ForEach-Object { $_.Current.Name + '/' + $_.Current.AutomationId })) -join ';') | Add-Content out\sweep_extra.txt
+              if ($edits.Count -eq 0) {
+                $modal = 0
+                foreach ($w4 in (UiaWins)) { foreach ($e4 in (UiaDesc $w4)) { try { if ($e4.Current.Name -match 'Welcome to free|Continue for free|How do you want to start') { $modal = 1 } } catch { } } }
+                "INSTRUMENT_FAIL " + $f.Name + " no_edit_control modal=" + $modal | Add-Content out\sweep_extra.txt
+                throw ("instrument fail: no addressable find control for " + $f.Name)
+              }
+              $tgt = $edits[-1]
+              try {
+                $tgt.SetFocus(); Start-Sleep -Milliseconds 500
+                ($tgt.GetCurrentPattern($script:VALP::Pattern)).SetValue($query)
+                Start-Sleep -Milliseconds 700
+                [System.Windows.Forms.SendKeys]::SendWait("{ENTER}")
+                $sent = 1
+                "uia_find_ok " + $f.Name | Add-Content out\sweep_extra.txt
+              } catch { "uia_find_FAIL " + $f.Name + " " + $_.Exception.Message | Add-Content out\sweep_extra.txt }
+              Start-Sleep -Seconds 6
+              UiaNames ("post_uia_find " + $f.Name)
+              $dd = @(Get-ChildItem C:\dumps -EA SilentlyContinue)
+              "post_uia_dumps " + $f.Name + " n=" + $dd.Count | Add-Content out\sweep_extra.txt
               try {
                 [void]$w32::SetForegroundWindow($h); Start-Sleep -Milliseconds 500
                 [System.Windows.Forms.SendKeys]::SendWait($prim)
