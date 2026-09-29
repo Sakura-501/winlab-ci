@@ -1,0 +1,163 @@
+name: onenote-com-find-x64
+# OneNote find-path arm against the onmain!CFindPageHitList::IsPageHit stack copy.
+#
+# Static side (findings/MSRC/M365-Insider/onenote-find-pagehit-stackoverflow-20260926/STATE.md SS16):
+# in the in-service build 16.0.20430.20092 the function initialises a 20-byte stack slot
+# (sp+0x10: 16-byte Jot::c_gosidNull + a 4-byte dword) and then calls
+#   Memory::Copy(atom+8, sp+0x10, [atom+4] & 0x3fffffff)
+# with no comparison against 0x14 anywhere; the only precondition is bit26 of the property's
+# type dword, which is the low bit of the file-side 5-bit value type tag (odd tags, VT_BINARY=7
+# among them). Every ty==7 property value in a real .one carries its own u32 length, so a
+# size-invariant edit of that dword is the carrier - 30 variants over 10 sites, generated on the
+# runner from the base file with ppseed/mk_pagekey_carriers.py.
+#
+# The VM cannot run this arm: `query user` shows the console session Active but LogonUI is
+# running, and the find step needs keystrokes. The runner job does sit in an interactive session
+# (session self-test prints it), which is the channel the project already uses for windowed
+# browser measurements.
+'on':
+  workflow_dispatch:
+    inputs:
+      cap:
+        description: 'max carriers'
+        required: false
+        default: '31'
+      query:
+        description: 'find query string'
+        required: false
+        default: 'a'
+      dirs:
+        description: 'which carrier dirs to sweep (corpus | corpus2 | both)'
+        required: false
+        default: 'both'
+jobs:
+  t:
+    runs-on: windows-latest
+    timeout-minutes: 200
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Download ODT
+      shell: pwsh
+      run: |
+        $page = (Invoke-WebRequest -Uri "https://www.microsoft.com/en-us/download/details.aspx?id=49117" -UseBasicParsing).Content
+        if ($page -match 'href="(https://download\.microsoft\.com/download/[^"]+officedeploymenttool[^"]*\.exe)"') {
+          Invoke-WebRequest -Uri $Matches[1] -OutFile odt.exe
+        } else { throw "odt link not found" }
+        Start-Process -Wait -FilePath .\odt.exe -ArgumentList "/extract:odtx /quiet"
+
+    - name: Install x64 Office (OneNote needed)
+      shell: pwsh
+      run: |
+        $xml = '<Configuration><Add OfficeClientEdition="64" Channel="CurrentChannel"><Product ID="O365ProPlusRetail"><Language ID="en-us" /><ExcludeApp ID="OneDrive" /><ExcludeApp ID="Lync" /><ExcludeApp ID="Bing" /></Product></Add><Display Level="None" AcceptEULA="TRUE" /><Updates Enabled="FALSE" /></Configuration>'
+        Set-Content -Path cfg.xml -Value $xml
+        Start-Process -Wait -FilePath .\odtx\setup.exe -ArgumentList "/configure","cfg.xml"
+        $o = Get-Item "C:\Program Files\Microsoft Office\root\Office16\ONENOTE.EXE" -EA SilentlyContinue
+        if (-not $o) { throw "onenote install failed" }
+        $om = Get-Item "C:\Program Files\Microsoft Office\root\Office16\onmain.dll" -EA SilentlyContinue
+        "onenote v=$($o.VersionInfo.FileVersion) size=$($o.Length); onmain v=$($om.VersionInfo.FileVersion) size=$($om.Length)"
+        $om.VersionInfo.FileVersion | Out-File ver.txt
+
+    - name: Page heap for ONENOTE plus WER full dumps
+      shell: pwsh
+      run: |
+        $log = "out\setup_log.txt"
+        New-Item -ItemType Directory -Force -Path out, C:\dumps | Out-Null
+        $gfs = @(Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\Debuggers" -Recurse -Include gflags.exe -EA SilentlyContinue)
+        $gf = @($gfs | Where-Object { $_.FullName -match '\\x64\\' } | Select-Object -First 1)
+        if (-not $gf) { $gf = @($gfs | Select-Object -First 1) }
+        if ($gf) {
+          try { & $gf.FullName /p /enable ONENOTE.EXE /full | Out-Null; "gflags_path=$($gf.FullName)" | Add-Content $log }
+          catch { "gflags_unusable=$($gf.FullName) -> registry page heap only" | Add-Content $log }
+        }
+        $k = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\ONENOTE.EXE"
+        New-Item -Path $k -Force | Out-Null
+        Set-ItemProperty -Path $k -Name GlobalFlag -Value 0x02000000 -Type DWord
+        Set-ItemProperty -Path $k -Name EnableVerifier -Value 1 -Type DWord
+        Set-ItemProperty -Path $k -Name VerifierFlags -Value 0 -Type DWord
+        Set-ItemProperty -Path $k -Name PageHeapFlags -Value 0x3 -Type DWord
+        $ld = "HKLM:\SOFTWARE\Microsoft\Windows Error Reporting\LocalDumps"
+        New-Item -Path $ld -Force | Out-Null
+        Set-ItemProperty -Path $ld -Name DumpFolder -Value "C:\dumps" -Type ExpandString
+        Set-ItemProperty -Path $ld -Name DumpType -Value 2 -Type DWord
+        Set-ItemProperty -Path $ld -Name DumpCount -Value 40 -Type DWord
+        "pageheap GlobalFlag=$((Get-ItemProperty $k).GlobalFlag) verifier=$((Get-ItemProperty $k).EnableVerifier)" | Tee-Object -FilePath $log -Append
+
+    - name: Build carriers
+      shell: pwsh
+      run: |
+        New-Item -ItemType Directory -Force -Path corpus | Out-Null
+        [IO.File]::WriteAllBytes("base_one.one", [Convert]::FromBase64String((Get-Content data\onebase.b64 -Raw)))
+        [IO.File]::WriteAllBytes("base_two.one", [Convert]::FromBase64String((Get-Content data\onebase2.b64 -Raw)))
+        $b = Get-Item base_one.one
+        $b2 = Get-Item base_two.one
+        "base_one=$($b.Length) bytes base_two=$($b2.Length) bytes"
+        if ($b.Length -lt 10000 -or $b2.Length -lt 10000) { throw "base .one did not materialize" }
+        $env:PK_ONE_PER_PID = "1"
+        [IO.File]::WriteAllBytes("base_four.one", [Convert]::FromBase64String((Get-Content data\onebase4.b64 -Raw)))
+        "base_four=" + (Get-Item base_four.one).Length + " bytes"
+        python ppseed\mk_pagekey_carriers.py base_one.one corpus pk
+        python ppseed\mk_pagekey_carriers.py base_two.one corpus2 qk
+        python ppseed\mk_ty9_carriers.py base_four.one corpus3 t9
+        [IO.File]::WriteAllBytes("base_five.one", [Convert]::FromBase64String((Get-Content data\onebase5.b64 -Raw)))
+        [IO.File]::WriteAllBytes("base_six.one", [Convert]::FromBase64String((Get-Content data\onebase6.b64 -Raw)))
+        "base_five=" + (Get-Item base_five.one).Length + " base_six=" + (Get-Item base_six.one).Length
+        python ppseed\mk_pagekey_carriers.py base_five.one corpus4 rk
+        python ppseed\mk_pagekey_carriers.py base_six.one corpus5 sk
+        $n = @(Get-ChildItem corpus, corpus2, corpus3, corpus4, corpus5 -Filter *.one -File).Count
+        # every dir needs its own unmutated twin, otherwise "no dump" cannot be separated from
+        # "OneNote never opened any file of this shape"
+        Copy-Item base_one.one corpus\zz_baseline.one -Force
+        Copy-Item base_two.one corpus2\zz_baseline.one -Force
+        Copy-Item base_four.one corpus3\zz_baseline.one -Force
+        Copy-Item base_five.one corpus4\zz_baseline.one -Force
+        Copy-Item base_six.one corpus5\zz_baseline.one -Force
+        foreach ($dd in @('corpus','corpus2','corpus3','corpus4','corpus5')) {
+          $bl = @(Get-ChildItem $dd -Filter zz_baseline.one -EA SilentlyContinue).Count
+          "$dd files=$(@(Get-ChildItem $dd -Filter *.one -File).Count) baseline=$bl"
+        }
+        "carriers=$n (plus 2 baselines)"
+        if ($n -lt 24) { throw "carrier generation failed ($n)" }
+        (Get-ChildItem corpus\manifest.txt, corpus2\manifest.txt -EA SilentlyContinue | ForEach-Object { Get-Content $_ }) -join "`n"
+
+    - name: Stage driver and carriers dir
+      shell: pwsh
+      run: |
+        New-Item -ItemType Directory -Force -Path C:\onenote_com\c, C:\onenote_com\out | Out-Null
+        Get-ChildItem corpus, corpus2 -Filter *.one -File | ForEach-Object { Copy-Item $_.FullName ('C:\onenote_com\c\' + $_.Name) -Force }
+        "staged=$((@(Get-ChildItem 'C:\onenote_com\c' -Filter *.one).Count))" | Tee-Object -FilePath C:\onenote_com\out\stage.txt
+
+    - name: Run COM-driven Find sweep
+      timeout-minutes: 55
+      shell: pwsh
+      run: |
+        $b64 = 'JABFAHIAcgBvAHIAQQBjAHQAaQBvAG4AUAByAGUAZgBlAHIAZQBuAGMAZQA9ACcAQwBvAG4AdABpAG4AdQBlACcACgBbAEMAbwBuAHMAbwBsAGUAXQA6ADoATwB1AHQAcAB1AHQARQBuAGMAbwBkAGkAbgBnAD0AWwBTAHkAcwB0AGUAbQAuAFcAaQBuAGQAbwB3AHMALgBFAG4AYwBvAGQAaQBuAGcAXQA6ADoAVQBUAEYAOAAKACQAbwBuAGUAIAA9ACAAJwBDADoAXABQAHIAbwBnAHIAYQBtACAARgBpAGwAZQBzAFwATQBpAGMAcgBvAHMAbwBmAHQAIABPAGYAZgBpAGMAZQBcAHIAbwBvAHQAXABPAGYAZgBpAGMAZQAxADYAXABPAE4ARQBOAE8AVABFAC4ARQBYAEUAJwAKACQAbwB1AHQAIAA9ACAAJwBDADoAXABvAG4AZQBuAG8AdABlAF8AYwBvAG0AXABvAHUAdAAnAAoATgBlAHcALQBJAHQAZQBtACAALQBJAHQAZQBtAFQAeQBwAGUAIABEAGkAcgBlAGMAdABvAHIAeQAgAC0ARgBvAHIAYwBlACAALQBQAGEAdABoACAAJABvAHUAdAAgAHwAIABPAHUAdAAtAE4AdQBsAGwACgAkAG0AIAA9ACAASgBvAGkAbgAtAFAAYQB0AGgAIAAkAG8AdQB0ACAAJwBtAGEAcwB0AGUAcgAuAHQAeAB0ACcACgBmAHUAbgBjAHQAaQBvAG4AIABMACgAJABzACkAIAB7ACAAIgAkACgARwBlAHQALQBEAGEAdABlACAALQBGAG8AcgBtAGEAdAAgAEgASAA6AG0AbQA6AHMAcwApACAAJABzACIAIAB8ACAAQQBkAGQALQBDAG8AbgB0AGUAbgB0ACAAJABtACAAfQAKACIAUwBUAEEAUgBUACAAcwBlAHMAcwBpAG8AbgA9ACQAKAAoAEcAZQB0AC0AUAByAG8AYwBlAHMAcwAgAC0ASQBkACAAJABQAEkARAApAC4AUwBlAHMAcwBpAG8AbgBJAGQAKQAgAG8AbgBlAD0AJAAoACgARwBlAHQALQBJAHQAZQBtACAAJABvAG4AZQApAC4AVgBlAHIAcwBpAG8AbgBJAG4AZgBvAC4ARgBpAGwAZQBWAGUAcgBzAGkAbwBuACkAIgAgAHwAIABTAGUAdAAtAEMAbwBuAHQAZQBuAHQAIAAkAG0ACgAkAGMAYQByACAAPQAgAEAAKABHAGUAdAAtAEMAaABpAGwAZABJAHQAZQBtACAAJwBDADoAXABvAG4AZQBuAG8AdABlAF8AYwBvAG0AXABjACcAIAAtAEYAaQBsAHQAZQByACAAKgAuAG8AbgBlACAAfAAgAFMAbwByAHQALQBPAGIAagBlAGMAdAAgAE4AYQBtAGUAKQAKACIAYwBhAHIAcgBpAGUAcgBzAD0AJAAoACQAYwBhAHIALgBDAG8AdQBuAHQAKQAiACAAfAAgAEEAZABkAC0AQwBvAG4AdABlAG4AdAAgACQAbQAKAGYAdQBuAGMAdABpAG8AbgAgAEQAdQBtAHAATABpAHMAdAAgAHsAIABAACgARwBlAHQALQBDAGgAaQBsAGQASQB0AGUAbQAgAEMAOgBcAGQAdQBtAHAAcwAgAC0ARQBBACAAUwBpAGwAZQBuAHQAbAB5AEMAbwBuAHQAaQBuAHUAZQAgAHwAIABGAG8AcgBFAGEAYwBoAC0ATwBiAGoAZQBjAHQAIAB7ACAAJABfAC4ATgBhAG0AZQAgAH0AKQAgAH0ACgAkAGEAcABwACAAPQAgACQAbgB1AGwAbAAKAHQAcgB5ACAAewAgACQAYQBwAHAAIAA9ACAATgBlAHcALQBPAGIAagBlAGMAdAAgAC0AQwBvAG0ATwBiAGoAZQBjAHQAIABPAG4AZQBOAG8AdABlAC4AQQBwAHAAbABpAGMAYQB0AGkAbwBuADsAIABMACAAJwBjAG8AbQBfAGMAcgBlAGEAdABlAGQAJwAgAH0AIABjAGEAdABjAGgAIAB7ACAATAAgACIAYwBvAG0AXwBjAHIAZQBhAHQAZQBfAEYAQQBJAEwAIAAkACgAJABfAC4ARQB4AGMAZQBwAHQAaQBvAG4ALgBNAGUAcwBzAGEAZwBlACkAIgAgAH0ACgBpAGYAIAAoACQAYQBwAHAAKQAgAHsACgAgACAATAAgACIAbQBlAG0AYgBlAHIAcwA9ACQAKAAoACQAYQBwAHAAIAB8ACAARwBlAHQALQBNAGUAbQBiAGUAcgAgAC0ARQBBACAAUwBpAGwAZQBuAHQAbAB5AEMAbwBuAHQAaQBuAHUAZQAgAHwAIABGAG8AcgBFAGEAYwBoAC0ATwBiAGoAZQBjAHQAIAB7ACAAJABfAC4ATgBhAG0AZQAgAH0AIAB8ACAAUwBvAHIAdAAtAE8AYgBqAGUAYwB0ACkAIAAtAGoAbwBpAG4AIAAnACwAJwApACIACgAgACAAdAByAHkAIAB7ACAAJABhAHAAcAAuAEkAbgBpAHQAKAAnAG0AcwByAGMAJwApACAAOwAgAEwAIAAnAEkAbgBpAHQAXwBvAGsAJwAgAH0AIABjAGEAdABjAGgAIAB7ACAATAAgACIASQBuAGkAdABfAEYAQQBJAEwAIAAkACgAJABfAC4ARQB4AGMAZQBwAHQAaQBvAG4ALgBNAGUAcwBzAGEAZwBlACkAIgAgAH0ACgAgACAAdAByAHkAIAB7ACAAJAB4AD0AJwAnADsAIAAkAGEAcABwAC4ARwBlAHQAUwBhAHYAZQBkAE4AbwB0AGUAYgBvAG8AawBzACgAWwByAGUAZgBdACQAeAApACAAfAAgAE8AdQB0AC0ATgB1AGwAbAA7ACAATAAgACIARwBlAHQAUwBhAHYAZQBkAE4AbwB0AGUAYgBvAG8AawBzACAAbABlAG4APQAkACgAJAB4AC4ATABlAG4AZwB0AGgAKQAiACAAfQAgAGMAYQB0AGMAaAAgAHsAIABMACAAIgBHAGUAdABTAGEAdgBlAGQATgBvAHQAZQBiAG8AbwBrAHMAXwBGAEEASQBMACAAJAAoACQAXwAuAEUAeABjAGUAcAB0AGkAbwBuAC4ATQBlAHMAcwBhAGcAZQApACIAIAB9AAoAIAAgAHQAcgB5ACAAewAgACQAeAA9ACcAJwA7ACAAJABhAHAAcAAuAEcAZQB0AEgAaQBlAHIAYQByAGMAaAB5ACgAJwAnACwAMgAsAFsAcgBlAGYAXQAkAHgAKQAgAHwAIABPAHUAdAAtAE4AdQBsAGwAOwAgAEwAIAAiAEcAZQB0AEgAaQBlAHIAYQByAGMAaAB5ACAAbABlAG4APQAkACgAJAB4AC4ATABlAG4AZwB0AGgAKQAiACAAfQAgAGMAYQB0AGMAaAAgAHsAIABMACAAIgBHAGUAdABIAGkAZQByAGEAcgBjAGgAeQBfAEYAQQBJAEwAIAAkACgAJABfAC4ARQB4AGMAZQBwAHQAaQBvAG4ALgBNAGUAcwBzAGEAZwBlACkAIgAgAH0ACgB9AAoAZgBvAHIAZQBhAGMAaAAgACgAJABmACAAaQBuACAAJABjAGEAcgApACAAewAKACAAIAAkAGIAZQBmAG8AcgBlACAAPQAgAEQAdQBtAHAATABpAHMAdAAKACAAIAB0AHIAeQAgAHsAIABTAGUAdAAtAEMAbwBuAHQAZQBuAHQAIAAtAFAAYQB0AGgAIAAkAGYALgBGAHUAbABsAE4AYQBtAGUAIAAtAFMAdAByAGUAYQBtACAAJwBaAG8AbgBlAC4ASQBkAGUAbgB0AGkAZgBpAGUAcgAnACAALQBWAGEAbAB1AGUAIAAiAFsAWgBvAG4AZQBUAHIAYQBuAHMAZgBlAHIAXQBgAHIAYABuAFoAbwBuAGUASQBkAD0AMwAiACAALQBFAG4AYwBvAGQAaQBuAGcAIABBAFMAQwBJAEkAIAAtAEUAQQAgAFMAdABvAHAAIAB9ACAAYwBhAHQAYwBoACAAewAgAEwAIAAiAG0AbwB0AHcAXwBmAGEAaQBsACAAJAAoACQAZgAuAE4AYQBtAGUAKQAiACAAfQAKACAAIAAkAHAAIAA9ACAAUwB0AGEAcgB0AC0AUAByAG8AYwBlAHMAcwAgACQAbwBuAGUAIAAtAEEAcgBnAHUAbQBlAG4AdABMAGkAcwB0ACAAKAAnACIAJwAgACsAIAAkAGYALgBGAHUAbABsAE4AYQBtAGUAIAArACAAJwAiACcAKQAgAC0AUABhAHMAcwBUAGgAcgB1AAoAIAAgACQAbwBwAGUAbgBlAGQAIAA9ACAAMAAKACAAIABmAG8AcgAgACgAJABpAD0AMAA7ACAAJABpACAALQBsAHQAIAAzADAAOwAgACQAaQArACsAKQAgAHsACgAgACAAIAAgAFMAdABhAHIAdAAtAFMAbABlAGUAcAAgAC0AUwBlAGMAbwBuAGQAcwAgADIACgAgACAAIAAgACQAdAB0ACAAPQAgAEAAKABHAGUAdAAtAFAAcgBvAGMAZQBzAHMAIABPAE4ARQBOAE8AVABFACAALQBFAEEAIABTAGkAbABlAG4AdABsAHkAQwBvAG4AdABpAG4AdQBlACAAfAAgAEYAbwByAEUAYQBjAGgALQBPAGIAagBlAGMAdAAgAHsAIAAkAF8ALgBNAGEAaQBuAFcAaQBuAGQAbwB3AFQAaQB0AGwAZQAgAH0AIAB8ACAAVwBoAGUAcgBlAC0ATwBiAGoAZQBjAHQAIAB7ACAAJABfACAAfQApAAoAIAAgACAAIABpAGYAIAAoAEAAKAAkAHQAdAAgAHwAIABXAGgAZQByAGUALQBPAGIAagBlAGMAdAAgAHsAIAAkAF8AIAAtAGwAaQBrAGUAIAAnACoATwBuAGUATgBvAHQAZQAnACAALQBhAG4AZAAgACQAXwAgAC0AbgBlACAAJwBNAGkAYwByAG8AcwBvAGYAdAAgAE8AbgBlAE4AbwB0AGUAJwAgAH0AKQAuAEMAbwB1AG4AdAApACAAewAgACQAbwBwAGUAbgBlAGQAIAA9ACAAMQA7ACAAYgByAGUAYQBrACAAfQAKACAAIAAgACAAaQBmACAAKAAkAHAALgBIAGEAcwBFAHgAaQB0AGUAZAApACAAewAgAGIAcgBlAGEAawAgAH0ACgAgACAAfQAKACAAIAAkAHIAZQBzACAAPQAgAEAAKAApAAoAIAAgAGkAZgAgACgAJABhAHAAcAApACAAewAKACAAIAAgACAAZgBvAHIAZQBhAGMAaAAgACgAJABxACAAaQBuACAAQAAoACcAVABlAHMAdAAnACwAJwBIAGUAbgByAHkAJwAsACcAQQBuAG8AdABoAGUAcgAnACwAJwBTAGMAcgBlAGUAbgBzAGgAbwB0ACcAKQApACAAewAKACAAIAAgACAAIAAgAGYAbwByAGUAYQBjAGgAIAAoACQAYwBvAGwAbAAgAGkAbgAgAEAAKAAnAE4AbwB0AGUAYgBvAG8AawBzACcALAAnAFMAZQBjAHQAaQBvAG4AcwAnACwAJwBQAGEAZwBlAHMAJwApACkAIAB7AAoAIAAgACAAIAAgACAAIAAgAHQAcgB5ACAAewAKACAAIAAgACAAIAAgACAAIAAgACAAJABvACAAPQAgACQAYQBwAHAALgAkAGMAbwBsAGwACgAgACAAIAAgACAAIAAgACAAIAAgACQAdgAgAD0AIAAkAG8ALgBGAGkAbgBkACgAJABxACkACgAgACAAIAAgACAAIAAgACAAIAAgACQAcgBlAHMAIAArAD0AIAAiACQAYwBvAGwAbAAuAEYAaQBuAGQAKAAkAHEAKQA9AGwAZQBuACQAKAAoACcAJwArACQAdgApAC4ATABlAG4AZwB0AGgAKQAiAAoAIAAgACAAIAAgACAAIAAgAH0AIABjAGEAdABjAGgAIAB7AAoAIAAgACAAIAAgACAAIAAgACAAIAB0AHIAeQAgAHsAIAAkAG8AIAA9ACAAJABhAHAAcAAuACQAYwBvAGwAbAA7ACAAJAB2AHYAPQAnACcAOwAgACQAbwAuAEYAaQBuAGQAKAAkAHEALABbAHIAZQBmAF0AJAB2AHYAKQAgAHwAIABPAHUAdAAtAE4AdQBsAGwAOwAgACQAcgBlAHMAIAArAD0AIAAiACQAYwBvAGwAbAAuAEYAaQBuAGQAMgAoACQAcQApAD0AbABlAG4AJAAoACgAJwAnACsAJAB2AHYAKQAuAEwAZQBuAGcAdABoACkAIgAgAH0ACgAgACAAIAAgACAAIAAgACAAIAAgAGMAYQB0AGMAaAAgAHsAIAAkAHIAZQBzACAAKwA9ACAAIgAkAGMAbwBsAGwALgBGAGkAbgBkACgAJABxACkAXwBGAEEASQBMACAAJAAoACgAJABfAC4ARQB4AGMAZQBwAHQAaQBvAG4ALgBNAGUAcwBzAGEAZwBlACkAIAAtAHIAZQBwAGwAYQBjAGUAIAAnAFwAcwArACcALAAnACAAJwApACIAIAB9AAoAIAAgACAAIAAgACAAIAAgAH0ACgAgACAAIAAgACAAIAB9AAoAIAAgACAAIAB9AAoAIAAgAH0ACgAgACAAZgBvAHIAIAAoACQAaQA9ADAAOwAgACQAaQAgAC0AbAB0ACAAMQA1ADsAIAAkAGkAKwArACkAIAB7AAoAIAAgACAAIABTAHQAYQByAHQALQBTAGwAZQBlAHAAIAAtAFMAZQBjAG8AbgBkAHMAIAAyAAoAIAAgACAAIABpAGYAIAAoACgARAB1AG0AcABMAGkAcwB0ACkALgBDAG8AdQBuAHQAIAAtAGcAdAAgACQAYgBlAGYAbwByAGUALgBDAG8AdQBuAHQAKQAgAHsAIABiAHIAZQBhAGsAIAB9AAoAIAAgAH0ACgAgACAAJABuAGUAdwAgAD0AIABAACgARAB1AG0AcABMAGkAcwB0ACAAfAAgAFcAaABlAHIAZQAtAE8AYgBqAGUAYwB0ACAAewAgACQAYgBlAGYAbwByAGUAIAAtAG4AbwB0AGMAbwBuAHQAYQBpAG4AcwAgACQAXwAgAH0AKQAKACAAIAAkAGEAbABpAHYAZQAgAD0AIABpAGYAIAAoACQAcAAuAEgAYQBzAEUAeABpAHQAZQBkACkAIAB7ACAAMAAgAH0AIABlAGwAcwBlACAAewAgADEAIAB9AAoAIAAgACQAZQB4AGkAdAAgAD0AIAAnACcACgAgACAAaQBmACAAKAAtAG4AbwB0ACAAJABhAGwAaQB2AGUAKQAgAHsAIAB0AHIAeQAgAHsAIAAkAGUAeABpAHQAIAA9ACAAJwAwAHgAJwAgACsAIAAoACcAewAwADoAWAA4AH0AJwAgAC0AZgAgACQAcAAuAEUAeABpAHQAQwBvAGQAZQApACAAfQAgAGMAYQB0AGMAaAAgAHsAfQAgAH0ACgAgACAAIgB7ADAALAAtADMANAB9ACAAbwBwAGUAbgBlAGQAPQB7ADEAfQAgAGEAbABpAHYAZQA9AHsAMgB9ACAAZQB4AGkAdAA9AHsAMwB9ACAAZAB1AG0AcABzAD0AewA0AH0AIABmAGkAbgBkAHMAPQBbAHsANQB9AF0AIgAgAC0AZgAgACQAZgAuAE4AYQBtAGUALAAgACQAbwBwAGUAbgBlAGQALAAgACQAYQBsAGkAdgBlACwAIAAkAGUAeABpAHQALAAgACQAbgBlAHcALgBDAG8AdQBuAHQALAAgACgAJAByAGUAcwAgAC0AagBvAGkAbgAgACcAOwAnACkAIAB8ACAAQQBkAGQALQBDAG8AbgB0AGUAbgB0ACAAJABtAAoAIAAgAGYAbwByAGUAYQBjAGgAIAAoACQAZAAgAGkAbgAgACQAbgBlAHcAKQAgAHsAIABDAG8AcAB5AC0ASQB0AGUAbQAgACgAJwBDADoAXABkAHUAbQBwAHMAXAAnACAAKwAgACQAZAApACAAKABKAG8AaQBuAC0AUABhAHQAaAAgACQAbwB1AHQAIAAkAGQAKQAgAC0ARgBvAHIAYwBlACAALQBFAEEAIABTAGkAbABlAG4AdABsAHkAQwBvAG4AdABpAG4AdQBlACAAfQAKACAAIABHAGUAdAAtAFAAcgBvAGMAZQBzAHMAIABPAE4ARQBOAE8AVABFACAALQBFAEEAIABTAGkAbABlAG4AdABsAHkAQwBvAG4AdABpAG4AdQBlACAAfAAgAFMAdABvAHAALQBQAHIAbwBjAGUAcwBzACAALQBGAG8AcgBjAGUAIAAtAEUAQQAgAFMAaQBsAGUAbgB0AGwAeQBDAG8AbgB0AGkAbgB1AGUACgAgACAAZgBvAHIAIAAoACQAaQA9ADAAOwAgACQAaQAgAC0AbAB0ACAAMwAwADsAIAAkAGkAKwArACkAIAB7ACAAaQBmACAAKAAtAG4AbwB0ACAAKABHAGUAdAAtAFAAcgBvAGMAZQBzAHMAIABPAE4ARQBOAE8AVABFACAALQBFAEEAIABTAGkAbABlAG4AdABsAHkAQwBvAG4AdABpAG4AdQBlACkAKQAgAHsAIABiAHIAZQBhAGsAIAB9ADsAIABTAHQAYQByAHQALQBTAGwAZQBlAHAAIAAtAE0AaQBsAGwAaQBzAGUAYwBvAG4AZABzACAANQAwADAAIAB9AAoAfQAKACIARABPAE4ARQAgAGQAdQBtAHAAcwBfAHQAbwB0AGEAbAA9ACQAKAAoAEQAdQBtAHAATABpAHMAdAApAC4AQwBvAHUAbgB0ACkAIgAgAHwAIABBAGQAZAAtAEMAbwBuAHQAZQBuAHQAIAAkAG0ACgA='
+        $tmp = 'C:\onenote_com\driver.ps1'
+        [IO.File]::WriteAllBytes($tmp, [Convert]::FromBase64String($b64))
+        $p = Start-Process powershell.exe -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-EncodedCommand',$b64) -PassThru -Wait
+        "driver_exit=$($p.ExitCode)" | Add-Content C:\onenote_com\out\stage.txt
+        Get-Content C:\onenote_com\out\master.txt -Raw
+
+    - name: Attribute any dump to onmain
+      if: always()
+      shell: pwsh
+      run: |
+        $cdb = @("C:\Program Files (x86)\Windows Kits\10\Debuggers\x64\cdb.exe") | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+        $o = 'C:\onenote_com\out\attribution.txt'
+        "cdb=$cdb" | Tee-Object -FilePath $o
+        foreach ($d in @(Get-ChildItem C:\onenote_com\out -Filter *.dmp)) {
+          "=== $($d.Name)" | Tee-Object -FilePath $o -Append
+          & $cdb -z $d.FullName -c ".symfix C:\symbols; .reload /f onmain.dll; |; .ecxr; k 24; lmvm onmain; q" 2>&1 | Tee-Object -FilePath $o -Append
+        }
+
+    - name: Upload evidence
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: onenote-com-find
+        path: |
+          C:\onenote_com\out\master.txt
+          C:\onenote_com\out\attribution.txt
+          C:\onenote_com\out\stage.txt
+          C:\onenote_com\out
+          corpus2
