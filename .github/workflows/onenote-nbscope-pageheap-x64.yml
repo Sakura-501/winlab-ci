@@ -129,6 +129,23 @@ jobs:
           Start-Sleep -Seconds 2
         }
         L ("nbmodal_final=" + (UiaModal))
+        # §49 那次 COM 成员表齐全的差别在于 OneNote 曾被"以文档参数"起过；这里把该变量补上：
+        New-Item -ItemType Directory -Force -Path C:\nbseed | Out-Null
+        try {
+          [IO.File]::WriteAllBytes("C:\nbseed\seed.one", [Convert]::FromBase64String((Get-Content data\onebase2.b64 -Raw)))
+          L ("seed_one=" + (Get-Item C:\nbseed\seed.one).Length)
+          Start-Process $oneExe2 -ArgumentList '"C:\nbseed\seed.one"' -EA SilentlyContinue | Out-Null
+        } catch { L ("seed_FAIL " + $_.Exception.Message) }
+        for ($z3 = 0; $z3 -lt 30; $z3++) { Start-Sleep -Seconds 2; $w5=@(Get-Process ONENOTE -EA SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 }); if ($w5.Count -gt 0 -and $w5[0].MainWindowTitle) { break } }
+        $t5=''
+        $w6=@(Get-Process ONENOTE -EA SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 })
+        if ($w6.Count -gt 0) { $t5 = $w6[0].MainWindowTitle }
+        L ("seeded_title=" + $t5)
+        for ($z4 = 0; $z4 -lt 6; $z4++) { if ((UiaModal) -eq 0) { break }; [void](UiaClickDismiss); Start-Sleep -Seconds 2 }
+        L ("post_seed_modal=" + (UiaModal))
+        Start-Sleep -Seconds 5
+        Get-Process ONENOTE -EA SilentlyContinue | Stop-Process -Force -EA SilentlyContinue
+        Start-Sleep -Seconds 4
         Get-Process ONENOTE -EA SilentlyContinue | Stop-Process -Force -EA SilentlyContinue
         Start-Sleep -Seconds 4
         # runner 实测：OneNote 从未被真正启动过时，COM 激活返回 Unexpected HRESULT；
