@@ -1,0 +1,139 @@
+name: onenote-table-pageheap-x64
+# Open .one carriers whose table ColumnCount field is enlarged, with ONENOTE on full page
+# heap and WER full dumps, then attribute the fault. No in-app action is needed for this
+# face: OneNote lays tables out while rendering the page after the file opens.
+on:
+  workflow_dispatch:
+    inputs:
+      cap:
+        description: 'max carriers'
+        required: false
+        default: '3'
+jobs:
+  t:
+    runs-on: windows-latest
+    timeout-minutes: 200
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Download ODT
+      shell: pwsh
+      run: |
+        $page = (Invoke-WebRequest -Uri "https://www.microsoft.com/en-us/download/details.aspx?id=49117" -UseBasicParsing).Content
+        if ($page -match 'href="(https://download\.microsoft\.com/download/[^"]+officedeploymenttool[^"]*\.exe)"') {
+          Invoke-WebRequest -Uri $Matches[1] -OutFile odt.exe
+        } else { throw "odt link not found" }
+        Start-Process -Wait -FilePath .\odt.exe -ArgumentList "/extract:odtx /quiet"
+
+    - name: Install x64 Office (OneNote needed)
+      shell: pwsh
+      run: |
+        $xml = '<Configuration><Add OfficeClientEdition="64" Channel="CurrentChannel"><Product ID="O365ProPlusRetail"><Language ID="en-us" /><ExcludeApp ID="OneDrive" /><ExcludeApp ID="Lync" /><ExcludeApp ID="Bing" /></Product></Add><Display Level="None" AcceptEULA="TRUE" /><Updates Enabled="FALSE" /></Configuration>'
+        Set-Content -Path cfg.xml -Value $xml
+        Start-Process -Wait -FilePath .\odtx\setup.exe -ArgumentList "/configure","cfg.xml"
+        $o = Get-Item "C:\Program Files\Microsoft Office\root\Office16\ONENOTE.EXE" -EA SilentlyContinue
+        if (-not $o) { throw "onenote install failed" }
+        $om = Get-Item "C:\Program Files\Microsoft Office\root\Office16\onmain.dll" -EA SilentlyContinue
+        "onenote v=$($o.VersionInfo.FileVersion) onmain v=$($om.VersionInfo.FileVersion)"
+        $om.VersionInfo.FileVersion | Out-File ver.txt
+
+    - name: Page heap for ONENOTE plus WER full dumps
+      shell: pwsh
+      run: |
+        New-Item -ItemType Directory -Force -Path out, C:\dumps | Out-Null
+        $k = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\ONENOTE.EXE"
+        New-Item -Path $k -Force | Out-Null
+        Set-ItemProperty -Path $k -Name GlobalFlag -Value 0x02000000 -Type DWord
+        Set-ItemProperty -Path $k -Name EnableVerifier -Value 1 -Type DWord
+        Set-ItemProperty -Path $k -Name VerifierFlags -Value 0 -Type DWord
+        Set-ItemProperty -Path $k -Name PageHeapFlags -Value 0x3 -Type DWord
+        $ld = "HKLM:\SOFTWARE\Microsoft\Windows Error Reporting\LocalDumps"
+        New-Item -Path $ld -Force | Out-Null
+        Set-ItemProperty -Path $ld -Name DumpFolder -Value "C:\dumps" -Type ExpandString
+        Set-ItemProperty -Path $ld -Name DumpType -Value 2 -Type DWord
+        Set-ItemProperty -Path $ld -Name DumpCount -Value 40 -Type DWord
+        "readback GlobalFlag=$((Get-ItemProperty $k).GlobalFlag) PageHeapFlags=$((Get-ItemProperty $k).PageHeapFlags) EnableVerifier=$((Get-ItemProperty $k).EnableVerifier)" | Tee-Object out\setup_log.txt
+
+    - name: Lay carriers
+      shell: pwsh
+      run: |
+        New-Item -ItemType Directory -Force -Path tbl | Out-Null
+        [IO.File]::WriteAllBytes("tbl\s2.one", [Convert]::FromBase64String((Get-Content data\tbl_s2.b64 -Raw)))
+        [IO.File]::WriteAllBytes("tbl\r8_colffff.one", [Convert]::FromBase64String((Get-Content data\tbl_r8_colffff.b64 -Raw)))
+        [IO.File]::WriteAllBytes("tbl\r8_both.one", [Convert]::FromBase64String((Get-Content data\tbl_r8_both.b64 -Raw)))
+        $f=@(Get-ChildItem tbl -Filter *.one -File); "carriers=$($f.Count) sizes=$(($f.Length) -join ',')"
+        if ($f.Count -lt 2) { throw "carriers not materialized" }
+
+    - name: Warm the first run then open each carrier
+      shell: pwsh
+      run: |
+        $log="out\sweep_log.txt"; New-Item -ItemType Directory -Force -Path out,out\bad | Out-Null
+        function L($s) { $s | Tee-Object -FilePath $log -Append }
+        $exe="C:\Program Files\Microsoft Office\root\Office16\ONENOTE.EXE"
+        try { Start-Process $exe -EA SilentlyContinue | Out-Null } catch { }
+        for ($i=0; $i -lt 25; $i++) { Start-Sleep -Seconds 2; if (@(Get-Process ONENOTE -EA SilentlyContinue).Count -gt 0) { break } }
+        Start-Sleep -Seconds 10
+        Get-Process ONENOTE -EA SilentlyContinue | Stop-Process -Force -EA SilentlyContinue
+        Start-Sleep -Seconds 3
+        L ("warmup_title=" + (@(Get-Process ONENOTE -EA SilentlyContinue).Count))
+        $cap=[int]'${{ inputs.cap }}'
+        $files=@(Get-ChildItem tbl -Filter *.one -File | Sort-Object Name | Select-Object -First $cap)
+        L ("cases=$($files.Count)")
+        foreach ($f in $files) {
+          Get-Process ONENOTE -EA SilentlyContinue | Stop-Process -Force -EA SilentlyContinue
+          Start-Sleep -Seconds 2
+          Set-Content -Path $f.FullName -Stream Zone.Identifier -Value "[ZoneTransfer]`r`nZoneId=3" -Encoding ASCII -EA SilentlyContinue
+          $streams=@(Get-Item $f.FullName -Stream * -EA SilentlyContinue).Stream -join ','
+          $before=@(Get-ChildItem C:\dumps -File -EA SilentlyContinue).Count
+          $t0=Get-Date
+          $p=Start-Process -FilePath $exe -ArgumentList "/nologo `"$($f.FullName)`"" -PassThru
+          $title=''; $alive=1; $exit=''
+          for ($i=0; $i -lt 30; $i++) {
+            Start-Sleep -Milliseconds 1000
+            $pr=@(Get-Process ONENOTE -EA SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 })
+            if ($pr.Count -gt 0 -and $pr[0].MainWindowTitle) { $title=$pr[0].MainWindowTitle }
+            if (@(Get-Process ONENOTE -EA SilentlyContinue).Count -eq 0) { $alive=0; try { $exit='0x' + ('{0:x8}' -f $p.ExitCode) } catch { $exit='?' }; break }
+          }
+          $after=@(Get-ChildItem C:\dumps -File -EA SilentlyContinue)
+          $new=@($after | Where-Object { $_.CreationTime -gt $t0 })
+          L ("{0,-18} alive={1} exited={2} exit={3} dumps={4} s={5} streams={6} title={7}" -f $f.Name,$alive,(0+($alive -eq 0)),$exit,$new.Count,[int]((Get-Date)-$t0).TotalSeconds,$streams,$title)
+          $new | ForEach-Object { Copy-Item $_.FullName ("out\bad\" + $f.Name + '_' + $_.Name) -Force -EA SilentlyContinue }
+          $ver=(@(& tasklist /FI "IMAGENAME eq ONENOTE.EXE") -join ' ')
+          L ("still_running=" + ($ver -match 'ONENOTE'))
+          Get-Process ONENOTE -EA SilentlyContinue | Stop-Process -Force -EA SilentlyContinue
+        }
+        $d=@(Get-ChildItem out\bad -File -EA SilentlyContinue)
+        L ("SUMMARY cases=$($files.Count) dumps_total=$($d.Count)")
+
+    - name: Attribute dumps
+      shell: pwsh
+      run: |
+        $cdb=@(Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\Debuggers" -Recurse -Include cdb.exe -EA SilentlyContinue | Where-Object { $_.FullName -match '\\x64\\' } | Select-Object -First 1)
+        "cdb=$($cdb.FullName)" | Out-File out\attribution.txt
+        $d=@(Get-ChildItem out\bad -File -EA SilentlyContinue)
+        "dumps=$($d.Count)" | Add-Content out\attribution.txt
+        foreach ($x in $d) {
+          "===== $($x.Name) size=$($x.Length)" | Add-Content out\attribution.txt
+          if ($cdb) { & $cdb.FullName -z $x.FullName -c ".symfix; .reload /f onmain.dll; !analyze -v; k 20; .ecxr; r; lmvm onmain" 2>&1 | Select-Object -First 120 | Add-Content out\attribution.txt }
+        }
+
+    - name: Report
+      shell: pwsh
+      run: |
+        if (Test-Path ver.txt) { Get-Content ver.txt }
+        if (Test-Path out\sweep_log.txt) { Get-Content out\sweep_log.txt }
+        if (Test-Path out\attribution.txt) { Get-Content out\attribution.txt | Select-Object -First 60 }
+
+    - name: Collect evidence
+      shell: pwsh
+      run: |
+        New-Item -ItemType Directory -Force -Path evid | Out-Null
+        Copy-Item out\* evid\ -Recurse -Force -EA SilentlyContinue
+        if (Test-Path ver.txt) { Copy-Item ver.txt evid\ver.txt -Force }
+
+    - name: Upload evidence
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: onenote-table-pageheap
+        path: evid
