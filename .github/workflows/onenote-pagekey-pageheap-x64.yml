@@ -26,6 +26,10 @@ name: onenote-pagekey-pageheap-x64
         description: 'find query string'
         required: false
         default: 'a'
+      dirs:
+        description: 'which carrier dirs to sweep (corpus | corpus2 | both)'
+        required: false
+        default: 'both'
 jobs:
   t:
     runs-on: windows-latest
@@ -84,15 +88,20 @@ jobs:
       run: |
         New-Item -ItemType Directory -Force -Path corpus | Out-Null
         [IO.File]::WriteAllBytes("base_one.one", [Convert]::FromBase64String((Get-Content data\onebase.b64 -Raw)))
+        [IO.File]::WriteAllBytes("base_two.one", [Convert]::FromBase64String((Get-Content data\onebase2.b64 -Raw)))
         $b = Get-Item base_one.one
-        "base_one=$($b.Length) bytes"
-        if ($b.Length -lt 10000) { throw "base .one did not materialize" }
-        python ppseed\mk_pagekey_carriers.py base_one.one corpus
-        $n = @(Get-ChildItem corpus -Filter *.one -File).Count
+        $b2 = Get-Item base_two.one
+        "base_one=$($b.Length) bytes base_two=$($b2.Length) bytes"
+        if ($b.Length -lt 10000 -or $b2.Length -lt 10000) { throw "base .one did not materialize" }
+        $env:PK_ONE_PER_PID = "1"
+        python ppseed\mk_pagekey_carriers.py base_one.one corpus pk
+        python ppseed\mk_pagekey_carriers.py base_two.one corpus2 qk
+        $n = @(Get-ChildItem corpus, corpus2 -Filter *.one -File).Count
         Copy-Item base_one.one corpus\zz_baseline.one -Force
-        "carriers=$n (plus baseline)"
-        if ($n -lt 20) { throw "carrier generation failed ($n)" }
-        (Get-ChildItem corpus\manifest.txt -EA SilentlyContinue | ForEach-Object { Get-Content $_ }) -join "`n"
+        Copy-Item base_two.one corpus2\zz_baseline.one -Force
+        "carriers=$n (plus 2 baselines)"
+        if ($n -lt 24) { throw "carrier generation failed ($n)" }
+        (Get-ChildItem corpus\manifest.txt, corpus2\manifest.txt -EA SilentlyContinue | ForEach-Object { Get-Content $_ }) -join "`n"
 
     - name: Positive control - page heap must be loaded in ONENOTE
       shell: pwsh
@@ -141,9 +150,13 @@ jobs:
           } catch { "shot_failed $tag " + $_.Exception.Message | Add-Content out\sweep_extra.txt }
         }
         New-Item -ItemType Directory -Force -Path out\shots | Out-Null
-        $files = @(Get-ChildItem corpus -Filter *.one | Sort-Object Name | Select-Object -First $cap)
-        "cases=$($files.Count)" | Tee-Object -FilePath $log
-        if ($files.Count -lt 20) { throw "corpus not materialized in corpus\ (cases=$($files.Count))" }
+        $dirs = @('corpus', 'corpus2')
+        $want = '${{ github.event.inputs.dirs }}'
+        if ($want -eq 'corpus') { $dirs = @('corpus') }
+        if ($want -eq 'corpus2') { $dirs = @('corpus2') }
+        $files = @(Get-ChildItem $dirs -Filter *.one | Sort-Object Name | Select-Object -First $cap)
+        "cases=$($files.Count) dirs=$($dirs -join ',')" | Tee-Object -FilePath $log
+        if ($files.Count -lt 12) { throw "corpus not materialized in $($dirs -join ' and ') (cases=$($files.Count))" }
         $bad = @(); $unopened = @(); $nosend = @()
         foreach ($f in $files) {
           $before = DumpList
