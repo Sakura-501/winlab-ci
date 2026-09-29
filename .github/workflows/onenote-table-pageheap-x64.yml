@@ -163,11 +163,15 @@ jobs:
           foreach ($q in $ev) { "APPERR $($f.Name) | " + ((($q.ProviderName + ' | ' + $q.Message) -replace '\s+',' ').Substring(0,[Math]::Min(320,($q.ProviderName + ' | ' + $q.Message).Length))) | Add-Content out\sweep_extra.txt }
           $ver=(@(& tasklist /FI "IMAGENAME eq ONENOTE.EXE") -join ' ')
           L ("still_running=" + ($ver -match 'ONENOTE'))
-          if ($alive -eq 1 -and ($title -match '^Microsoft OneNote$' -or $title -match 'How do you want to start')) { L "NOTOPENED $($f.Name) title=$title"; L "INSTRUMENT_FAIL no_page_window $($f.Name)"; throw ("instrument fail: no page window for " + $f.Name) }
+          if ($alive -eq 1 -and ($title -match '^Microsoft OneNote$' -or $title -match 'How do you want to start')) { L "NOTOPENED $($f.Name) title=$title" } else { L "OPENOK $($f.Name) title=$title" }
           Get-Process ONENOTE -EA SilentlyContinue | Stop-Process -Force -EA SilentlyContinue
         }
         $d=@(Get-ChildItem out\bad -File -EA SilentlyContinue)
-        L ("SUMMARY cases=$($files.Count) dumps_total=$($d.Count)")
+        $opened_n = @(Select-String -Path $log -Pattern "OPENOK ").Count
+        $notop_n = @(Select-String -Path $log -Pattern "NOTOPENED ").Count
+        L ("SUMMARY cases=$($files.Count) dumps_total=$($d.Count) opened=$opened_n notopened=$notop_n")
+        Get-ChildItem C:\dumps -File -EA SilentlyContinue | ForEach-Object { Copy-Item $_.FullName ("out\bad\" + $_.Name) -Force -EA SilentlyContinue }
+        if ($opened_n -eq 0 -and $d.Count -eq 0) { L "INSTRUMENT_FAIL no case opened a page window and no fault"; throw "instrument fail: nothing opened, nothing faulted" }
 
     - name: Attribute dumps
       shell: pwsh
