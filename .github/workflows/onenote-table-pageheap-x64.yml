@@ -65,6 +65,9 @@ jobs:
         [IO.File]::WriteAllBytes("tbl\c80.one", [Convert]::FromBase64String((Get-Content data\tbl_c80.one -Raw)))
         [IO.File]::WriteAllBytes("tbl\c20.one", [Convert]::FromBase64String((Get-Content data\tbl_c20.one -Raw)))
         [IO.File]::WriteAllBytes("tbl\c40k.one", [Convert]::FromBase64String((Get-Content data\tbl_c40k.one -Raw)))
+        [IO.File]::WriteAllBytes("tbl\wff.one", [Convert]::FromBase64String((Get-Content data\tbl_wff.one -Raw)))
+        [IO.File]::WriteAllBytes("tbl\w40.one", [Convert]::FromBase64String((Get-Content data\tbl_w40.one -Raw)))
+        [IO.File]::WriteAllBytes("tbl\w05.one", [Convert]::FromBase64String((Get-Content data\tbl_w05.one -Raw)))
         $f=@(Get-ChildItem tbl -Filter *.one -File); "carriers=$($f.Count) sizes=$(($f.Length) -join ',')"
         if ($f.Count -lt 2) { throw "carriers not materialized" }
 
@@ -188,7 +191,7 @@ jobs:
         "cmds=" + ($txt -replace "`r`n",' | ') | Add-Content out\cdb_log.txt
         $exe = 'C:\Program Files\Microsoft Office\root\Office16\ONENOTE.EXE'
         $sym = 'srv*C:\symbols*https://msdl.microsoft.com/download/symbols'
-        foreach ($n in @('s2','c40','c80','c20')) {
+        foreach ($n in @('s2','c40','c80','wff','w40','w05','c20')) {
           $f = (Resolve-Path ("tbl\" + $n + ".one") -EA SilentlyContinue).Path
           if (-not $f) { "skip missing $n" | Add-Content out\cdb_log.txt; continue }
           Get-Process ONENOTE,cdb -EA SilentlyContinue | Stop-Process -Force -EA SilentlyContinue
