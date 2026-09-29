@@ -234,12 +234,25 @@ jobs:
             if ($h) {
               [void]$w32::ShowWindowAsync($h, 9); Start-Sleep -Milliseconds 400
               [void]$w32::SetForegroundWindow($h); Start-Sleep -Milliseconds 400
+              # The hit list that calls IsPageHit is the notebook-wide Search's, and OneNote's
+              # search-box accelerator differs by version (Ctrl+E in the desktop client, Ctrl+F in
+              # others), so both are fired and each is followed by its own query+Enter.
               try {
+                [System.Windows.Forms.SendKeys]::SendWait("^e")
+                Start-Sleep -Milliseconds 1500
+                [System.Windows.Forms.SendKeys]::SendWait($query)
+                Start-Sleep -Milliseconds 800
+                [System.Windows.Forms.SendKeys]::SendWait("{ENTER}")
+                Start-Sleep -Seconds 4
+                [System.Windows.Forms.SendKeys]::SendWait("^e")
+                Start-Sleep -Milliseconds 800
+                [System.Windows.Forms.SendKeys]::SendWait("{ESC}")
                 [System.Windows.Forms.SendKeys]::SendWait("^f")
                 Start-Sleep -Milliseconds 1500
                 [System.Windows.Forms.SendKeys]::SendWait($query)
                 Start-Sleep -Milliseconds 800
                 [System.Windows.Forms.SendKeys]::SendWait("{ENTER}")
+                Start-Sleep -Seconds 4
                 $sent = 1
               } catch { "sendkeys_fail $($f.Name) " + $_.Exception.Message | Add-Content out\sweep_extra.txt }
             }
