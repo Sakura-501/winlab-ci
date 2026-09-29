@@ -465,27 +465,15 @@ jobs:
               if ($edits.Count -gt 0) {
                 $tgt = $edits[-1]
                 foreach ($e6 in $edits) { try { if ($e6.Current.Name -match 'Search') { $tgt = $e6 } } catch { } }
-                "edit_pick " + $f.Name + " name=[" + $tgt.Current.Name + "] focusable=" + $tgt.Current.IsKeyboardFocusable | Add-Content out\sweep_extra.txt
               }
               try {
                 $tgt.SetFocus(); Start-Sleep -Milliseconds 500
-                try { ($tgt.GetCurrentPattern($script:VALP::Pattern)).SetValue($query) } catch { [System.Windows.Forms.SendKeys]::SendWait($query); "typed_instead_of_setvalue" | Add-Content out\sweep_extra.txt }
+                try { ($tgt.GetCurrentPattern($script:VALP::Pattern)).SetValue($query) } catch { [System.Windows.Forms.SendKeys]::SendWait($query) }
                 Start-Sleep -Milliseconds 700
                 [System.Windows.Forms.SendKeys]::SendWait("{ENTER}")
                 $sent = 1
                 "uia_find_ok " + $f.Name | Add-Content out\sweep_extra.txt
               } catch { "uia_find_FAIL " + $f.Name + " " + $_.Exception.Message | Add-Content out\sweep_extra.txt }
-              $sc = UiaScope $f.BaseName $query
-              try {
-                $tgt.SetFocus(); Start-Sleep -Milliseconds 400
-                try { ($tgt.GetCurrentPattern($script:VALP::Pattern)).SetValue($query) } catch { [System.Windows.Forms.SendKeys]::SendWait($query); "typed_instead_of_setvalue" | Add-Content out\sweep_extra.txt }
-                Start-Sleep -Milliseconds 700
-                [System.Windows.Forms.SendKeys]::SendWait("{ENTER}")
-                "resend_after_scope " + $f.Name | Add-Content out\sweep_extra.txt
-              } catch { "resend_FAIL " + $f.Name + " " + $_.Exception.Message | Add-Content out\sweep_extra.txt }
-              Start-Sleep -Seconds 6
-              $dd2 = @(Get-ChildItem C:\dumps -EA SilentlyContinue)
-              "post_scope_dumps " + $f.Name + " n=" + $dd2.Count + " scope=" + $sc | Add-Content out\sweep_extra.txt
               Start-Sleep -Seconds 6
               UiaNames ("post_uia_find " + $f.Name)
               $dd = @(Get-ChildItem C:\dumps -EA SilentlyContinue)
