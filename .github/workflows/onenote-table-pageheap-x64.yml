@@ -61,6 +61,10 @@ jobs:
         [IO.File]::WriteAllBytes("tbl\s2.one", [Convert]::FromBase64String((Get-Content data\tbl_s2.b64 -Raw)))
         [IO.File]::WriteAllBytes("tbl\r8_colffff.one", [Convert]::FromBase64String((Get-Content data\tbl_r8_colffff.b64 -Raw)))
         [IO.File]::WriteAllBytes("tbl\r8_both.one", [Convert]::FromBase64String((Get-Content data\tbl_r8_both.b64 -Raw)))
+        [IO.File]::WriteAllBytes("tbl\c40.one", [Convert]::FromBase64String((Get-Content data\tbl_c40.one -Raw)))
+        [IO.File]::WriteAllBytes("tbl\c80.one", [Convert]::FromBase64String((Get-Content data\tbl_c80.one -Raw)))
+        [IO.File]::WriteAllBytes("tbl\c20.one", [Convert]::FromBase64String((Get-Content data\tbl_c20.one -Raw)))
+        [IO.File]::WriteAllBytes("tbl\c40k.one", [Convert]::FromBase64String((Get-Content data\tbl_c40k.one -Raw)))
         $f=@(Get-ChildItem tbl -Filter *.one -File); "carriers=$($f.Count) sizes=$(($f.Length) -join ',')"
         if ($f.Count -lt 2) { throw "carriers not materialized" }
 
