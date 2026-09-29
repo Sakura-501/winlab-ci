@@ -147,7 +147,7 @@ jobs:
           $streams=@(Get-Item $f.FullName -Stream * -EA SilentlyContinue).Stream -join ','
           $before=@(Get-ChildItem C:\dumps -File -EA SilentlyContinue).Count
           $t0=Get-Date
-          $p=Start-Process -FilePath $exe -ArgumentList "/nologo `"$($f.FullName)`"" -PassThru
+          $p=Start-Process -FilePath $exe -ArgumentList "`"$($f.FullName)`"" -PassThru
           $title=''; $alive=1; $exit=''
           for ($i=0; $i -lt 30; $i++) {
             Start-Sleep -Milliseconds 1000
