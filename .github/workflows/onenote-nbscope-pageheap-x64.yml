@@ -75,21 +75,14 @@ jobs:
         L ("start " + (Get-Date -Format s))
         try {
           $app = New-Object -ComObject OneNote.Application
-          $tp = $app.GetType()
-          L ("com_created type=" + $tp.FullName)
-          $m = $tp.GetMethod('CreateNewPage')
-          if ($m) {
-            $ps = $m.GetParameters()
-            L ("CreateNewPage_params=" + ((@(foreach ($p in $ps) { "$($p.ParameterType.Name) $($p.Name) out=$($p.IsOut)" })) -join ' | '))
-            $args = @()
-            foreach ($p in $ps) {
-              if ($p.IsOut -or $p.ParameterType.IsByRef) { $args += ,([ref]'') }
-              elseif ($p.ParameterType.Name -eq 'String') { $args += "$nbName\$secName\$pageWord" }
-              else { $args += [Type]::Missing }
-            }
-            try { $rv = $m.Invoke($app, $args); L ("CreateNewPage_ok rv=$rv outargs=" + ((@(foreach ($a in $args) { if ($a -is [ref]) { $a.Value } else { '-' } })) -join ';')) }
-            catch { L ("CreateNewPage_FAIL " + $_.Exception.Message) }
-          } else { L 'CreateNewPage_not_found' }
+          L ("com_created type=" + $app.GetType().FullName)
+          $mn = @($app | Get-Member -MemberType Method | ForEach-Object { $_.Name })
+          L ("dispatched_methods=" + ($mn -join ','))
+          $out1 = ''
+          try { $app.CreateNewPage("$nbName\$secName\$pageWord"); L "CNP_1arg_ok" } catch { L ("CNP_1arg_FAIL " + $_.Exception.Message) }
+          try { $r1 = $app.CreateNewPage("$nbName\$secName\$pageWord", [ref]$out1); L ("CNP_2arg_ok rv=$r1 pageid=$out1") } catch { L ("CNP_2arg_FAIL " + $_.Exception.Message) }
+          try { $nbxml = ''; $app.GetHierarchy($nbName, 'hsNotebooks', [ref]$nbxml); L ("GetHierarchy_nb len=" + $nbxml.Length) } catch { L ("GetHierarchy_nb_FAIL " + $_.Exception.Message) }
+          try { $allx = ''; $app.GetHierarchy('', 'hsSelf', [ref]$allx); L ("GetHierarchy_self len=" + $allx.Length + " head=" + $allx.Substring(0,[Math]::Min(300,$allx.Length))) } catch { L ("GetHierarchy_self_FAIL " + $_.Exception.Message) }
         } catch { L ("com_FAIL " + $_.Exception.Message) }
         Start-Sleep -Seconds 8
         Get-Process ONENOTE -EA SilentlyContinue | Stop-Process -Force -EA SilentlyContinue
