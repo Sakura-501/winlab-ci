@@ -120,29 +120,12 @@ jobs:
           }
           return $n
         }
-        function UiaDumpEls {
-          $c = 0
-          foreach ($w in (UiaAllWins)) {
-            try { $wn = $w.Current.Name; $wh = $w.Current.NativeWindowHandle } catch { continue }
-            "WIN handle=$wh name=$wn" | Add-Content out\uia_dump.txt
-            foreach ($e in (UiaDesc $w)) {
-              try {
-                "  EL " + $e.Current.ControlType.ProgrammaticName + " inv=" + $e.Current.IsInvokePatternAvailable + " legacy=" + $e.Current.IsLegacyIAccessiblePatternAvailable + " value=" + $e.Current.IsValuePatternAvailable + " name=" + $e.Current.Name | Add-Content out\uia_dump.txt
-                $c++
-              } catch { }
-            }
-          }
-          "dump_elements=$c" | Add-Content out\uia_dump.txt
-          return $c
-        }
-        Set-Content -LiteralPath out\uia_dump.txt -Value ("dump_start " + (Get-Date -Format s)) -Force
         $mg = 1
-        L ("dump0=" + (UiaDumpEls))
-        for ($z2 = 0; $z2 < 8; $z2++) {
+        for ($z2 = 0; $z2 -lt 8; $z2++) {
           $mg = UiaModal
-          $ck = UiaClickDismiss
-          L ("round=$z2 modal=$mg clicked=$ck dump=" + (UiaDumpEls))
           if ($mg -eq 0) { break }
+          [void](UiaClickDismiss)
+          L ("nbmodal_gate round=$z2 still_modal=$mg")
           Start-Sleep -Seconds 2
         }
         L ("nbmodal_final=" + (UiaModal))
@@ -234,6 +217,45 @@ jobs:
         }
         L "done"
 
+    - name: UIA element census of every OneNote window
+      if: always()
+      shell: pwsh
+      run: |
+        New-Item -ItemType Directory -Force -Path out | Out-Null
+        Set-Content -LiteralPath out\uia_dump.txt -Value ("census_start " + (Get-Date -Format s)) -Force
+        Get-Process ONENOTE -EA SilentlyContinue | Stop-Process -Force -EA SilentlyContinue
+        Start-Sleep -Seconds 3
+        $exe = 'C:\Program Files\Microsoft Office\root\Office16\ONENOTE.EXE'
+        try { Start-Process $exe -EA SilentlyContinue | Out-Null } catch { "census_launch_FAIL " + $_.Exception.Message | Add-Content out\uia_dump.txt }
+        $have = $false
+        for ($i = 0; $i -lt 60; $i++) {
+          Start-Sleep -Seconds 2
+          try { if (@([System.Windows.Automation.AutomationElement]::RootElement.FindAll([System.Windows.Automation.TreeScope]::Children, [System.Windows.Automation.Condition]::TrueCondition)).Count -gt 0) { $have = $true; break } } catch { }
+          if (@(Get-Process ONENOTE -EA SilentlyContinue).Count -eq 0) { break }
+        }
+        "census_waited=$i have_window=$have procs=" + (@(Get-Process ONENOTE -EA SilentlyContinue).Count) | Add-Content out\uia_dump.txt
+        Start-Sleep -Seconds 6
+        Add-Type -AssemblyName UIAutomationClient,UIAutomationTypes
+        $TRUEC = [System.Windows.Automation.Condition]::TrueCondition
+        $SC = [System.Windows.Automation.TreeScope]
+        $AE = [System.Windows.Automation.AutomationElement]
+        $n = 0
+        try { $ws = @($AE::RootElement.FindAll($SC::Children, $TRUEC)) } catch { $ws = @() }
+        "windows=$($ws.Count)" | Add-Content out\uia_dump.txt
+        foreach ($w in $ws) {
+          try { "WIN pid=$($w.Current.ProcessId) handle=$($w.Current.NativeWindowHandle) name=[$($w.Current.Name)]" | Add-Content out\uia_dump.txt } catch { continue }
+          try { $els = @($w.FindAll($SC::Descendants, $TRUEC)) } catch { $els = @() }
+          "  elements=$($els.Count)" | Add-Content out\uia_dump.txt
+          foreach ($e in $els) {
+            try {
+              "  EL " + $e.Current.ControlType.ProgrammaticName + " inv=" + $e.Current.IsInvokePatternAvailable + " legacy=" + $e.Current.IsLegacyIAccessiblePatternAvailable + " value=" + $e.Current.IsValuePatternAvailable + " name=[" + $e.Current.Name + "]" | Add-Content out\uia_dump.txt
+              $n++
+            } catch { }
+          }
+        }
+        "census_elements=$n" | Add-Content out\uia_dump.txt
+        Get-Content out\uia_dump.txt | Select-Object -First 90
+        "CENSUS_DONE" | Add-Content out\uia_dump.txt
     - name: Build carriers from that section file
       shell: pwsh
       run: |
