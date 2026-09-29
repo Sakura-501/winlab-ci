@@ -223,7 +223,7 @@ jobs:
           foreach ($w in (UiaWins)) {
             foreach ($e in (UiaDesc $w)) {
               try {
-                if ($e.Current.IsInvokePatternAvailable -and $e.Current.Name -match '^(Continue for free|Not now|No thanks|Maybe later|Skip|Later|Start using)$') {
+                if ($e.Current.IsInvokePatternAvailable -and $e.Current.Name -match '^(Not now|No thanks|Maybe later|Skip|Later|Start using)$') {
                   ($e.GetCurrentPattern($script:INVP::Pattern)).Invoke(); $n++; Start-Sleep -Seconds 2
                 }
               } catch { }
@@ -243,7 +243,7 @@ jobs:
             foreach ($e in (UiaDesc $w)) {
               try {
                 $nm = $e.Current.Name
-                if ($nm -match '^(Continue for free|Not now|No thanks|Maybe later|Skip|Later|Start using|I have a subscription or product key)$') {
+                if ($nm -match '^(Not now|No thanks|Maybe later|Skip|Later|Start using)$') {
                   $done = $false
                   try {
                     if ($e.Current.IsLegacyIAccessiblePatternAvailable) { ($e.GetCurrentPattern([System.Windows.Automation.LegacyIAccessiblePattern]::Pattern)).DoDefaultAction(); $done = $true; $n++ }
@@ -286,7 +286,7 @@ jobs:
         function UiaScope([string]$tag, [string]$q) {
           $hits = 0
           $of = "out\scope_" + $tag + ".txt"
-          foreach ($w in (UiaWins)) {
+          foreach ($w in (UiaAllWins)) {
             $els = @(UiaDesc $w)
             foreach ($e in $els) {
               try { "EL " + $e.Current.ControlType.ProgrammaticName + " name=[" + $e.Current.Name + "]" | Add-Content $of } catch { }
@@ -443,7 +443,7 @@ jobs:
               # 先枚举可用 Edit，SetFocus + SetValue + ENTER；一个都取不到就 INSTRUMENT_FAIL 退出，
               # 绝不再产出"零故障"这种无法自证的读数。
               $edits = @()
-              foreach ($w3 in (UiaWins)) {
+              foreach ($w3 in (UiaAllWins)) {
                 foreach ($e3 in (UiaDesc $w3)) {
                   try { if ($e3.Current.ControlType.ProgrammaticName -match 'Edit|ComboBox' -and $e3.Current.IsValuePatternAvailable) { $edits += $e3 } } catch { }
                 }
