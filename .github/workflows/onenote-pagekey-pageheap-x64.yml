@@ -294,7 +294,7 @@ jobs:
             foreach ($e in $els) {
               try {
                 $nm = $e.Current.Name
-                if ($nm -match 'All Notebooks|Search Notebooks') {
+                if ($nm -match 'All Notebooks|Search Notebooks|Change Search Scope') {
                   try { if ($e.Current.IsExpandCollapsePatternAvailable) { ($e.GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern)).Expand(); $hits = $hits + 1; Start-Sleep -Seconds 2 } } catch { }
                   try { if ($e.Current.IsInvokePatternAvailable) { ($e.GetCurrentPattern($script:INVP::Pattern)).Invoke(); $hits = $hits + 1 } } catch { }
                   try { if ($e.Current.IsValuePatternAvailable) { ($e.GetCurrentPattern($script:VALP::Pattern)).SetValue($q); $hits = $hits + 1 } } catch { }
@@ -309,7 +309,7 @@ jobs:
             foreach ($e in $els2) {
               try {
                 $nm = $e.Current.Name
-                if ($e.Current.IsInvokePatternAvailable -and $nm -match 'Open Section|Current Section|This Section|Unfiled') {
+                if ($e.Current.IsInvokePatternAvailable -and $nm -match 'Open Section|Current Section|This Section|Unfiled|Everything') {
                   ($e.GetCurrentPattern($script:INVP::Pattern)).Invoke()
                   $hits = $hits + 1
                   Start-Sleep -Seconds 2
@@ -451,7 +451,7 @@ jobs:
               $edits = @()
               foreach ($w3 in (UiaAllWins)) {
                 foreach ($e3 in (UiaDesc $w3)) {
-                  try { if ($e3.Current.ControlType.ProgrammaticName -match 'Edit|ComboBox' -and $e3.Current.IsValuePatternAvailable) { $edits += $e3 } } catch { }
+                  try { if ($e3.Current.ControlType.ProgrammaticName -match 'Edit|ComboBox') { $edits += $e3 } } catch { }
                 }
               }
               "edit_ctl " + $f.Name + " n=" + $edits.Count + " names=" + ((@($edits | ForEach-Object { $_.Current.Name + '/' + $_.Current.AutomationId })) -join ';') | Add-Content out\sweep_extra.txt
@@ -462,10 +462,14 @@ jobs:
                 "no_edit_control_proceed_keys " + $f.Name | Add-Content out\sweep_extra.txt
               }
               $tgt = $null
-              if ($edits.Count -gt 0) { $tgt = $edits[-1] }
+              if ($edits.Count -gt 0) {
+                $tgt = $edits[-1]
+                foreach ($e6 in $edits) { try { if ($e6.Current.Name -match 'Search') { $tgt = $e6 } } catch { } }
+                "edit_pick " + $f.Name + " name=[" + $tgt.Current.Name + "] focusable=" + $tgt.Current.IsKeyboardFocusable | Add-Content out\sweep_extra.txt
+              }
               try {
                 $tgt.SetFocus(); Start-Sleep -Milliseconds 500
-                ($tgt.GetCurrentPattern($script:VALP::Pattern)).SetValue($query)
+                try { ($tgt.GetCurrentPattern($script:VALP::Pattern)).SetValue($query) } catch { [System.Windows.Forms.SendKeys]::SendWait($query); "typed_instead_of_setvalue" | Add-Content out\sweep_extra.txt }
                 Start-Sleep -Milliseconds 700
                 [System.Windows.Forms.SendKeys]::SendWait("{ENTER}")
                 $sent = 1
@@ -474,7 +478,7 @@ jobs:
               $sc = UiaScope $f.BaseName $query
               try {
                 $tgt.SetFocus(); Start-Sleep -Milliseconds 400
-                ($tgt.GetCurrentPattern($script:VALP::Pattern)).SetValue($query)
+                try { ($tgt.GetCurrentPattern($script:VALP::Pattern)).SetValue($query) } catch { [System.Windows.Forms.SendKeys]::SendWait($query); "typed_instead_of_setvalue" | Add-Content out\sweep_extra.txt }
                 Start-Sleep -Milliseconds 700
                 [System.Windows.Forms.SendKeys]::SendWait("{ENTER}")
                 "resend_after_scope " + $f.Name | Add-Content out\sweep_extra.txt
