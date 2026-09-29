@@ -111,6 +111,15 @@ jobs:
       run: |
         $exe = "C:\Program Files\Microsoft Office\root\Office16\ONENOTE.EXE"
         $k2 = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\ONENOTE.EXE"
+        # The "How do you want to start OneNote?" bambino dialog is a per-profile first-run state;
+        # turning it off up front keeps every later window title a document window.
+        foreach ($rk in @('HKCU:\Software\Microsoft\Office\16.0\ONENOTE\Options',
+                          'HKCU:\Software\Microsoft\Office\15.0\ONENOTE\Options')) {
+          New-Item -Path $rk -Force -EA SilentlyContinue | Out-Null
+          Set-ItemProperty -Path $rk -Name EnableBambino -Value 0 -Type DWord -EA SilentlyContinue
+        }
+        ("bambino HKCU16={0} HKCU15={1}" -f (Get-ItemProperty 'HKCU:\Software\Microsoft\Office\16.0\ONENOTE\Options' -EA SilentlyContinue).EnableBambino,
+          (Get-ItemProperty 'HKCU:\Software\Microsoft\Office\15.0\ONENOTE\Options' -EA SilentlyContinue).EnableBambino) | Tee-Object -FilePath out\control.txt
         Add-Type -AssemblyName System.Windows.Forms,System.Drawing
         $sig = '[DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h); [DllImport("user32.dll")] public static extern bool ShowWindowAsync(IntPtr h, int n);'
         $w32pre = Add-Type -MemberDefinition $sig -Name W32a -Namespace WinA -PassThru
