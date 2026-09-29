@@ -1,0 +1,69 @@
+name: dmp-attr-x64
+# Standalone attribution pass over a wave's saved crash dumps.
+#
+# The sweep workflows snapshot the yml at dispatch time, so a run dispatched before the attribution
+# step learned to use the public symbol server leaves module+offset frames only. This job downloads
+# an artifact from this repo by name, runs cdb over every .dmp in it with
+#   .symfix srv* -> msdl, .reload /f <faulting module>, .ecxr, k, lmvm
+# and prints the transcript, so a fault can be pinned to a named function and rva after the fact.
+'on':
+  workflow_dispatch:
+    inputs:
+      artifact:
+        description: 'artifact name to pull'
+        required: true
+        default: 'onenote-pagekey-pageheap'
+      module:
+        description: 'module to reload symbols for'
+        required: false
+        default: 'onmain.dll'
+jobs:
+  a:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+    - uses: actions/download-artifact@v4
+      with:
+        name: ${{ inputs.artifact }}
+        path: art
+
+    - name: Locate dumps
+      shell: pwsh
+      run: |
+        $d = @(Get-ChildItem art -Recurse -Filter *.dmp -EA SilentlyContinue)
+        "dumps=$($d.Count)"
+        $d | ForEach-Object { "{0} {1} bytes" -f $_.FullName, $_.Length }
+        if (-not $d.Count) { "no dumps in this artifact" }
+
+    - name: Symbolize and attribute
+      shell: pwsh
+      run: |
+        $mod = '${{ inputs.module }}'
+        $cdb = @("C:\Program Files (x86)\Windows Kits\10\Debuggers\x64\cdb.exe",
+                 "C:\Program Files (x86)\Windows Kits\10\Debuggers\arm64\cdb.exe",
+                 "C:\Program Files (x86)\Windows Kits\10\Debuggers\x86\cdb.exe") |
+               Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+        "cdb=$cdb"
+        New-Item -ItemType Directory -Force -Path out | Out-Null
+        $i = 0
+        foreach ($d in @(Get-ChildItem art -Recurse -Filter *.dmp -EA SilentlyContinue)) {
+          $i++
+          "================== $($d.Name) ($($d.Length) bytes)" | Tee-Object -FilePath "out\attr$i.txt" -Append
+          if ($cdb) {
+            & $cdb -z $d.FullName -c ".symfix srv*C:\\symbols*https://msdl.microsoft.com/download/symbols; .reload /f $mod; |; .ecxr; k 30; kv 30; lmvm $mod; q" 2>&1 |
+              Select-Object -Last 120 | Tee-Object -FilePath "out\attr$i.txt" -Append
+          } else { "no cdb on this image" | Tee-Object -FilePath "out\attr$i.txt" -Append }
+        }
+
+    - name: Report
+      if: always()
+      shell: pwsh
+      run: |
+        foreach ($f in @(Get-ChildItem out -Filter 'attr*.txt' -EA SilentlyContinue)) { "##### $($f.Name)"; Get-Content $f.FullName }
+
+    - name: Upload transcript
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: dmp-attribution
+        path: out
