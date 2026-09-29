@@ -548,6 +548,45 @@ jobs:
         "dumps_total=$((DumpList).Count)" | Tee-Object -FilePath $log -Append
         $bad -join "`r`n" | Out-File out\bad.txt
 
+    - name: Run the 0x35CD carriers under cdb
+      if: always()
+      shell: pwsh
+      run: |
+        New-Item -ItemType Directory -Force -Path out,C:\tbcdb | Out-Null
+        $cdbPath = @('C:\Program Files (x86)\Windows Kits\10\Debuggers\x64\cdb.exe') | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+        "cdb=$cdbPath" | Add-Content out\cdb35_log.txt
+        if (-not $cdbPath) { "CDB_MISSING" | Add-Content out\cdb35_log.txt; exit 0 }
+        $txt = ".symfix`r`nsxe -c `".reload /f onmain.dll; .ecxr; k 40; r; dq @rsp L20; g`" av`r`nsxe -c `".reload /f onmain.dll; .ecxr; k 40; r; g`" e06d7363`r`nsxe -c `".reload /f onmain.dll; .ecxr; k 40; g`" 015125c9`r`nsxd 4000001f`r`ng`r`n"
+        [IO.File]::WriteAllText("C:\tbcdb\cmds.txt", $txt)
+        $exe = 'C:\Program Files\Microsoft Office\root\Office16\ONENOTE.EXE'
+        $sym = 'srv*C:\symbols*https://msdl.microsoft.com/download/symbols'
+        $files = @(Get-ChildItem corpus2 -Filter '*p35cd*.one' -File -EA SilentlyContinue | Select-Object -First 3)
+        "carriers=$($files.Count)" | Add-Content out\cdb35_log.txt
+        foreach ($f in $files) {
+          Get-Process ONENOTE,cdb -EA SilentlyContinue | Stop-Process -Force -EA SilentlyContinue
+          Start-Sleep -Seconds 2
+          Set-Content -LiteralPath $f.FullName -Stream Zone.Identifier -Value "[ZoneTransfer]`r`nZoneId=3" -Encoding ASCII -EA SilentlyContinue
+          $n = $f.BaseName; $t0 = Get-Date
+          $o = "out\cdb35_" + $n + ".txt"; $e = "out\cdb35_" + $n + "_err.txt"
+          Remove-Item $o,$e -Force -EA SilentlyContinue
+          $argl = '-G -y "' + $sym + '" -cf C:\tbcdb\cmds.txt "' + $exe + '" "' + $f.FullName + '"'
+          $pr = Start-Process -FilePath $cdbPath -ArgumentList $argl -PassThru -RedirectStandardOutput $o -RedirectStandardError $e
+          for ($i = 0; $i -lt 80; $i++) { Start-Sleep -Seconds 2; if ($pr.HasExited) { break } }
+          $exited = $pr.HasExited
+          if (-not $exited) { Stop-Process -Id $pr.Id -Force -EA SilentlyContinue }
+          Get-Process ONENOTE,cdb -EA SilentlyContinue | Stop-Process -Force -EA SilentlyContinue
+          $sz = 0; if (Test-Path -LiteralPath $o) { $sz = (Get-Item -LiteralPath $o).Length }
+          $av = 0; $om = 0; $cpp = 0
+          if ($sz -gt 0) {
+            $av = @(Select-String -LiteralPath $o -Pattern 'Access violation' -EA SilentlyContinue).Count
+            $om = @(Select-String -LiteralPath $o -Pattern 'onmain!' -EA SilentlyContinue).Count
+            $cpp = @(Select-String -LiteralPath $o -Pattern 'e06d7363' -EA SilentlyContinue).Count
+          }
+          "$n exited=$exited outbytes=$sz av=$av onmain_frames=$om cpp=$cpp s=$([int]((Get-Date)-$t0).TotalSeconds)" | Add-Content out\cdb35_log.txt
+          Get-Content -LiteralPath $o -EA SilentlyContinue | Select-String -Pattern 'Access violation|onmain!|CrashWithRecovery|bad_alloc|Second chance' | Select-Object -First 25 | ForEach-Object { "  | " + ($_.Line -replace '\s+',' ') } | Add-Content out\cdb35_log.txt
+        }
+        "CDB35_DONE" | Add-Content out\cdb35_log.txt
+
     - name: Attribute any dump to onmain
       if: always()
       shell: pwsh
