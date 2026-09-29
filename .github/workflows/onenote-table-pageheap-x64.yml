@@ -186,12 +186,12 @@ jobs:
           Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
         "cdb=$cdbPath" | Add-Content out\cdb_log.txt
         if (-not $cdbPath) { "CDB_MISSING" | Add-Content out\cdb_log.txt; exit 0 }
-        $txt = ".symfix`r`n.reload /f onmain.dll`r`nsxe -c `".ecxr; k 40; r; dq @rsp L20; g`" av`r`nsxe -c `".ecxr; k 40; r; g`" e06d7363`r`nsxe -c `".ecxr; k 40; g`" 015125c9`r`nsxd e06d7364`r`ng`r`n"
+        $txt = ".symfix`r`nsxe -c `".reload /f onmain.dll; .ecxr; k 40; r; dq @rsp L20; g`" av`r`nsxe -c `".reload /f onmain.dll; .ecxr; k 40; r; g`" e06d7363`r`nsxe -c `".reload /f onmain.dll; .ecxr; k 40; g`" 015125c9`r`nsxd 4000001f`r`ng`r`n"
         [IO.File]::WriteAllText("C:\tbcdb\cmds.txt", $txt)
         "cmds=" + ($txt -replace "`r`n",' | ') | Add-Content out\cdb_log.txt
         $exe = 'C:\Program Files\Microsoft Office\root\Office16\ONENOTE.EXE'
         $sym = 'srv*C:\symbols*https://msdl.microsoft.com/download/symbols'
-        foreach ($n in @('s2','c40','c80','wff','w40','w05','c20')) {
+        foreach ($n in @('s2','c40','wff','w40','c80')) {
           $f = (Resolve-Path ("tbl\" + $n + ".one") -EA SilentlyContinue).Path
           if (-not $f) { "skip missing $n" | Add-Content out\cdb_log.txt; continue }
           Get-Process ONENOTE,cdb -EA SilentlyContinue | Stop-Process -Force -EA SilentlyContinue
@@ -199,11 +199,12 @@ jobs:
           Set-Content -LiteralPath $f -Stream Zone.Identifier -Value "[ZoneTransfer]`r`nZoneId=3" -Encoding ASCII -EA SilentlyContinue
           $t0 = Get-Date
           "===== $n start " + (Get-Date -Format s) | Add-Content out\cdb_log.txt
-          $argl = '-G -norecord -y "' + $sym + '" -c "$$<C:\tbcdb\cmds.txt" "' + $exe + '" "' + $f + '"'
+          $argl = '-G -y "' + $sym + '" -cf C:\tbcdb\cmds.txt "' + $exe + '" "' + $f + '"'
           "argv=" + $argl | Add-Content out\cdb_log.txt
           $o = "out\cdb_" + $n + ".txt"; $e = "out\cdb_" + $n + "_err.txt"
           Remove-Item $o,$e -Force -EA SilentlyContinue
           $p = Start-Process -FilePath $cdbPath -ArgumentList $argl -PassThru -RedirectStandardOutput $o -RedirectStandardError $e
+          if ($p -eq $null) { "  CDB_NOT_STARTED" | Add-Content out\cdb_log.txt; continue }
           for ($i = 0; $i -lt 110; $i++) {
             Start-Sleep -Seconds 2
             if ($p.HasExited) { break }
