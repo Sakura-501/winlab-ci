@@ -83,7 +83,7 @@ jobs:
       shell: pwsh
       run: |
         New-Item -ItemType Directory -Force -Path corpus | Out-Null
-        Cert-Util -decode data\onebase.b64 base_one.one | Out-Null
+        [IO.File]::WriteAllBytes("base_one.one", [Convert]::FromBase64String((Get-Content data\onebase.b64 -Raw)))
         $b = Get-Item base_one.one
         "base_one=$($b.Length) bytes"
         if ($b.Length -lt 10000) { throw "base .one did not materialize" }
