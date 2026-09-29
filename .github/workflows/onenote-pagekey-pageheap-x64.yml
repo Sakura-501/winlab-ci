@@ -217,6 +217,23 @@ jobs:
           }
           return $n
         }
+        function UiaNames([string]$tag) {
+          $lines = @()
+          foreach ($w in (UiaWins)) {
+            $all = UiaDesc $w
+            $lines += "win title=$($w.Current.Name) descendants=$($all.Count)"
+            $k = 0
+            foreach ($e in $all) {
+              if ($k -ge 60) { break }
+              try {
+                $nm = $e.Current.Name; $ct = $e.Current.ControlType.ProgrammaticName
+                $ok = $e.Current.IsInvokePatternAvailable; $ov = $e.Current.IsValuePatternAvailable; $oa = $e.Current.IsKeyboardFocusable
+                if ($nm -or $ov -or $ok) { $lines += "  [$k] $ct name=$nm inv=$ok val=$ov foc=$oa auto=$($e.Current.AutomationId)"; $k++ }
+              } catch { }
+            }
+          }
+          $lines -join "`r`n" | Add-Content out\sweep_extra.txt
+        }
         function UiaSearch([string]$q) {
           $n = 0
           foreach ($w in (UiaWins)) {
@@ -327,6 +344,7 @@ jobs:
                 Start-Sleep -Seconds 5
               } catch { "sendkeys2_fail $($f.Name) " + $_.Exception.Message | Add-Content out\sweep_extra.txt }
               $uw = @(UiaWins).Count
+              UiaNames ("post_keys " + $f.Name)
               $ui = UiaSearch $query
               "uia_pass $($f.Name) wins=$uw search_hits=$ui" | Add-Content out\sweep_extra.txt
               if ($ui -gt 0) { $sent = 1 }
