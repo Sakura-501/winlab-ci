@@ -105,8 +105,17 @@ jobs:
         python ppseed\mk_pagekey_carriers.py base_five.one corpus4 rk
         python ppseed\mk_pagekey_carriers.py base_six.one corpus5 sk
         $n = @(Get-ChildItem corpus, corpus2, corpus3, corpus4, corpus5 -Filter *.one -File).Count
+        # every dir needs its own unmutated twin, otherwise "no dump" cannot be separated from
+        # "OneNote never opened any file of this shape"
         Copy-Item base_one.one corpus\zz_baseline.one -Force
         Copy-Item base_two.one corpus2\zz_baseline.one -Force
+        Copy-Item base_four.one corpus3\zz_baseline.one -Force
+        Copy-Item base_five.one corpus4\zz_baseline.one -Force
+        Copy-Item base_six.one corpus5\zz_baseline.one -Force
+        foreach ($dd in @('corpus','corpus2','corpus3','corpus4','corpus5')) {
+          $bl = @(Get-ChildItem $dd -Filter zz_baseline.one -EA SilentlyContinue).Count
+          "$dd files=$(@(Get-ChildItem $dd -Filter *.one -File).Count) baseline=$bl"
+        }
         "carriers=$n (plus 2 baselines)"
         if ($n -lt 24) { throw "carrier generation failed ($n)" }
         (Get-ChildItem corpus\manifest.txt, corpus2\manifest.txt -EA SilentlyContinue | ForEach-Object { Get-Content $_ }) -join "`n"
