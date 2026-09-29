@@ -217,7 +217,7 @@ jobs:
           foreach ($w in (UiaWins)) {
             foreach ($e in (UiaDesc $w)) {
               try {
-                if ($e.Current.IsInvokePatternAvailable -and $e.Current.Name -match 'Continue for free|Continue|Skip|Later|Set up|Keep|Start using|No thanks|Maybe later|Not now') {
+                if ($e.Current.IsInvokePatternAvailable -and $e.Current.Name -match '^(Continue for free|Not now|No thanks|Maybe later|Skip|Later|Start using)$') {
                   ($e.GetCurrentPattern($script:INVP::Pattern)).Invoke(); $n++; Start-Sleep -Seconds 2
                 }
               } catch { }
@@ -225,18 +225,19 @@ jobs:
           }
           return $n
         }
+        function UiaAllWins { $r=@(); try { foreach ($w in $script:AE::RootElement.FindAll($script:SC::Children, $script:TRUEC)) { $r += $w } } catch { }; return ,$r }
         function UiaModal {
           $m = 0
-          foreach ($w in (UiaWins)) { foreach ($e in (UiaDesc $w)) { try { if ($e.Current.Name -match 'Welcome to free|Continue for free|How do you want to start|Get more with a trial|View plan options') { $m = 1 } } catch { } } }
+          foreach ($w in (UiaAllWins)) { foreach ($e in (UiaDesc $w)) { try { if ($e.Current.Name -match 'Welcome to free|Continue for free|How do you want to start|Get more with a trial|View plan options') { $m = 1 } } catch { } } }
           return $m
         }
         function UiaClickDismiss {
           $n = 0
-          foreach ($w in (UiaWins)) {
+          foreach ($w in (UiaAllWins)) {
             foreach ($e in (UiaDesc $w)) {
               try {
                 $nm = $e.Current.Name
-                if ($nm -match 'Continue for free|Skip|Later|Not now|No thanks|Maybe later|Notebooks on this PC|This PC|Start using|OK') {
+                if ($nm -match '^(Continue for free|Not now|No thanks|Maybe later|Skip|Later|Start using|I have a subscription or product key)$') {
                   $done = $false
                   try {
                     if ($e.Current.IsLegacyIAccessiblePatternAvailable) { ($e.GetCurrentPattern([System.Windows.Automation.LegacyIAccessiblePattern]::Pattern)).DoDefaultAction(); $done = $true; $n++ }
