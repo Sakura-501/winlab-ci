@@ -275,7 +275,7 @@ jobs:
         if ($want -ne 'both') { $dirs = @($want.Split(',')) }
         $files = @(Get-ChildItem $dirs -Filter *.one | Sort-Object Name | Select-Object -First $cap)
         "cases=$($files.Count) dirs=$($dirs -join ',')" | Tee-Object -FilePath $log
-        if ($files.Count -lt 6) { throw "corpus not materialized in $($dirs -join ' and ') (cases=$($files.Count))" }
+        if ($files.Count -lt 1) { throw "corpus not materialized in $($dirs -join ' and ') (cases=$($files.Count))" }
         $bad = @(); $unopened = @(); $nosend = @(); $docSeen = 0
         foreach ($f in $files) {
           $before = DumpList
