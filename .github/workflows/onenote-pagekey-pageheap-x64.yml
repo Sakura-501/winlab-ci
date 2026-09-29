@@ -113,6 +113,12 @@ jobs:
         # "OneNote never opened any file of this shape"
         Copy-Item base_one.one corpus\zz_baseline.one -Force
         Copy-Item base_two.one corpus2\zz_baseline.one -Force
+        # 表格面（ColumnWidthsArray 计数）的载体改走这条已被证明能起页面窗的循环：
+        # 每档 95 s 轮询 + 逐轮清窗 + 页面级标题判据 + 全页堆/WER/cdb 归因都在这里。
+        foreach ($tn in @('c20','c40','c80','c40k')) {
+          [IO.File]::WriteAllBytes("corpus2\tbl_$tn.one", [Convert]::FromBase64String((Get-Content "data\tbl_$tn.one" -Raw)))
+        }
+        "table_carriers_into_corpus2=" + @(Get-ChildItem corpus2 -Filter tbl_*.one -File).Count
         Copy-Item base_four.one corpus3\zz_baseline.one -Force
         Copy-Item base_five.one corpus4\zz_baseline.one -Force
         Copy-Item base_six.one corpus5\zz_baseline.one -Force
