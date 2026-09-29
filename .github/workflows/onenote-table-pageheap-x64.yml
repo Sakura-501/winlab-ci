@@ -69,13 +69,25 @@ jobs:
       run: |
         $log="out\sweep_log.txt"; New-Item -ItemType Directory -Force -Path out,out\bad | Out-Null
         function L($s) { $s | Tee-Object -FilePath $log -Append }
+        Add-Type -AssemblyName UIAutomationClient,UIAutomationTypes
+        $script:TRUEC = [System.Windows.Automation.Condition]::TrueCondition
+        $script:SC = [System.Windows.Automation.TreeScope]
+        $script:INVP = [System.Windows.Automation.InvokePattern]
+        function UiaWins { $r=@(); try { $pids=@(@(Get-Process ONENOTE -EA SilentlyContinue).Id); foreach ($w in $script:AE::RootElement.FindAll($script:SC::Children, $script:TRUEC)) { try { if ($pids -contains $w.Current.ProcessId) { $r += $w } } catch { } } } catch { }; return ,$r }
+        function UiaDesc($w) { try { return @($w.FindAll($script:SC::Descendants, $script:TRUEC)) } catch { return @() } }
+        function UiaDismiss { $n=0; foreach ($w in (UiaWins)) { foreach ($e in (UiaDesc $w)) { try { if ($e.Current.IsInvokePatternAvailable -and $e.Current.Name -match 'Continue for free|Continue|Skip|Later|Set up|Keep|Start using|No thanks|Maybe later|Not now|Notebooks on this PC|This PC|OK') { ($e.GetCurrentPattern($script:INVP::Pattern)).Invoke(); $n++; Start-Sleep -Seconds 2 } } catch { } } }; return $n }
         $exe="C:\Program Files\Microsoft Office\root\Office16\ONENOTE.EXE"
         try { Start-Process $exe -EA SilentlyContinue | Out-Null } catch { }
         for ($i=0; $i -lt 25; $i++) { Start-Sleep -Seconds 2; if (@(Get-Process ONENOTE -EA SilentlyContinue).Count -gt 0) { break } }
         Start-Sleep -Seconds 10
+        $script:AE = [System.Windows.Automation.AutomationElement]
+        for ($r2 = 0; $r2 -lt 6; $r2++) { $d2 = UiaDismiss; L ("warmup_dismiss round=$r2 n=$d2"); if ($d2 -eq 0) { break } }
+        $wt=''
+        $wq=@(Get-Process ONENOTE -EA SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 })
+        if ($wq.Count -gt 0) { $wt = $wq[0].MainWindowTitle }
         Get-Process ONENOTE -EA SilentlyContinue | Stop-Process -Force -EA SilentlyContinue
         Start-Sleep -Seconds 3
-        L ("warmup_title=" + (@(Get-Process ONENOTE -EA SilentlyContinue).Count))
+        L ("warmup_procs=" + (@(Get-Process ONENOTE -EA SilentlyContinue).Count) + " warmup_title=" + $wt)
         $cap=[int]'${{ inputs.cap }}'
         $files=@(Get-ChildItem tbl -Filter *.one -File | Sort-Object Name | Select-Object -First $cap)
         L ("cases=$($files.Count)")
@@ -91,13 +103,15 @@ jobs:
           for ($i=0; $i -lt 30; $i++) {
             Start-Sleep -Milliseconds 1000
             $pr=@(Get-Process ONENOTE -EA SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 })
-            if ($pr.Count -gt 0 -and $pr[0].MainWindowTitle) { $title=$pr[0].MainWindowTitle }
+            if ($pr.Count -gt 0 -and $pr[0].MainWindowTitle) { $title=$pr[0].MainWindowTitle; if ($title -notmatch '^Microsoft OneNote$') { break } }
             if (@(Get-Process ONENOTE -EA SilentlyContinue).Count -eq 0) { $alive=0; try { $exit='0x' + ('{0:x8}' -f $p.ExitCode) } catch { $exit='?' }; break }
           }
           $after=@(Get-ChildItem C:\dumps -File -EA SilentlyContinue)
           $new=@($after | Where-Object { $_.CreationTime -gt $t0 })
           L ("{0,-18} alive={1} exited={2} exit={3} dumps={4} s={5} streams={6} title={7}" -f $f.Name,$alive,(0+($alive -eq 0)),$exit,$new.Count,[int]((Get-Date)-$t0).TotalSeconds,$streams,$title)
           $new | ForEach-Object { Copy-Item $_.FullName ("out\bad\" + $f.Name + '_' + $_.Name) -Force -EA SilentlyContinue }
+          $ev=@(Get-WinEvent -FilterHashtable @{LogName='Application'} -MaxEvents 25 -EA SilentlyContinue | Where-Object { $_.Message -match 'ONENOTE' })
+          foreach ($q in $ev) { "APPERR $($f.Name) | " + ((($q.ProviderName + ' | ' + $q.Message) -replace '\s+',' ').Substring(0,[Math]::Min(320,($q.ProviderName + ' | ' + $q.Message).Length))) | Add-Content out\sweep_extra.txt }
           $ver=(@(& tasklist /FI "IMAGENAME eq ONENOTE.EXE") -join ' ')
           L ("still_running=" + ($ver -match 'ONENOTE'))
           Get-Process ONENOTE -EA SilentlyContinue | Stop-Process -Force -EA SilentlyContinue
