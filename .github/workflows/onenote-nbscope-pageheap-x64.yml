@@ -152,10 +152,10 @@ jobs:
         # 先把应用拉起一次（首跑窗由 UIA 清），关掉之后再建 COM 对象。
         $oneExe = "C:\Program Files\Microsoft Office\root\Office16\ONENOTE.EXE"
         try { Start-Process $oneExe -EA SilentlyContinue | Out-Null } catch { L ("warmup_FAIL " + $_.Exception.Message) }
-        for ($i = 0; $i -lt 30; $i++) { Start-Sleep -Seconds 2; if (@(Get-Process ONENOTE -EA SilentlyContinue).Count -gt 0) { break } }
+        for ($i = 0; $i -lt 30; $i++) { Start-Sleep -Seconds 1; if (@(Get-Process ONENOTE -EA SilentlyContinue).Count -gt 0) { break } }
         L ("warmup_procs=" + (@(Get-Process ONENOTE -EA SilentlyContinue).Count))
         Start-Sleep -Seconds 8
-        Get-Process ONENOTE -EA SilentlyContinue | Stop-Process -Force -EA SilentlyContinue
+        L "kept_alive_for_com"
         Start-Sleep -Seconds 3
         try {
           $app = New-Object -ComObject OneNote.Application
