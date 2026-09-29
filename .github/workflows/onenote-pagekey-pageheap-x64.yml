@@ -127,7 +127,7 @@ jobs:
         $cap = [int]('${{ github.event.inputs.cap }}')
         if ($cap -le 0) { $cap = 31 }
         Add-Type -AssemblyName System.Windows.Forms,System.Drawing
-        $sig = "[DllImport(\"user32.dll\")] public static extern bool SetForegroundWindow(IntPtr h); [DllImport(\"user32.dll\")] public static extern bool ShowWindowAsync(IntPtr h, int n);"
+        $sig = '[DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h); [DllImport("user32.dll")] public static extern bool ShowWindowAsync(IntPtr h, int n);'
         $w32 = Add-Type -MemberDefinition $sig -Name W32b -Namespace Win2 -PassThru
         function DumpList { @(Get-ChildItem C:\dumps -EA SilentlyContinue | ForEach-Object { $_.Name }) }
         function Shot($tag) {

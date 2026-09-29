@@ -91,7 +91,7 @@ jobs:
         if ($seen -ne 1) { "PREMISE window never appeared: OneNote did not present a main window within 120 s" | Tee-Object -FilePath $log -Append }
         # keystrokes go to whatever OneNote window has focus; bring it forward first
         try {
-          $sig = "[DllImport(\"user32.dll\")] public static extern bool SetForegroundWindow(IntPtr h); [DllImport(\"user32.dll\")] public static extern bool ShowWindowAsync(IntPtr h, int n); [DllImport(\"user32.dll\")] public static extern IntPtr GetForegroundWindow();"
+          $sig = '[DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h); [DllImport("user32.dll")] public static extern bool ShowWindowAsync(IntPtr h, int n);'
           $w = Add-Type -MemberDefinition $sig -Name W32 -Namespace Win -PassThru
           $h = 0
           foreach ($pr in @(Get-Process ONENOTE -EA SilentlyContinue)) { if ($pr.MainWindowHandle -ne 0) { $h = $pr.MainWindowHandle; break } }
