@@ -99,7 +99,12 @@ jobs:
         python ppseed\mk_pagekey_carriers.py base_one.one corpus pk
         python ppseed\mk_pagekey_carriers.py base_two.one corpus2 qk
         python ppseed\mk_ty9_carriers.py base_four.one corpus3 t9
-        $n = @(Get-ChildItem corpus, corpus2, corpus3 -Filter *.one -File).Count
+        [IO.File]::WriteAllBytes("base_five.one", [Convert]::FromBase64String((Get-Content data\onebase5.b64 -Raw)))
+        [IO.File]::WriteAllBytes("base_six.one", [Convert]::FromBase64String((Get-Content data\onebase6.b64 -Raw)))
+        "base_five=" + (Get-Item base_five.one).Length + " base_six=" + (Get-Item base_six.one).Length
+        python ppseed\mk_pagekey_carriers.py base_five.one corpus4 rk
+        python ppseed\mk_pagekey_carriers.py base_six.one corpus5 sk
+        $n = @(Get-ChildItem corpus, corpus2, corpus3, corpus4, corpus5 -Filter *.one -File).Count
         Copy-Item base_one.one corpus\zz_baseline.one -Force
         Copy-Item base_two.one corpus2\zz_baseline.one -Force
         "carriers=$n (plus 2 baselines)"
@@ -189,9 +194,7 @@ jobs:
         New-Item -ItemType Directory -Force -Path out\shots | Out-Null
         $dirs = @('corpus', 'corpus2', 'corpus3')
         $want = '${{ github.event.inputs.dirs }}'
-        if ($want -eq 'corpus') { $dirs = @('corpus') }
-        if ($want -eq 'corpus2') { $dirs = @('corpus2') }
-        if ($want -eq 'corpus3') { $dirs = @('corpus3') }
+        if ($want -ne 'both') { $dirs = @($want.Split(',')) }
         $files = @(Get-ChildItem $dirs -Filter *.one | Sort-Object Name | Select-Object -First $cap)
         "cases=$($files.Count) dirs=$($dirs -join ',')" | Tee-Object -FilePath $log
         if ($files.Count -lt 12) { throw "corpus not materialized in $($dirs -join ' and ') (cases=$($files.Count))" }
