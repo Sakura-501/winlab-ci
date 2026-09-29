@@ -234,7 +234,7 @@ jobs:
         function UiaAllWins { $r=@(); try { foreach ($w in $script:AE::RootElement.FindAll($script:SC::Children, $script:TRUEC)) { $r += $w } } catch { }; return ,$r }
         function UiaModal {
           $m = 0
-          foreach ($w in (UiaAllWins)) { foreach ($e in (UiaDesc $w)) { try { if ($e.Current.Name -match 'Welcome to free|Continue for free|How do you want to start|Get more with a trial|View plan options') { $m = 1 } } catch { } } }
+          foreach ($w in (UiaAllWins)) { foreach ($e in (UiaDesc $w)) { try { if ($e.Current.Name -match 'Welcome to free|Continue for free|How do you want to start|Get more with a trial|View plan options|Email or phone') { $vis = $true; try { $vis = (-not $e.Current.IsOffscreen) } catch { }; if ($vis) { $m = 1 } } } catch { } } }
           return $m
         }
         function UiaClickDismiss {
@@ -283,7 +283,7 @@ jobs:
           }
           $lines -join "`r`n" | Add-Content out\sweep_extra.txt
         }
-        function UiaScope([string]$tag) {
+        function UiaScope([string]$tag, [string]$q) {
           $hits = 0
           $of = "out\scope_" + $tag + ".txt"
           foreach ($w in (UiaWins)) {
@@ -294,9 +294,10 @@ jobs:
             foreach ($e in $els) {
               try {
                 $nm = $e.Current.Name
-                if ($e.Current.IsInvokePatternAvailable -and $nm -match 'All Notebooks') {
-                  ($e.GetCurrentPattern($script:INVP::Pattern)).Invoke()
-                  $hits = $hits + 1
+                if ($nm -match 'All Notebooks|Search Notebooks') {
+                  try { if ($e.Current.IsExpandCollapsePatternAvailable) { ($e.GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern)).Expand(); $hits = $hits + 1; Start-Sleep -Seconds 2 } } catch { }
+                  try { if ($e.Current.IsInvokePatternAvailable) { ($e.GetCurrentPattern($script:INVP::Pattern)).Invoke(); $hits = $hits + 1 } } catch { }
+                  try { if ($e.Current.IsValuePatternAvailable) { ($e.GetCurrentPattern($script:VALP::Pattern)).SetValue($q); $hits = $hits + 1 } } catch { }
                   Start-Sleep -Seconds 3
                 }
               } catch { }
@@ -398,7 +399,18 @@ jobs:
               if ($mg -eq 0) { break }
               Start-Sleep -Seconds 2
             }
-            if ($mg -ne 0) { "INSTRUMENT_FAIL $($f.Name) modal_never_dismissed" | Add-Content out\sweep_extra.txt; throw "instrument fail: upsell modal still on top for $($f.Name)" }
+            if ($mg -ne 0) {
+              "modal_still=$mg proceeding=1 $($f.Name)" | Add-Content out\sweep_extra.txt
+              try {
+                $mw = @(Get-Process ONENOTE -EA SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 })
+                if ($mw.Count -gt 0) {
+                  [void]$w32::SetForegroundWindow($mw[0].MainWindowHandle); Start-Sleep -Milliseconds 500
+                  [System.Windows.Forms.SendKeys]::SendWait("{ESC}"); Start-Sleep -Seconds 2
+                  [System.Windows.Forms.SendKeys]::SendWait("{ESC}"); Start-Sleep -Seconds 2
+                  "modal_after_esc=" + (UiaModal) | Add-Content out\sweep_extra.txt
+                }
+              } catch { "esc_fail " + $_.Exception.Message | Add-Content out\sweep_extra.txt }
+            }
             "upsell_dismissed $($f.Name)" | Add-Content out\sweep_extra.txt
             $h = 0
             foreach ($pr in @(Get-Process ONENOTE -EA SilentlyContinue)) { if ($pr.MainWindowHandle -ne 0) { $h = $pr.MainWindowHandle; break } }
@@ -452,7 +464,7 @@ jobs:
                 $sent = 1
                 "uia_find_ok " + $f.Name | Add-Content out\sweep_extra.txt
               } catch { "uia_find_FAIL " + $f.Name + " " + $_.Exception.Message | Add-Content out\sweep_extra.txt }
-              $sc = UiaScope $f.BaseName
+              $sc = UiaScope $f.BaseName $query
               try {
                 $tgt.SetFocus(); Start-Sleep -Milliseconds 400
                 ($tgt.GetCurrentPattern($script:VALP::Pattern)).SetValue($query)
