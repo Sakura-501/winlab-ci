@@ -283,6 +283,42 @@ jobs:
           }
           $lines -join "`r`n" | Add-Content out\sweep_extra.txt
         }
+        function UiaScope([string]$tag) {
+          $hits = 0
+          $of = "out\scope_" + $tag + ".txt"
+          foreach ($w in (UiaWins)) {
+            $els = @(UiaDesc $w)
+            foreach ($e in $els) {
+              try { "EL " + $e.Current.ControlType.ProgrammaticName + " name=[" + $e.Current.Name + "]" | Add-Content $of } catch { }
+            }
+            foreach ($e in $els) {
+              try {
+                $nm = $e.Current.Name
+                if ($e.Current.IsInvokePatternAvailable -and $nm -match 'All Notebooks') {
+                  ($e.GetCurrentPattern($script:INVP::Pattern)).Invoke()
+                  $hits = $hits + 1
+                  Start-Sleep -Seconds 3
+                }
+              } catch { }
+            }
+            $els2 = @(UiaDesc $w)
+            foreach ($e in $els2) {
+              try { "EL2 " + $e.Current.ControlType.ProgrammaticName + " name=[" + $e.Current.Name + "]" | Add-Content $of } catch { }
+            }
+            foreach ($e in $els2) {
+              try {
+                $nm = $e.Current.Name
+                if ($e.Current.IsInvokePatternAvailable -and $nm -match 'Open Section|Current Section|This Section|Unfiled') {
+                  ($e.GetCurrentPattern($script:INVP::Pattern)).Invoke()
+                  $hits = $hits + 1
+                  Start-Sleep -Seconds 2
+                }
+              } catch { }
+            }
+          }
+          "scope_pass " + $tag + " invocations=" + $hits | Add-Content out\sweep_extra.txt
+          return $hits
+        }
         function UiaSearch([string]$q) {
           $n = 0
           foreach ($w in (UiaWins)) {
@@ -416,6 +452,17 @@ jobs:
                 $sent = 1
                 "uia_find_ok " + $f.Name | Add-Content out\sweep_extra.txt
               } catch { "uia_find_FAIL " + $f.Name + " " + $_.Exception.Message | Add-Content out\sweep_extra.txt }
+              $sc = UiaScope $f.BaseName
+              try {
+                $tgt.SetFocus(); Start-Sleep -Milliseconds 400
+                ($tgt.GetCurrentPattern($script:VALP::Pattern)).SetValue($query)
+                Start-Sleep -Milliseconds 700
+                [System.Windows.Forms.SendKeys]::SendWait("{ENTER}")
+                "resend_after_scope " + $f.Name | Add-Content out\sweep_extra.txt
+              } catch { "resend_FAIL " + $f.Name + " " + $_.Exception.Message | Add-Content out\sweep_extra.txt }
+              Start-Sleep -Seconds 6
+              $dd2 = @(Get-ChildItem C:\dumps -EA SilentlyContinue)
+              "post_scope_dumps " + $f.Name + " n=" + $dd2.Count + " scope=" + $sc | Add-Content out\sweep_extra.txt
               Start-Sleep -Seconds 6
               UiaNames ("post_uia_find " + $f.Name)
               $dd = @(Get-ChildItem C:\dumps -EA SilentlyContinue)
