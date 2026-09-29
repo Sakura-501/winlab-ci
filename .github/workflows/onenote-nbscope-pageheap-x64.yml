@@ -97,7 +97,7 @@ jobs:
             foreach ($e in (UiaDesc $w)) {
               try {
                 $nm = $e.Current.Name
-                if ($nm -match '^(Continue for free|Not now|No thanks|Maybe later|Skip|Later|Start using|I have a subscription or product key)$') {
+                if ($nm -match '^(Continue for free|Not now|No thanks|Maybe later|Skip|Later|Start using|I have a subscription or product key|Notebooks on this PC|Store notebooks on this PC|Save notebooks on this PC|Use OneNote on this PC|Work offline|This PC|OK|Ok)$') {
                   $done = $false
                   try {
                     if ($e.Current.IsLegacyIAccessiblePatternAvailable) { ($e.GetCurrentPattern([System.Windows.Automation.LegacyIAccessiblePattern]::Pattern)).DoDefaultAction(); $done = $true; $n++ }
@@ -120,12 +120,29 @@ jobs:
           }
           return $n
         }
+        function UiaDumpEls {
+          $c = 0
+          foreach ($w in (UiaAllWins)) {
+            try { $wn = $w.Current.Name; $wh = $w.Current.NativeWindowHandle } catch { continue }
+            "WIN handle=$wh name=$wn" | Add-Content out\uia_dump.txt
+            foreach ($e in (UiaDesc $w)) {
+              try {
+                "  EL " + $e.Current.ControlType.ProgrammaticName + " inv=" + $e.Current.IsInvokePatternAvailable + " legacy=" + $e.Current.IsLegacyIAccessiblePatternAvailable + " value=" + $e.Current.IsValuePatternAvailable + " name=" + $e.Current.Name | Add-Content out\uia_dump.txt
+                $c++
+              } catch { }
+            }
+          }
+          "dump_elements=$c" | Add-Content out\uia_dump.txt
+          return $c
+        }
+        Set-Content -LiteralPath out\uia_dump.txt -Value ("dump_start " + (Get-Date -Format s)) -Force
         $mg = 1
-        for ($z2 = 0; $z2 -lt 8; $z2++) {
+        L ("dump0=" + (UiaDumpEls))
+        for ($z2 = 0; $z2 < 8; $z2++) {
           $mg = UiaModal
+          $ck = UiaClickDismiss
+          L ("round=$z2 modal=$mg clicked=$ck dump=" + (UiaDumpEls))
           if ($mg -eq 0) { break }
-          [void](UiaClickDismiss)
-          L ("nbmodal_gate round=$z2 still_modal=$mg")
           Start-Sleep -Seconds 2
         }
         L ("nbmodal_final=" + (UiaModal))
@@ -321,6 +338,7 @@ jobs:
         if ($dtotal -eq 0 -and $unopened.Count -eq $files.Count) { throw "no notebook window came up for any case" }
 
     - name: Attribute any dump to onmain
+      if: always()
       shell: pwsh
       run: |
         New-Item -ItemType Directory -Force -Path out | Out-Null
@@ -344,6 +362,7 @@ jobs:
         if (Test-Path out\nb_create.txt) { Get-Content out\nb_create.txt | Select-Object -Last 12 }
 
     - name: Collect evidence into workspace
+      if: always()
       shell: pwsh
       run: |
         New-Item -ItemType Directory -Force -Path evid | Out-Null
