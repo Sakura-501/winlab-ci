@@ -359,7 +359,7 @@ jobs:
         $dirs = @('corpus', 'corpus2', 'corpus3')
         $want = '${{ github.event.inputs.dirs }}'
         if ($want -ne 'both') { $dirs = @($want.Split(',')) }
-        $files = @(Get-ChildItem $dirs -Filter *.one | Sort-Object @{E={ if ($_.Name -like 'tbl_*') { '0' + $_.Name } else { '9' + $_.Name } }}, Name | Select-Object -First $cap)
+        $files = @(Get-ChildItem $dirs -Filter *.one | Sort-Object @{E={ if ($_.Name -like '*p35cd*') { '0' + $_.Name } elseif ($_.Name -like 'tbl_*') { '1' + $_.Name } else { '9' + $_.Name } }}, Name | Select-Object -First $cap)
         "cases=$($files.Count) dirs=$($dirs -join ',')" | Tee-Object -FilePath $log
         if ($files.Count -lt 1) { throw "corpus not materialized in $($dirs -join ' and ') (cases=$($files.Count))" }
         $bad = @(); $unopened = @(); $nosend = @(); $docSeen = 0
