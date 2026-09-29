@@ -149,11 +149,12 @@ jobs:
           $t0=Get-Date
           $p=Start-Process -FilePath $exe -ArgumentList "`"$($f.FullName)`"" -PassThru
           $title=''; $alive=1; $exit=''
-          for ($i=0; $i -lt 30; $i++) {
+          for ($i=0; $i -lt 95; $i++) {
             Start-Sleep -Milliseconds 1000
+            if ($i % 12 -eq 11) { [void](UiaClickDismiss) }
             $pr=@(Get-Process ONENOTE -EA SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 })
             if ($pr.Count -gt 0 -and $pr[0].MainWindowTitle) { $title=$pr[0].MainWindowTitle; if ($title -notmatch '^Microsoft OneNote$' -and $title -notmatch 'How do you want to start') { break } }
-            if (@(Get-Process ONENOTE -EA SilentlyContinue).Count -eq 0) { $alive=0; try { $exit='0x' + ('{0:x8}' -f $p.ExitCode) } catch { $exit='?' }; break }
+            if (@(Get-Process ONENOTE -EA SilentlyContinue).Count -eq 0) { $alive=0; try { $exit='0x' + ('{0:x8}' -f $p.ExitCode) } catch { $exit='?' }; Start-Sleep -Seconds 8; break }
           }
           $after=@(Get-ChildItem C:\dumps -File -EA SilentlyContinue)
           $new=@($after | Where-Object { $_.CreationTime -gt $t0 })
