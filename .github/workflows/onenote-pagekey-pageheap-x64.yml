@@ -209,7 +209,7 @@ jobs:
           foreach ($w in (UiaWins)) {
             foreach ($e in (UiaDesc $w)) {
               try {
-                if ($e.Current.IsInvokePatternAvailable -and $e.Current.Name -match 'Skip|Later|Set up|Keep|Start using|No thanks') {
+                if ($e.Current.IsInvokePatternAvailable -and $e.Current.Name -match 'Continue for free|Continue|Skip|Later|Set up|Keep|Start using|No thanks|Maybe later|Not now') {
                   ($e.GetCurrentPattern($script:INVP::Pattern)).Invoke(); $n++; Start-Sleep -Seconds 2
                 }
               } catch { }
@@ -285,6 +285,11 @@ jobs:
             if ((DumpList).Count -gt $before.Count) { break }
           }
           if ($opened -eq 1 -and $alive -eq 1) {
+            # The free-OneNote upsell ("Welcome to free Microsoft OneNote" / Continue for free) and the
+            # first-run picker are modal and take the foreground, so keystrokes never reach OneNote's
+            # search box. Dismiss every dialog button we can name, up to three rounds.
+            for ($r = 0; $r -lt 3; $r++) { $d = UiaDismiss; if ($d -eq 0) { break }; Start-Sleep -Seconds 2 }
+            "upsell_dismissed $($f.Name)" | Add-Content out\sweep_extra.txt
             $h = 0
             foreach ($pr in @(Get-Process ONENOTE -EA SilentlyContinue)) { if ($pr.MainWindowHandle -ne 0) { $h = $pr.MainWindowHandle; break } }
             if ($h) {
@@ -311,6 +316,16 @@ jobs:
                 Start-Sleep -Seconds 4
                 $sent = 1
               } catch { "sendkeys_fail $($f.Name) " + $_.Exception.Message | Add-Content out\sweep_extra.txt }
+              for ($r = 0; $r -lt 2; $r++) { if ((UiaDismiss) -eq 0) { break }; Start-Sleep -Seconds 2 }
+              try {
+                [void]$w32::SetForegroundWindow($h); Start-Sleep -Milliseconds 500
+                [System.Windows.Forms.SendKeys]::SendWait("^e")
+                Start-Sleep -Milliseconds 1500
+                [System.Windows.Forms.SendKeys]::SendWait($query)
+                Start-Sleep -Milliseconds 800
+                [System.Windows.Forms.SendKeys]::SendWait("{ENTER}")
+                Start-Sleep -Seconds 5
+              } catch { "sendkeys2_fail $($f.Name) " + $_.Exception.Message | Add-Content out\sweep_extra.txt }
               $uw = @(UiaWins).Count
               $ui = UiaSearch $query
               "uia_pass $($f.Name) wins=$uw search_hits=$ui" | Add-Content out\sweep_extra.txt
