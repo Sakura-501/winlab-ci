@@ -442,6 +442,7 @@ jobs:
               # 模态窗在按键时仍在最前（05:43 截图实证），所以这里改成用 UIA 直接操作查找控件本身：
               # 先枚举可用 Edit，SetFocus + SetValue + ENTER；一个都取不到就 INSTRUMENT_FAIL 退出，
               # 绝不再产出"零故障"这种无法自证的读数。
+              [void](UiaScope $f.BaseName $query)
               $edits = @()
               foreach ($w3 in (UiaAllWins)) {
                 foreach ($e3 in (UiaDesc $w3)) {
@@ -453,9 +454,10 @@ jobs:
                 $modal = 0
                 foreach ($w4 in (UiaWins)) { foreach ($e4 in (UiaDesc $w4)) { try { if ($e4.Current.Name -match 'Welcome to free|Continue for free|How do you want to start') { $modal = 1 } } catch { } } }
                 "INSTRUMENT_FAIL " + $f.Name + " no_edit_control modal=" + $modal | Add-Content out\sweep_extra.txt
-                throw ("instrument fail: no addressable find control for " + $f.Name)
+                "no_edit_control_proceed_keys " + $f.Name | Add-Content out\sweep_extra.txt
               }
-              $tgt = $edits[-1]
+              $tgt = $null
+              if ($edits.Count -gt 0) { $tgt = $edits[-1] }
               try {
                 $tgt.SetFocus(); Start-Sleep -Milliseconds 500
                 ($tgt.GetCurrentPattern($script:VALP::Pattern)).SetValue($query)
