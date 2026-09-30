@@ -11,19 +11,34 @@ import java.io.FileNotFoundException;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.util.Base64;
+import java.util.Locale;
 
 /**
- * Serves a tiny real PNG so the probe can hand the target app a readable
- * content:// attachment URI without needing any storage permission.
+ * Serves files from this app's own private directory so the probe can hand the target app a
+ * readable content:// attachment URI while requesting no storage permission at all.
+ *
+ *   content://com.example.linkprobe.img/<name>      -> filesDir/<name>
+ *   content://com.example.linkprobe.img/shot.png    -> synthesised 1x1 PNG (default)
+ *
+ * Corpus files are placed into filesDir with `adb shell run-as com.example.linkprobe ...`.
  */
 public class ImgProvider extends ContentProvider {
 
-    private static final String AUTH = "com.example.linkprobe.img";
-    // 1x1 opaque PNG
     private static final String PNG_B64 =
             "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4nGNgYGAAAAAEAAH2FzhVAAAAAElFTkSuQmCC";
 
-    private File png() {
+    /** Resolve the requested name inside filesDir only; never escape it. */
+    private File resolve(Uri uri) {
+        File root = getContext().getFilesDir().getAbsoluteFile();
+        String last = uri == null ? null : uri.getLastPathSegment();
+        if (last == null || last.isEmpty()) return null;
+        if (last.contains("/") || last.contains("..")) return null;
+        File f = new File(root, last).getAbsoluteFile();
+        if (!f.getPath().startsWith(root.getPath() + File.separator)) return null;
+        return f.exists() ? f : null;
+    }
+
+    private File defaultPng() {
         File f = new File(getContext().getFilesDir(), "shot.png");
         if (!f.exists()) {
             try (FileOutputStream os = new FileOutputStream(f)) {
@@ -42,8 +57,9 @@ public class ImgProvider extends ContentProvider {
 
     @Override
     public ParcelFileDescriptor openFile(Uri uri, String mode) throws FileNotFoundException {
-        File f = png();
-        if (f == null) return null;
+        File f = resolve(uri);
+        if (f == null) f = defaultPng();
+        if (f == null) throw new FileNotFoundException("no such probe attachment");
         return ParcelFileDescriptor.open(f, ParcelFileDescriptor.MODE_READ_ONLY);
     }
 
@@ -51,7 +67,20 @@ public class ImgProvider extends ContentProvider {
     public Cursor query(Uri u, String[] p, String s, String[] sa, String so) { return null; }
 
     @Override
-    public String getType(Uri u) { return "image/png"; }
+    public String getType(Uri u) {
+        String n = u == null ? "" : u.getLastPathSegment();
+        if (n == null) return "application/octet-stream";
+        String e = n.contains(".") ? n.substring(n.lastIndexOf('.') + 1).toLowerCase(Locale.US) : "";
+        switch (e) {
+            case "jpg": case "jpeg": return "image/jpeg";
+            case "png":              return "image/png";
+            case "gif":              return "image/gif";
+            case "bmp":              return "image/bmp";
+            case "webp":             return "image/webp";
+            case "tif": case "tiff": return "image/tiff";
+            default:                 return "application/octet-stream";
+        }
+    }
 
     @Override
     public Uri insert(Uri u, ContentValues cv) { return null; }
