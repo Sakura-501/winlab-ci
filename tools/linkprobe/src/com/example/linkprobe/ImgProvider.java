@@ -60,6 +60,11 @@ public class ImgProvider extends ContentProvider {
         File f = resolve(uri);
         if (f == null) f = defaultPng();
         if (f == null) throw new FileNotFoundException("no such probe attachment");
+        // Proves whether the target app actually consumed the attachment bytes, so that
+        // "no crash across the corpus" is a reading rather than a vacuous zero.
+        android.util.Log.i("LinkProbe", "OPENFILE name=" + f.getName() + " bytes=" + f.length()
+                + " mode=" + mode + " callingPackage=" + getCallingPackage()
+                + " callingUid=" + android.os.Binder.getCallingUid());
         return ParcelFileDescriptor.open(f, ParcelFileDescriptor.MODE_READ_ONLY);
     }
 
@@ -69,6 +74,8 @@ public class ImgProvider extends ContentProvider {
     @Override
     public String getType(Uri u) {
         String n = u == null ? "" : u.getLastPathSegment();
+        android.util.Log.i("LinkProbe", "GETTYPE uri=" + u + " callingPackage=" + getCallingPackage()
+                + " callingUid=" + android.os.Binder.getCallingUid());
         if (n == null) return "application/octet-stream";
         String e = n.contains(".") ? n.substring(n.lastIndexOf('.') + 1).toLowerCase(Locale.US) : "";
         switch (e) {
