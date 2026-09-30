@@ -36,11 +36,14 @@ if ($LASTEXITCODE -ne 0) { Write-Host "aapt2 link failed"; exit 3 }
 Write-Host "linked base.apk $((Get-Item $baseApk).Length) bytes"
 
 # 2. compile java
-& $javac -source 11 -target 11 -nowarn -classpath $androidJar -d $classes (Join-Path $proj "src\com\example\linkprobe\ProbeActivity.java")
+$srcs = Get-ChildItem (Join-Path $proj "src") -Recurse -Filter *.java | ForEach-Object { $_.FullName }
+Write-Host ("compiling " + ($srcs -join ", "))
+& $javac -source 11 -target 11 -nowarn -classpath $androidJar -d $classes @srcs
 if ($LASTEXITCODE -ne 0) { Write-Host "javac failed"; exit 4 }
 
 # 3. dex
-& $d8 --lib $androidJar --min-api 24 --output $out (Join-Path $classes "com\example\linkprobe\ProbeActivity.class")
+$classFiles = Get-ChildItem $classes -Recurse -Filter *.class | ForEach-Object { $_.FullName }
+& $d8 --lib $androidJar --min-api 24 --output $out @classFiles
 if ($LASTEXITCODE -ne 0) { Write-Host "d8 failed"; exit 5 }
 $dex = Join-Path $out "classes.dex"
 if (-not (Test-Path $dex)) { Write-Host "no classes.dex"; exit 6 }

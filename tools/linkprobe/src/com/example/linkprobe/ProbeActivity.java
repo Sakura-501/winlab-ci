@@ -8,12 +8,14 @@ import android.os.Bundle;
 import android.util.Log;
 
 /**
- * Untrusted third-party caller. Takes a URI on its own command line and hands it
- * to another app, either through an explicit component or as a plain implicit VIEW.
+ * Untrusted third-party caller. Requests no permission at all.
  *
- *   am start -n com.example.linkprobe/.ProbeActivity --es uri <uri> [--es mode implicit]
- *   extras: uri (required), mode = "explicit" (default) | "implicit",
- *           pkg, act  (target component for explicit mode)
+ *   am start -n com.example.linkprobe/.ProbeActivity --es mode <m> [extras]
+ *
+ * mode=explicit|implicit : ACTION_VIEW of --es uri, optionally at --es pkg/--es act
+ * mode=send              : ACTION_SEND carrying --es text plus an image attachment
+ *                          from this app's own content provider, targeted at
+ *                          --es pkg/--es act
  */
 public class ProbeActivity extends Activity {
 
@@ -27,28 +29,39 @@ public class ProbeActivity extends Activity {
         String mode = in == null ? null : in.getStringExtra("mode");
         String pkg = in == null ? null : in.getStringExtra("pkg");
         String act = in == null ? null : in.getStringExtra("act");
+        String text = in == null ? null : in.getStringExtra("text");
 
-        if (raw == null) {
-            Log.i(TAG, "usage: --es uri <uri> [--es mode implicit|explicit] [--es pkg P] [--es act A]");
-            finish();
-            return;
-        }
+        if (mode == null) mode = "explicit";
         if (pkg == null) pkg = "com.facebook.aura";
         if (act == null) act = "com.facebook.aura.main.AuraDeeplinkHandlerActivity";
 
-        Intent out = new Intent(Intent.ACTION_VIEW, Uri.parse(raw));
-        out.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-        if (!"implicit".equals(mode)) {
-            out.setComponent(new ComponentName(pkg, act));
-        }
-
         Log.i(TAG, "caller_uid=" + android.os.Process.myUid()
-                + " caller_pkg=" + getPackageName()
-                + " mode=" + (mode == null ? "explicit" : mode)
-                + " uri=" + raw);
+                + " caller_pkg=" + getPackageName() + " mode=" + mode);
+
         try {
+            Intent out;
+            if ("send".equals(mode)) {
+                out = new Intent(Intent.ACTION_SEND);
+                out.setType("image/*");
+                if (text != null) out.putExtra(Intent.EXTRA_TEXT, text);
+                out.putExtra(Intent.EXTRA_STREAM,
+                        Uri.parse("content://com.example.linkprobe.img/shot.png"));
+                out.setComponent(new ComponentName(pkg, act));
+            } else {
+                if (raw == null) {
+                    Log.i(TAG, "usage: --es uri <uri> [--es mode explicit|implicit] "
+                            + "[--es pkg P --es act A]");
+                    finish();
+                    return;
+                }
+                out = new Intent(Intent.ACTION_VIEW, Uri.parse(raw));
+                if (!"implicit".equals(mode)) out.setComponent(new ComponentName(pkg, act));
+            }
+            out.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            out.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
             startActivity(out);
-            Log.i(TAG, "startActivity=ok component=" + out.getComponent());
+            Log.i(TAG, "startActivity=ok component=" + out.getComponent()
+                    + " action=" + out.getAction());
         } catch (Exception e) {
             Log.i(TAG, "startActivity=failed " + e.getClass().getSimpleName() + ": " + e.getMessage());
         }
