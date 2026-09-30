@@ -6,6 +6,8 @@ import android.database.Cursor;
 import android.net.Uri;
 import android.os.ParcelFileDescriptor;
 
+import java.io.FileNotFoundException;
+
 import java.io.File;
 import java.io.FileOutputStream;
 import java.util.Base64;
@@ -39,7 +41,7 @@ public class ImgProvider extends ContentProvider {
     }
 
     @Override
-    public ParcelFileDescriptor openFile(Uri uri, String mode) {
+    public ParcelFileDescriptor openFile(Uri uri, String mode) throws FileNotFoundException {
         File f = png();
         if (f == null) return null;
         return ParcelFileDescriptor.open(f, ParcelFileDescriptor.MODE_READ_ONLY);
