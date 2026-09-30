@@ -63,7 +63,9 @@ public class ProbeActivity extends Activity {
             case "sendfile":
                 out.setAction(Intent.ACTION_SEND);
                 out.setClassName(pkg, act == null ? SHARE_ACTIVITY : act);
-                out.setType(type == null ? ("sendfile".equals(mode) ? "application/octet-stream" : "image/png"));
+                String mime = type != null ? type
+                        : ("sendfile".equals(mode) ? "application/octet-stream" : "image/png");
+                out.setType(mime);
                 if (uri != null) {
                     out.putExtra(Intent.EXTRA_STREAM, Uri.parse(uri));
                     out.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
